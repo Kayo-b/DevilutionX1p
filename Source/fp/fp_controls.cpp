@@ -36,6 +36,7 @@
 #include "levels/tile_properties.hpp"
 #include "lighting.h"
 #include "options.h"
+#include "panels/console.hpp"
 #include "player.h"
 #include "qol/autopickup.h"
 #include "qol/stash.h"
@@ -81,7 +82,7 @@ bool NeedsCursor()
 {
 	return InGameMenu()
 	    || IsLeftPanelOpen() || IsRightPanelOpen()
-	    || SpellSelectFlag || DropGoldFlag || IsWithdrawGoldOpen || DoomFlag || IsChatActive()
+	    || SpellSelectFlag || DropGoldFlag || IsWithdrawGoldOpen || DoomFlag || IsChatActive() || IsConsoleOpen()
 	    || pcurs >= CURSOR_FIRSTITEM || IsAnyOf(pcurs, CURSOR_IDENTIFY, CURSOR_REPAIR, CURSOR_RECHARGE, CURSOR_OIL, CURSOR_HOURGLASS)
 	    || MyPlayerIsDead;
 }
@@ -89,7 +90,7 @@ bool NeedsCursor()
 /** @brief Keyboard movement is allowed unless text is being typed or a modal menu is up. */
 bool KeyboardMovementAllowed()
 {
-	return !InGameMenu() && !IsChatActive() && !DropGoldFlag && !IsWithdrawGoldOpen;
+	return !InGameMenu() && !IsChatActive() && !DropGoldFlag && !IsWithdrawGoldOpen && !IsConsoleOpen();
 }
 
 void SetMouseCapture(bool capture)
