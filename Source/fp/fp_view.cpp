@@ -15,21 +15,19 @@
 #include <cstdint>
 #include <vector>
 
-#ifdef USE_SDL3
-#include <SDL3/SDL_timer.h>
-#else
-#include <SDL.h>
-#endif
-
 #include "engine/displacement.hpp"
+#include "fp/fp_controls.hpp"
+#include "fp/fp_math.hpp"
 #include "engine/light_tables.hpp"
 #include "engine/palette.h"
+#include "engine/render/text_render.hpp"
 #include "engine/render/scrollrt.h"
 #include "items.h"
 #include "levels/dun_tile_data.hpp"
 #include "levels/tile_properties.hpp"
 #include "monster.h"
 #include "player.h"
+#include "utils/str_cat.hpp"
 
 namespace devilution::fp {
 
@@ -43,11 +41,6 @@ constexpr float WallHeight = 1.5F;
 constexpr float EyeHeight = 0.75F;
 constexpr float MaxRayDistance = 48.0F;
 
-struct Vec2 {
-	float x;
-	float y;
-};
-
 struct Camera {
 	Vec2 pos;
 	Vec2 dir;   // unit length
@@ -55,50 +48,11 @@ struct Camera {
 	float yaw;
 };
 
-float CurrentYaw = 0.0F;
-uint32_t LastYawTicks = 0;
-
-/** @brief Converts an iso screen-space pixel displacement into world (tile) units. */
-Vec2 ScreenToWorld(Displacement offset)
-{
-	const float sx = static_cast<float>(offset.deltaX) / 32.0F;
-	const float sy = static_cast<float>(offset.deltaY) / 16.0F;
-	return { (sx + sy) / 2.0F, (sy - sx) / 2.0F };
-}
-
-float DirectionToYaw(Direction dir)
-{
-	const Displacement d { dir };
-	return std::atan2(static_cast<float>(d.deltaY), static_cast<float>(d.deltaX));
-}
-
-/** @brief Eases the camera yaw towards the player's facing so 45 degree turns don't snap. */
-float UpdateYaw(float targetYaw)
-{
-	const uint32_t now = SDL_GetTicks();
-	const float dt = LastYawTicks == 0 ? 1.0F : static_cast<float>(now - LastYawTicks) / 1000.0F;
-	LastYawTicks = now;
-
-	constexpr float Pi = 3.14159265F;
-	float delta = std::remainder(targetYaw - CurrentYaw, 2.0F * Pi);
-	const float t = 1.0F - std::exp(-dt * 12.0F);
-	CurrentYaw = std::remainder(CurrentYaw + delta * t, 2.0F * Pi);
-	return CurrentYaw;
-}
-
 Camera BuildCamera()
 {
-	const Player &player = *MyPlayer;
-	Vec2 pos { static_cast<float>(player.position.tile.x) + 0.5F, static_cast<float>(player.position.tile.y) + 0.5F };
-	if (player.isWalking()) {
-		const Vec2 walk = ScreenToWorld(GetOffsetForWalking(player.AnimInfo, player._pdir));
-		pos.x += walk.x;
-		pos.y += walk.y;
-	}
-
-	const float yaw = UpdateYaw(DirectionToYaw(player._pdir));
-	const Vec2 dir { std::cos(yaw), std::sin(yaw) };
-	return { pos, dir, { -dir.y * PlaneLength, dir.x * PlaneLength }, yaw };
+	const ViewState &view = GetViewState();
+	const Vec2 dir { std::cos(view.yaw), std::sin(view.yaw) };
+	return { { view.x, view.y }, dir, { -dir.y * PlaneLength, dir.x * PlaneLength }, view.yaw };
 }
 
 bool IsOpaque(Point tile)
@@ -272,6 +226,17 @@ void DrawCrosshair(const Surface &out)
 	}
 }
 
+/** @brief Temporary readout used to diagnose lighting; remove once verified. */
+void DrawDebugInfo(const Surface &out, const Camera &cam)
+{
+	const Point here { static_cast<int>(std::floor(cam.pos.x)), static_cast<int>(std::floor(cam.pos.y)) };
+	const Point ahead { static_cast<int>(std::floor(cam.pos.x + cam.dir.x * 3)), static_cast<int>(std::floor(cam.pos.y + cam.dir.y * 3)) };
+	const std::string text = StrCat("tile ", here.x, ",", here.y, " light ", static_cast<int>(LightAt(here)),
+	    " | ahead ", ahead.x, ",", ahead.y, " light ", static_cast<int>(LightAt(ahead)),
+	    " | lt[5][169]=", static_cast<int>(LightTables[5][169]), " lvl ", static_cast<int>(leveltype));
+	DrawString(out, text, { { 8, 8 }, { out.w() - 16, 20 } });
+}
+
 } // namespace
 
 bool IsFirstPersonActive()
@@ -282,10 +247,10 @@ bool IsFirstPersonActive()
 void ToggleFirstPerson()
 {
 	FirstPersonActive = !FirstPersonActive;
-	if (FirstPersonActive) {
-		CurrentYaw = DirectionToYaw(MyPlayer->_pdir);
-		LastYawTicks = 0;
-	}
+	if (FirstPersonActive)
+		ResetViewState();
+	else
+		ReleaseInput();
 }
 
 void DrawFirstPersonView(const Surface &out)
@@ -295,12 +260,13 @@ void DrawFirstPersonView(const Surface &out)
 
 	const Camera cam = BuildCamera();
 	const float focal = static_cast<float>(out.w()) / 2.0F / PlaneLength;
-	const int horizon = out.h() / 2;
+	const int horizon = out.h() / 2 + static_cast<int>(GetViewState().pitch * focal);
 
 	DrawFloorAndCeiling(out, cam, horizon, focal);
 	DrawWalls(out, cam, horizon, focal, zBuffer);
 	DrawMarkers(out, cam, horizon, focal, zBuffer);
 	DrawCrosshair(out);
+	DrawDebugInfo(out, cam);
 }
 
 } // namespace devilution::fp

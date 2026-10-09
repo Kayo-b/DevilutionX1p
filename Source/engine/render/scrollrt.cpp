@@ -37,6 +37,7 @@
 #include "engine/render/text_render.hpp"
 #include "engine/trn.hpp"
 #include "engine/world_tile.hpp"
+#include "fp/fp_controls.hpp"
 #include "fp/fp_view.hpp"
 #include "game_mode.hpp"
 #include "gmenu.h"
@@ -232,6 +233,8 @@ void UndrawCursor(const Surface &out)
 
 bool ShouldShowCursor()
 {
+	if (fp::IsMouseLookActive())
+		return false;
 	if (ControlMode == ControlTypes::KeyboardAndMouse)
 		return true;
 	if (pcurs == CURSOR_TELEPORT)

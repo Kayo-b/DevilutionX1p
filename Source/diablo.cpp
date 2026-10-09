@@ -51,6 +51,7 @@
 #include "engine/random.hpp"
 #include "engine/render/clx_render.hpp"
 #include "engine/sound.h"
+#include "fp/fp_controls.hpp"
 #include "fp/fp_view.hpp"
 #include "game_mode.hpp"
 #include "gamemenu.h"
@@ -222,6 +223,8 @@ void FreeGame()
 
 bool ProcessInput()
 {
+	fp::ProcessFrame();
+
 	if (PauseMode == 2) {
 		return false;
 	}
@@ -237,7 +240,8 @@ bool ProcessInput()
 #ifdef __vita__
 		FinishSimulatedMouseClicks(MousePosition);
 #endif
-		CheckCursMove();
+		if (!fp::IsMouseLookActive())
+			CheckCursMove();
 		plrctrls_after_check_curs_move();
 		RepeatPlayerAction();
 	}
@@ -774,6 +778,10 @@ void GameEventHandler(const SDL_Event &event, uint16_t modState)
 		return;
 	}
 	if (IsWithdrawGoldOpen && HandleGoldWithdrawTextInputEvent(event)) {
+		return;
+	}
+
+	if (fp::HandleEvent(event)) {
 		return;
 	}
 

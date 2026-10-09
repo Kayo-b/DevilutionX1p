@@ -26,6 +26,8 @@
 #include "controls/control_mode.hpp"
 #include "controls/game_controls.h"
 #include "controls/touch/gamepad.h"
+#include "fp/fp_controls.hpp"
+#include "fp/fp_view.hpp"
 #include "cursor.h"
 #include "cursor_defs.hpp"
 #include "doom.h"
@@ -1846,6 +1848,9 @@ void ProcessAutomapMovementGamepad()
 
 void Movement(Player &player)
 {
+	if (fp::IsFirstPersonActive())
+		return; // first person moves the camera freely, see fp::ProcessFrame()
+
 	if (PadMenuNavigatorActive || PadHotspellMenuActive || InGameMenu())
 		return;
 
@@ -2179,7 +2184,7 @@ void HandleRightStickMotion()
 {
 	static RightStickAccumulator acc;
 	// deadzone is handled in ScaleJoystickAxes() already
-	if (rightStickX == 0 && rightStickY == 0) {
+	if ((rightStickX == 0 && rightStickY == 0) || fp::IsMouseLookActive()) {
 		acc.Clear();
 		return;
 	}
