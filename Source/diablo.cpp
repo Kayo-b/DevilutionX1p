@@ -240,8 +240,7 @@ bool ProcessInput()
 #ifdef __vita__
 		FinishSimulatedMouseClicks(MousePosition);
 #endif
-		if (!fp::IsMouseLookActive())
-			CheckCursMove();
+		CheckCursMove();
 		plrctrls_after_check_curs_move();
 		RepeatPlayerAction();
 	}
@@ -263,7 +262,7 @@ void LeftMouseCmd(bool bShift)
 			NetSendCmdLocParam1(true, invflag ? CMD_GOTOGETITEM : CMD_GOTOAGETITEM, cursPosition, pcursitem);
 		if (pcursmonst != -1)
 			NetSendCmdLocParam1(true, CMD_TALKXY, cursPosition, pcursmonst);
-		if (pcursitem == -1 && pcursmonst == -1 && PlayerUnderCursor == nullptr) {
+		if (pcursitem == -1 && pcursmonst == -1 && PlayerUnderCursor == nullptr && !fp::IsFirstPersonActive()) {
 			LastPlayerAction = PlayerActionType::Walk;
 			NetSendCmdLoc(MyPlayerId, true, CMD_WALKXY, cursPosition);
 		}
@@ -272,6 +271,13 @@ void LeftMouseCmd(bool bShift)
 
 	const Player &myPlayer = *MyPlayer;
 	bNear = myPlayer.position.tile.WalkingDistance(cursPosition) < 2;
+
+	if (fp::IsFirstPersonActive() && pcursitem == -1 && ObjectUnderCursor == nullptr && PlayerUnderCursor == nullptr) {
+		// In first person the player moves themselves: attack in place (toward the crosshair) instead of
+		// walking to the cursor or to a monster that is out of melee reach.
+		if (pcursmonst == -1 || (!myPlayer.UsesRangedWeapon() && !bNear))
+			bShift = true;
+	}
 	if (pcursitem != -1 && pcurs == CURSOR_HAND && !bShift) {
 		NetSendCmdLocParam1(true, invflag ? CMD_GOTOGETITEM : CMD_GOTOAGETITEM, cursPosition, pcursitem);
 	} else if (ObjectUnderCursor != nullptr && !ObjectUnderCursor->IsDisabled() && (!bShift || (bNear && ObjectUnderCursor->_oBreak == 1))) {
@@ -800,10 +806,12 @@ void GameEventHandler(const SDL_Event &event, uint16_t modState)
 		return;
 	case SDL_EVENT_MOUSE_BUTTON_DOWN:
 		MousePosition = { SDLC_EventButtonIntX(event), SDLC_EventButtonIntY(event) };
+		fp::PinMouseToCrosshair();
 		HandleMouseButtonDown(event.button.button, modState);
 		return;
 	case SDL_EVENT_MOUSE_BUTTON_UP:
 		MousePosition = { SDLC_EventButtonIntX(event), SDLC_EventButtonIntY(event) };
+		fp::PinMouseToCrosshair();
 		HandleMouseButtonUp(event.button.button, modState);
 		return;
 #if SDL_VERSION_ATLEAST(2, 0, 0)

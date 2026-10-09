@@ -82,7 +82,7 @@ bool NeedsCursor()
 	return InGameMenu()
 	    || IsLeftPanelOpen() || IsRightPanelOpen()
 	    || SpellSelectFlag || DropGoldFlag || IsWithdrawGoldOpen || DoomFlag || IsChatActive()
-	    || pcurs >= CURSOR_FIRSTITEM || (pcurs != CURSOR_HAND && pcurs != CURSOR_NONE)
+	    || pcurs >= CURSOR_FIRSTITEM || IsAnyOf(pcurs, CURSOR_IDENTIFY, CURSOR_REPAIR, CURSOR_RECHARGE, CURSOR_OIL, CURSOR_HOURGLASS)
 	    || MyPlayerIsDead;
 }
 
@@ -104,22 +104,13 @@ void SetMouseCapture(bool capture)
 #else
 	SDL_SetRelativeMouseMode(capture ? SDL_TRUE : SDL_FALSE);
 #endif
+	// The game's cursor logic reads MousePosition; while looking it is pinned to the crosshair.
+	const Point center { gnScreenWidth / 2, gnViewportHeight / 2 };
+	MousePosition = center;
 	if (!capture) {
 		// Hand the cursor back in the middle of the view rather than wherever it was left.
-		const Point center { gnScreenWidth / 2, gnViewportHeight / 2 };
 		SDL_WarpMouseInWindow(ghMainWnd, center.x, center.y);
-		MousePosition = center;
 	}
-}
-
-/** @brief Clears what the iso cursor picking found; in mouse look the cursor position is meaningless. */
-void ClearCursorTargets()
-{
-	pcursmonst = -1;
-	pcursitem = -1;
-	ObjectUnderCursor = nullptr;
-	PlayerUnderCursor = nullptr;
-	cursPosition = { -1, -1 };
 }
 
 /** @brief Static obstacles for the camera box: solid tiles and solid objects (closed doors, barrels, ...). */
@@ -324,8 +315,8 @@ bool HandleEvent(const SDL_Event &event)
 		return true;
 	case SDL_EVENT_MOUSE_BUTTON_DOWN:
 	case SDL_EVENT_MOUSE_BUTTON_UP:
-		// Crosshair actions arrive in M4; until then don't let iso click-to-walk fire.
-		return MouseCaptured && (event.button.button == SDL_BUTTON_LEFT || event.button.button == SDL_BUTTON_RIGHT);
+		// Clicks go through the regular handlers; see PinMouseToCrosshair().
+		return false;
 	case SDL_EVENT_KEY_DOWN:
 	case SDL_EVENT_KEY_UP: {
 		if (!KeyboardMovementAllowed())
@@ -368,8 +359,6 @@ void ProcessFrame()
 
 	SetMouseCapture(!NeedsCursor());
 	ApplyLook(dt);
-	if (MouseCaptured)
-		ClearCursorTargets();
 
 	Player &player = *MyPlayer;
 	if (player.isWalking()) {
@@ -392,6 +381,12 @@ void ProcessFrame()
 	ApplyMovement(player, dt);
 	ApplyFacing(player);
 	UpdateLightOffset(player);
+}
+
+void PinMouseToCrosshair()
+{
+	if (MouseCaptured)
+		MousePosition = { gnScreenWidth / 2, gnViewportHeight / 2 };
 }
 
 void ReleaseInput()

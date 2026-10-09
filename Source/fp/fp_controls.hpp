@@ -40,6 +40,9 @@ bool HandleEvent(const SDL_Event &event);
 /** @brief Per-frame update: look, movement, collision and syncing the player's logical tile. */
 void ProcessFrame();
 
+/** @brief While the mouse is captured, clicks act on the crosshair: call after taking the position from a mouse event. */
+void PinMouseToCrosshair();
+
 /** @brief Called when leaving first person to release the mouse. */
 void ReleaseInput();
 

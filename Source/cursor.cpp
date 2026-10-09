@@ -40,6 +40,8 @@
 #include "qol/stash.h"
 #include "qol/visual_store.h"
 #include "towners.h"
+#include "fp/fp_pick.hpp"
+#include "fp/fp_view.hpp"
 #include "track.h"
 #include "utils/attributes.h"
 #include "utils/format.hpp"
@@ -897,12 +899,54 @@ bool CheckCursorActions(const Point currentTile, bool flipflag)
 }
 
 /**
+ * @brief First-person counterpart of the tile picking below: the target comes from a ray through the cursor
+ * (the crosshair while mouse look is active) and fills in the same globals, so all click handling is unchanged.
+ */
+void CheckCursMoveFirstPerson()
+{
+	const Point screenPosition = MousePosition;
+	const fp::Pick pick = fp::PickAt(screenPosition, IsAnyOf(pcurs, CURSOR_HEALOTHER, CURSOR_RESURRECT));
+	const Point currentTile = pick.hasTarget ? pick.tile : pick.groundTile;
+
+	if (CheckMouseHold(currentTile)) return;
+
+	ResetCursorInfo();
+
+	if (CheckPlayerState(currentTile, *MyPlayer) || CheckPanelsAndFlags(GetMainPanel())) return;
+
+	if (pick.hasTarget) {
+		cursPosition = pick.tile;
+		switch (pick.kind) {
+		case fp::EntityKind::Monster:
+		case fp::EntityKind::Towner:
+			pcursmonst = pick.id;
+			break;
+		case fp::EntityKind::Object:
+			ObjectUnderCursor = &Objects[pick.id];
+			break;
+		case fp::EntityKind::Item:
+			pcursitem = static_cast<int8_t>(pick.id);
+			break;
+		}
+		return;
+	}
+
+	cursPosition = currentTile;
+	DisplayTriggerInfo();
+}
+
+/**
  * @brief Checks for early return if an item is highlighted
  */
 void CheckCursMove()
 {
 	if (IsItemLabelHighlighted())
 		return;
+
+	if (fp::IsFirstPersonActive()) {
+		CheckCursMoveFirstPerson();
+		return;
+	}
 
 	Point screenPosition = MousePosition;
 	const Rectangle &mainPanel = GetMainPanel();
