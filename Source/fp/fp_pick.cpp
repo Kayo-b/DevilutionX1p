@@ -86,7 +86,7 @@ Pick PickAt(Point screenPosition, bool ignoreMonsters)
 	const float wallDepth = wall.hit ? wall.distance : std::numeric_limits<float>::infinity();
 	const float slope = proj.rowSlope(y);
 	const float floorDepth = slope < 0 ? EyeHeight / -slope : std::numeric_limits<float>::infinity();
-	const float ceilingDepth = slope > 0 ? (WallHeight - EyeHeight) / slope : std::numeric_limits<float>::infinity();
+	const float ceilingDepth = slope > 0 ? (WallHeight() - EyeHeight) / slope : std::numeric_limits<float>::infinity();
 	const float surfaceDepth = std::min({ wallDepth, floorDepth, ceilingDepth, MaxPickDistance });
 
 	Pick pick {};

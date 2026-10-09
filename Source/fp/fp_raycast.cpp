@@ -8,11 +8,17 @@
 #include <cmath>
 
 #include "fp/fp_controls.hpp"
+#include "fp/fp_textures.hpp"
 #include "levels/dun_tile_data.hpp"
 #include "levels/tile_properties.hpp"
 #include "utils/ui_fwd.h"
 
 namespace devilution::fp {
+
+float WallHeight()
+{
+	return static_cast<float>(FaceTextureHeight()) / SpritePixelsPerTileY;
+}
 
 Projection GetProjection()
 {
@@ -44,7 +50,7 @@ RayHit CastRay(Vec2 origin, Vec2 ray)
 	float sideX = ray.x < 0 ? (origin.x - static_cast<float>(tile.x)) * deltaX : (static_cast<float>(tile.x) + 1.0F - origin.x) * deltaX;
 	float sideY = ray.y < 0 ? (origin.y - static_cast<float>(tile.y)) * deltaY : (static_cast<float>(tile.y) + 1.0F - origin.y) * deltaY;
 
-	RayHit result { false, MaxRayDistance, tile, tile, false };
+	RayHit result { false, MaxRayDistance, tile, tile, false, false, origin };
 	while (true) {
 		result.previous = tile;
 		float distance;
@@ -65,6 +71,9 @@ RayHit CastRay(Vec2 origin, Vec2 ray)
 			result.hit = true;
 			result.distance = distance;
 			result.tile = tile;
+			// Moving towards +x hits the tile's -x face, which faces away from the iso camera.
+			result.backFace = result.xSide ? stepX > 0 : stepY > 0;
+			result.point = { origin.x + ray.x * distance, origin.y + ray.y * distance };
 			return result;
 		}
 	}

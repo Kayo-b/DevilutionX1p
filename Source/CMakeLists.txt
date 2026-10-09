@@ -85,6 +85,7 @@ set(libdevilutionx_SRCS
   fp/fp_controls.cpp
   fp/fp_pick.cpp
   fp/fp_raycast.cpp
+  fp/fp_textures.cpp
   fp/fp_view.cpp
   fp/fp_world.cpp
 

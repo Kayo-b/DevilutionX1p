@@ -16,16 +16,6 @@
 
 namespace devilution::fp {
 
-/**
- * @brief Sprite pixels per world unit (tile).
- *
- * The iso projection is dimetric with a 30 degree camera elevation (hence 2:1 tiles): one tile across the
- * view is 32 * sqrt(2) ~ 45.25px. That makes monsters look squat in first person (their figure would not even
- * reach the eye line), so sprites are drawn larger: a skeleton figure is ~2 tiles tall.
- */
-constexpr float SpritePixelsPerTileX = 45.25F;
-constexpr float SpritePixelsPerTileY = 39.2F;
-
 enum class EntityKind : uint8_t {
 	Monster,
 	Towner,

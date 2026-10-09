@@ -12,10 +12,19 @@ namespace devilution::fp {
 
 // World units are tiles.
 constexpr float PlaneLength = 1.0F; // tan(FOV / 2), FOV = 90 degrees
-// Matched to the original art (see SpritePixelsPerTileY): a warrior is ~1.8 tiles tall and cathedral
-// walls are about twice that.
-constexpr float WallHeight = 3.4F;
+/**
+ * @brief Original art pixels per world unit (tile).
+ *
+ * The iso projection is dimetric with a 30 degree camera elevation (hence 2:1 tiles): one tile across the
+ * view is 32 * sqrt(2) ~ 45.25px, and heights are foreshortened by cos(30) to ~39.2px per tile.
+ */
+constexpr float SpritePixelsPerTileX = 45.25F;
+constexpr float SpritePixelsPerTileY = 39.2F;
+/** A warrior sprite is ~1.8 tiles tall at this scale. */
 constexpr float EyeHeight = 1.6F;
+
+/** @brief Wall (and ceiling) height of the current level, from the height of its wall art. */
+[[nodiscard]] float WallHeight();
 constexpr float MaxRayDistance = 48.0F;
 
 /** @brief Camera plus the screen mapping of the game viewport. */
@@ -51,6 +60,8 @@ struct RayHit {
 	Point tile;        // the opaque tile that was hit
 	Point previous;    // the last open tile before it
 	bool xSide;        // whether an x-facing (vertical in the grid) face was hit
+	bool backFace;     // the face points away from the iso camera (-x / -y side), so the art never showed it
+	Vec2 point;        // where the ray met the face
 };
 
 [[nodiscard]] bool IsOpaque(Point tile);

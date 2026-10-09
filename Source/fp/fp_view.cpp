@@ -20,6 +20,7 @@
 #include "engine/render/text_render.hpp"
 #include "fp/fp_controls.hpp"
 #include "fp/fp_raycast.hpp"
+#include "fp/fp_textures.hpp"
 #include "fp/fp_world.hpp"
 #include "levels/dun_tile_data.hpp"
 #include "levels/gendung.h"
@@ -37,17 +38,31 @@ uint8_t Shade(uint8_t color, uint8_t light)
 	return LightTables[std::min<uint8_t>(light, LightsMax)][color];
 }
 
+/** @brief Colour of the open sky above town, which has no ceiling. */
+constexpr uint8_t TownSkyColor = PAL16_BLUE + 14;
+/** @brief Light levels added to ceilings so they read as darker than the floor they mirror. */
+constexpr uint8_t CeilingExtraDarkness = 4;
+
 void DrawFloorAndCeiling(const Surface &out, const Projection &proj)
 {
 	const Vec2 rayLeft { proj.dir.x - proj.plane.x, proj.dir.y - proj.plane.y };
 	const Vec2 rayRight { proj.dir.x + proj.plane.x, proj.dir.y + proj.plane.y };
+	const float wallHeight = WallHeight();
+	const bool hasCeiling = leveltype != DTYPE_TOWN;
 
 	for (int y = 0; y < proj.height; y++) {
 		const bool isFloor = y > proj.horizon;
-		const int rowsFromHorizon = isFloor ? y - proj.horizon : proj.horizon - y;
-		if (rowsFromHorizon == 0)
+		uint8_t *dst = out.at(0, y);
+		if (!isFloor && !hasCeiling) {
+			std::fill_n(dst, proj.width, TownSkyColor);
 			continue;
-		const float heightAboveOrBelow = isFloor ? EyeHeight : WallHeight - EyeHeight;
+		}
+		const int rowsFromHorizon = isFloor ? y - proj.horizon : proj.horizon - y;
+		if (rowsFromHorizon == 0) {
+			std::fill_n(dst, proj.width, 0);
+			continue;
+		}
+		const float heightAboveOrBelow = isFloor ? EyeHeight : wallHeight - EyeHeight;
 		const float rowDistance = heightAboveOrBelow * proj.focal / static_cast<float>(rowsFromHorizon);
 
 		const float stepX = rowDistance * (rayRight.x - rayLeft.x) / static_cast<float>(proj.width);
@@ -55,22 +70,44 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj)
 		float wx = proj.pos.x + rowDistance * rayLeft.x;
 		float wy = proj.pos.y + rowDistance * rayLeft.y;
 
-		uint8_t *dst = out.at(0, y);
 		for (int x = 0; x < proj.width; x++, wx += stepX, wy += stepY) {
-			const Point tile { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
-			uint8_t color;
-			if (isFloor) {
-				color = ((tile.x + tile.y) & 1) != 0 ? PAL16_BEIGE + 6 : PAL16_BEIGE + 9;
-			} else {
-				color = PAL16_GRAY + 10;
+			const float fx = std::floor(wx);
+			const float fy = std::floor(wy);
+			const Point tile { static_cast<int>(fx), static_cast<int>(fy) };
+			if (!InDungeonBounds(tile)) {
+				dst[x] = 0;
+				continue;
 			}
-			dst[x] = Shade(color, LightAt(tile));
+			const std::vector<int16_t> &floor = GetPieceTextures(dPiece[tile.x][tile.y]).floor;
+			const int u = std::min(static_cast<int>((wx - fx) * FloorTextureSize), FloorTextureSize - 1);
+			const int v = std::min(static_cast<int>((wy - fy) * FloorTextureSize), FloorTextureSize - 1);
+			const int16_t texel = floor[v * FloorTextureSize + u];
+			uint8_t light = LightAt(tile);
+			if (!isFloor)
+				light = std::min<uint8_t>(light + CeilingExtraDarkness, LightsMax);
+			dst[x] = texel == NoPixel ? 0 : Shade(static_cast<uint8_t>(texel), light);
 		}
 	}
 }
 
+/** @brief The face texture for a wall hit: the piece's own art for that face, else the other face, else the level's plain wall. */
+const std::vector<int16_t> &FaceForHit(const RayHit &hit)
+{
+	const PieceTextures &textures = GetPieceTextures(dPiece[hit.tile.x][hit.tile.y]);
+	const bool wantX = hit.xSide;
+	if (wantX ? textures.faceXUsable : textures.faceYUsable)
+		return wantX ? textures.faceX : textures.faceY;
+	if (wantX ? textures.faceYUsable : textures.faceXUsable)
+		return wantX ? textures.faceY : textures.faceX;
+	return GetFallbackFace();
+}
+
 void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &zBuffer)
 {
+	const float wallHeight = WallHeight();
+	const int faceHeight = FaceTextureHeight();
+	const std::vector<int16_t> &fallback = GetFallbackFace();
+
 	for (int x = 0; x < proj.width; x++) {
 		const RayHit hit = CastRay(proj.pos, proj.columnRay(x));
 		zBuffer[x] = hit.distance;
@@ -78,12 +115,27 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 			continue;
 
 		const float scale = proj.focal / std::max(hit.distance, 0.01F);
-		const int top = std::max(0, proj.horizon - static_cast<int>((WallHeight - EyeHeight) * scale));
-		const int bottom = std::min(proj.height - 1, proj.horizon + static_cast<int>(EyeHeight * scale));
-		// Flat debug colours: x-faces and y-faces differ so corners read clearly.
-		const uint8_t color = Shade(hit.xSide ? PAL16_BLUE + 4 : PAL16_BLUE + 8, LightAt(hit.previous));
-		for (int y = top; y <= bottom; y++)
-			*out.at(x, y) = color;
+		const float topF = static_cast<float>(proj.horizon) - (wallHeight - EyeHeight) * scale;
+		const float bottomF = static_cast<float>(proj.horizon) + EyeHeight * scale;
+		const int top = std::max(0, static_cast<int>(topF));
+		const int bottom = std::min(proj.height - 1, static_cast<int>(bottomF));
+
+		// Position along the face in world-axis order; the hidden back faces show the art mirrored.
+		float along = hit.xSide ? hit.point.y - static_cast<float>(hit.tile.y) : hit.point.x - static_cast<float>(hit.tile.x);
+		if (hit.backFace)
+			along = 1.0F - along;
+		const int u = std::clamp(static_cast<int>(along * FaceTextureWidth), 0, FaceTextureWidth - 1);
+
+		const std::vector<int16_t> &face = FaceForHit(hit);
+		const uint8_t *light = LightTables[LightAt(hit.previous)].data();
+		const float rowsPerPixel = static_cast<float>(faceHeight) / (bottomF - topF);
+		for (int y = top; y <= bottom; y++) {
+			const int row = std::clamp(static_cast<int>((static_cast<float>(y) - topF) * rowsPerPixel), 0, faceHeight - 1);
+			int16_t texel = face[row * FaceTextureWidth + u];
+			if (texel == NoPixel)
+				texel = fallback[row * FaceTextureWidth + u];
+			*out.at(x, y) = light[texel];
+		}
 	}
 }
 
