@@ -29,15 +29,23 @@ struct PieceTextures {
 	std::vector<int16_t> faceX;
 	/** Face along the tile's y edge (iso right column). */
 	std::vector<int16_t> faceY;
+	/** Per face texel: 1 where the art has an opening (no pixel, but art above it), e.g. inside an arch. */
+	std::vector<uint8_t> holesX;
+	std::vector<uint8_t> holesY;
 	std::vector<int16_t> floor;
 	bool faceXUsable;
 	bool faceYUsable;
+	/** Rows from the base of the face to its highest opaque pixel (the wall height the art shows), 0 if empty. */
+	int faceXRows;
+	int faceYRows;
 	/** The whole iso column (ColumnWidth x ColumnHeight, row 0 = top), for drawing the piece as a billboard. */
 	std::vector<int16_t> column;
 	/** Whether the piece draws art above its floor diamond (a tree, house, rock) rather than a flat floor. */
 	bool hasTallArt;
 	/** Dense tall art (walls, roofs) that is better rebuilt as part of a 3D building than drawn as a flat billboard. */
 	bool isStructure;
+	/** A narrow upright piece of art (round pillar, torch stand) that looks the same from every side, so it can be a billboard. */
+	bool isPillar;
 };
 
 /** @brief Height in pixels of wall face textures on the current level (depends on the tileset). */
@@ -48,6 +56,13 @@ struct PieceTextures {
 
 /** @brief A wall face to use where a piece has no usable art for the face being drawn. */
 [[nodiscard]] const std::vector<int16_t> &GetFallbackFace();
+
+/**
+ * @brief Height in face rows (pixels) of the level's walls, taken from the art of its wall pieces.
+ *
+ * The iso art of a wall is only this tall; scaling walls beyond it leaves a band of filler at the top.
+ */
+[[nodiscard]] int LevelWallRows();
 
 /** @brief Floor of the level's most common walkable piece, used where a piece has no ground art of its own. */
 [[nodiscard]] const std::vector<int16_t> &GetGroundFloor();

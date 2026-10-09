@@ -5,6 +5,7 @@
  */
 #include "fp/fp_raycast.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 #include "fp/fp_controls.hpp"
@@ -18,7 +19,7 @@ namespace devilution::fp {
 
 float WallHeight()
 {
-	return static_cast<float>(FaceTextureHeight()) / SpritePixelsPerTileY;
+	return static_cast<float>(LevelWallRows()) / SpritePixelsPerTileY;
 }
 
 Projection GetProjection()
@@ -44,7 +45,7 @@ bool IsOpaque(Point tile)
 	return leveltype != DTYPE_TOWN && IsTileSolid(tile);
 }
 
-RayHit CastRay(Vec2 origin, Vec2 ray)
+RayHit CastRay(Vec2 origin, Vec2 ray, int skip)
 {
 	Point tile { static_cast<int>(std::floor(origin.x)), static_cast<int>(std::floor(origin.y)) };
 	const float deltaX = ray.x == 0 ? 1e30F : std::abs(1.0F / ray.x);
@@ -72,6 +73,10 @@ RayHit CastRay(Vec2 origin, Vec2 ray)
 		if (distance > MaxRayDistance)
 			return result;
 		if (IsOpaque(tile)) {
+			if (skip > 0) {
+				skip--;
+				continue;
+			}
 			result.hit = true;
 			result.distance = distance;
 			result.tile = tile;
@@ -81,6 +86,40 @@ RayHit CastRay(Vec2 origin, Vec2 ray)
 			return result;
 		}
 	}
+}
+
+bool IsHoleAt(const RayHit &hit, float height)
+{
+	if (!InDungeonBounds(hit.tile) || height < 0.0F)
+		return false;
+	const PieceTextures &textures = GetPieceTextures(dPiece[hit.tile.x][hit.tile.y]);
+	const bool wantX = hit.xSide;
+	const bool ownUsable = wantX ? textures.faceXUsable : textures.faceYUsable;
+	const bool otherUsable = wantX ? textures.faceYUsable : textures.faceXUsable;
+	if (!ownUsable && !otherUsable)
+		return false;
+	const bool useX = ownUsable ? wantX : !wantX;
+	const std::vector<uint8_t> &holes = useX ? textures.holesX : textures.holesY;
+	float along = hit.xSide ? hit.point.y - static_cast<float>(hit.tile.y) : hit.point.x - static_cast<float>(hit.tile.x);
+	if (hit.backFace)
+		along = 1.0F - along;
+	const int u = std::clamp(static_cast<int>(along * FaceTextureWidth), 0, FaceTextureWidth - 1);
+	const int faceHeight = FaceTextureHeight();
+	const int row = faceHeight - 1 - static_cast<int>(height * SpritePixelsPerTileY);
+	if (row < 0 || row >= faceHeight)
+		return false;
+	return holes[static_cast<size_t>(row) * FaceTextureWidth + u] != 0;
+}
+
+RayHit CastRayThroughHoles(Vec2 origin, Vec2 ray, float slope)
+{
+	RayHit hit = CastRay(origin, ray);
+	for (int skip = 1; hit.hit && skip < MaxWallLayers; skip++) {
+		if (!IsHoleAt(hit, EyeHeight + slope * hit.distance))
+			break;
+		hit = CastRay(origin, ray, skip);
+	}
+	return hit;
 }
 
 } // namespace devilution::fp

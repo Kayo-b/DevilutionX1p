@@ -9,6 +9,7 @@
  *   wait:N            do nothing for N frames
  *   lua:CODE          run a Lua console line (CODE may contain ':' but not ';')
  *   shot:PATH         render the first-person view into a PPM file
+ *   iso:PATH          save the previous frame as drawn by the original view (switch it on a few frames earlier)
  *   bench:N           log the average frame time over the next N frames
  *   quit              leave the game
  */
@@ -24,6 +25,8 @@
 
 #include <SDL.h>
 
+#include "diablo.h"
+#include "engine/dx.h"
 #include "engine/palette.h"
 #include "engine/surface.hpp"
 #include "fp/fp_view.hpp"
@@ -84,6 +87,24 @@ void WriteShot(const std::string &path)
 	}
 }
 
+/** @brief Writes the screen buffer of the previous frame (the original view when first person is off), without the panel. */
+void WriteIsoShot(const std::string &path)
+{
+	const Surface screen = GlobalBackBuffer();
+	const int height = gnViewportHeight;
+	if (FILE *f = std::fopen(path.c_str(), "wb")) {
+		std::fprintf(f, "P6\n%d %d\n255\n", screen.w(), height);
+		for (int y = 0; y < height; y++) {
+			for (int x = 0; x < screen.w(); x++) {
+				const SDL_Color c = system_palette[*screen.at(x, y)];
+				const uint8_t rgb[3] = { c.r, c.g, c.b };
+				std::fwrite(rgb, 1, 3, f);
+			}
+		}
+		std::fclose(f);
+	}
+}
+
 struct Starter {
 	Starter()
 	{
@@ -109,6 +130,8 @@ const Starter StarterInstance;
 
 void AutotestTick()
 {
+	if (!Steps.empty())
+		PauseMode = 0; // the offscreen window never has focus, which would pause the game
 	if (BenchFrames > 0) {
 		if (--BenchFrames == 0)
 			LogInfo("autotest bench: {:.1f} ms per frame over {} frames", static_cast<double>(SDL_GetTicks() - BenchStart) / BenchTotal, BenchTotal);
@@ -131,6 +154,8 @@ void AutotestTick()
 	} else if (step.rfind("bench:", 0) == 0) {
 		BenchTotal = BenchFrames = std::atoi(step.c_str() + 6);
 		BenchStart = SDL_GetTicks();
+	} else if (step.rfind("iso:", 0) == 0) {
+		WriteIsoShot(step.substr(4));
 	} else if (step.rfind("shot:", 0) == 0) {
 		WriteShot(step.substr(5));
 	} else if (step == "quit") {

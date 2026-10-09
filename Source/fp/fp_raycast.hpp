@@ -66,7 +66,19 @@ struct RayHit {
 
 [[nodiscard]] bool IsOpaque(Point tile);
 
-/** @brief Casts a ray over the dPiece grid until it hits an opaque tile. */
-[[nodiscard]] RayHit CastRay(Vec2 origin, Vec2 ray);
+/**
+ * @brief Casts a ray over the dPiece grid until it hits an opaque tile.
+ * @param skip number of opaque tiles to pass through first (used to look through openings in walls)
+ */
+[[nodiscard]] RayHit CastRay(Vec2 origin, Vec2 ray, int skip = 0);
+
+/** @brief Walls with openings (arches) are looked through at most this many layers deep. */
+constexpr int MaxWallLayers = 4;
+
+/** @brief Whether the wall face at the hit is an opening (no art) at the given height above the floor. */
+[[nodiscard]] bool IsHoleAt(const RayHit &hit, float height);
+
+/** @brief CastRay, but passing through openings in the wall for a ray whose height changes by `slope` per unit of depth. */
+[[nodiscard]] RayHit CastRayThroughHoles(Vec2 origin, Vec2 ray, float slope);
 
 } // namespace devilution::fp

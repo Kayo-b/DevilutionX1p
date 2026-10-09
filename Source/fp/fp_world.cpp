@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
 
 #include "dead.h"
 #include "engine/lighting_defs.hpp"
@@ -57,12 +58,31 @@ Direction ViewRelativeDirection(Direction facing, Vec2 viewerPos, Vec2 actorPos)
 	return YawToDirection(DirectionToYaw(facing) - (viewYaw - IsoViewYaw));
 }
 
-/** Actors are drawn larger than the iso scale so they stand above the eye line and read at distance. */
-constexpr float MonsterScale = 1.7F;
+/** Monsters are drawn a little larger than the iso scale so they read at distance (1.0 would be true to the walls). */
+constexpr float MonsterScale = 1.25F;
 /** Townspeople are ordinary humans, so they stay near the player's own height. */
 constexpr float TownerScale = 1.15F;
 
-Entity MakeSpriteEntity(EntityKind kind, int id, Point tile, Vec2 pos, ClxSprite sprite, float scale = 1.0F)
+/** @brief Empty rows under the lowest visible pixel of a sprite (its feet), cached per frame of art. */
+int FootPadding(ClxSprite sprite)
+{
+	static std::unordered_map<const uint8_t *, int> cache;
+	const uint8_t *key = sprite.pixelData();
+	const auto found = cache.find(key);
+	if (found != cache.end())
+		return found->second;
+	if (cache.size() > 8000)
+		cache.clear();
+	const int padding = SpriteBottomPadding(sprite);
+	cache.emplace(key, padding);
+	return padding;
+}
+
+/**
+ * @param grounded the feet (lowest visible pixel) stand on the floor, scaled with the sprite; otherwise the sprite's
+ * bottom edge sits a fixed few pixels below the floor
+ */
+Entity MakeSpriteEntity(EntityKind kind, int id, Point tile, Vec2 pos, ClxSprite sprite, float scale = 1.0F, bool grounded = false)
 {
 	Entity entity {};
 	entity.kind = kind;
@@ -71,7 +91,7 @@ Entity MakeSpriteEntity(EntityKind kind, int id, Point tile, Vec2 pos, ClxSprite
 	entity.pos = pos;
 	entity.width = scale * static_cast<float>(sprite.width()) / SpritePixelsPerTileX;
 	entity.height = scale * static_cast<float>(sprite.height()) / SpritePixelsPerTileY;
-	entity.bottom = -FootOffsetPixels / SpritePixelsPerTileY;
+	entity.bottom = grounded ? -scale * static_cast<float>(FootPadding(sprite)) / SpritePixelsPerTileY : -FootOffsetPixels / SpritePixelsPerTileY;
 	entity.sprite = sprite;
 	entity.trn = nullptr;
 	entity.lit = true;
@@ -110,7 +130,7 @@ void CollectMonsters(Vec2 viewerPos, std::vector<Entity> &entities)
 			pos = Add(pos, ScreenToWorld(GetOffsetForWalking(monster.animInfo, monster.direction)));
 
 		const ClxSprite sprite = MonsterSprite(monster, ViewRelativeDirection(monster.direction, viewerPos, pos));
-		Entity entity = MakeSpriteEntity(EntityKind::Monster, id, monster.position.tile, pos, sprite, MonsterScale);
+		Entity entity = MakeSpriteEntity(EntityKind::Monster, id, monster.position.tile, pos, sprite, MonsterScale, true);
 		if (monster.isUnique())
 			entity.trn = monster.uniqueMonsterTRN.get();
 		if (monster.mode == MonsterMode::Petrified)
@@ -127,9 +147,7 @@ void CollectTowners(std::vector<Entity> &entities)
 		const Towner &towner = Towners[i];
 		if (!towner.anim)
 			continue;
-		Entity entity = MakeSpriteEntity(EntityKind::Towner, static_cast<int>(i), towner.position, TileCenter(towner.position), towner.currentSprite(), TownerScale);
-		// Townsperson frames have empty rows under the feet; lower the sprite so the feet touch the ground.
-		entity.bottom = -TownerScale * static_cast<float>(SpriteBottomPadding(*entity.sprite)) / SpritePixelsPerTileY;
+		Entity entity = MakeSpriteEntity(EntityKind::Towner, static_cast<int>(i), towner.position, TileCenter(towner.position), towner.currentSprite(), TownerScale, true);
 		entity.lit = false; // the iso renderer draws towners unlit
 		entities.push_back(entity);
 	}
@@ -197,8 +215,11 @@ void CollectCorpses(Vec2 viewerPos, std::vector<Entity> &entities)
 				continue;
 			const Vec2 pos = TileCenter(tile);
 			const auto facing = static_cast<Direction>((value >> 5) & 7);
-			const ClxSprite sprite = corpse.spritesForDirection(ViewRelativeDirection(facing, viewerPos, pos))[corpse.frame];
-			Entity entity = MakeSpriteEntity(EntityKind::Corpse, -1, tile, pos, sprite, MonsterScale);
+			// A lying body is a picture of the ground as the iso camera saw it, so it keeps the facing it has in the world
+			// and is drawn flat on the floor (see DrawFlatSprite) rather than as an upright billboard.
+			const ClxSprite sprite = corpse.spritesForDirection(facing)[corpse.frame];
+			Entity entity = MakeSpriteEntity(EntityKind::Corpse, -1, tile, pos, sprite, 1.0F);
+			entity.flat = true;
 			if (corpse.translationPaletteIndex != 0)
 				entity.trn = Monsters[corpse.translationPaletteIndex - 1].uniqueMonsterTRN.get();
 			entities.push_back(entity);

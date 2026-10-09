@@ -18,6 +18,11 @@
 #include "fp/fp_view.hpp"
 #include "fp/fp_world.hpp"
 #include "lua/metadoc.hpp"
+#include "monster.h"
+#include "player.h"
+#include "utils/log.hpp"
+#include "levels/tile_properties.hpp"
+#include "levels/gendung.h"
 #include "utils/str_cat.hpp"
 
 namespace devilution {
@@ -89,10 +94,104 @@ std::string DebugCmdFpInfo(std::optional<int> radius)
 	return result;
 }
 
-std::string DebugCmdFpDumpPieces(std::string path)
+std::string DebugCmdFpDumpPieces(std::string path, std::optional<int> perRow, std::optional<int> rows)
 {
-	fp::DumpSolidPieces(path.c_str(), 8, 4);
+	fp::DumpSolidPieces(path.c_str(), perRow.value_or(8), rows.value_or(4));
 	return "Dumped.";
+}
+
+std::string DebugCmdFpMap(std::optional<int> radius)
+{
+	const fp::ViewState &view = fp::GetViewState();
+	const int r = radius.value_or(10);
+	const Point center { static_cast<int>(view.x), static_cast<int>(view.y) };
+	std::string header = StrCat("map around ", center.x, ",", center.y, " (x across, y down): S solid with usable face, R solid no face, p solid with other tall art, P solid pillar, t walkable with tall art, . walkable, @ player");
+	LogInfo("{}", header);
+	for (int y = center.y - r; y <= center.y + r; y++) {
+		std::string row;
+		for (int x = center.x - r; x <= center.x + r; x++) {
+			const Point tile { x, y };
+			if (!InDungeonBounds(tile)) {
+				row += ' ';
+				continue;
+			}
+			const fp::PieceTextures &t = fp::GetPieceTextures(dPiece[x][y]);
+			const bool solid = IsTileSolid(tile);
+			char c = '.';
+			if (x == center.x && y == center.y)
+				c = '@';
+			else if (solid)
+				c = t.isPillar ? 'P' : (t.faceXUsable || t.faceYUsable) ? 'S' : (t.hasTallArt ? 'p' : 'R');
+			else if (t.hasTallArt)
+				c = 't';
+			row += c;
+		}
+		LogInfo("{:3d} {}", y, row);
+	}
+	// Art statistics of every distinct piece that is not plain floor, to calibrate the pillar rule.
+	std::vector<uint16_t> seen;
+	for (int y = center.y - r; y <= center.y + r; y++) {
+		for (int x = center.x - r; x <= center.x + r; x++) {
+			if (!InDungeonBounds({ x, y }))
+				continue;
+			const uint16_t piece = dPiece[x][y];
+			const fp::PieceTextures &t = fp::GetPieceTextures(piece);
+			if (!t.hasTallArt || std::find(seen.begin(), seen.end(), piece) != seen.end())
+				continue;
+			seen.push_back(piece);
+			int minX = 64;
+			int maxX = -1;
+			int minY = 256;
+			int opaque = 0;
+			const int columnHeight = static_cast<int>(t.column.size() / 64);
+			for (int cy = 0; cy < columnHeight - 32; cy++) {
+				for (int cx = 0; cx < 64; cx++) {
+					if (t.column[static_cast<size_t>(cy) * 64 + cx] != fp::NoPixel) {
+						minX = std::min(minX, cx);
+						maxX = std::max(maxX, cx);
+						minY = std::min(minY, cy);
+						opaque++;
+					}
+				}
+			}
+			LogInfo("piece {} at {},{} solid {} width {} ({}..{}) rows {} opaque {} faceX {} faceY {} pillar {} rowsX {} rowsY {}", piece, x, y, IsTileSolid({ x, y }) ? 1 : 0, maxX - minX + 1, minX, maxX, columnHeight - 32 - minY, opaque,
+			    t.faceXUsable ? 1 : 0, t.faceYUsable ? 1 : 0, t.isPillar ? 1 : 0, t.faceXRows, t.faceYRows);
+		}
+	}
+	return "Map logged.";
+}
+
+std::string DebugCmdFpKillMonsters()
+{
+	int killed = 0;
+	for (size_t i = 0; i < ActiveMonsterCount; i++) {
+		Monster &monster = Monsters[ActiveMonsters[i]];
+		if (monster.hitPoints <= 0 || monster.isPlayerMinion())
+			continue;
+		monster.hitPoints = 0;
+		StartMonsterDeath(monster, *MyPlayer, false);
+		killed++;
+	}
+	return StrCat("Killed ", killed, " monsters.");
+}
+
+std::string DebugCmdFpMonsterState()
+{
+	const fp::ViewState &view = fp::GetViewState();
+	std::string result;
+	for (size_t i = 0; i < ActiveMonsterCount; i++) {
+		const Monster &monster = Monsters[ActiveMonsters[i]];
+		if (std::hypot(static_cast<float>(monster.position.tile.x) - view.x, static_cast<float>(monster.position.tile.y) - view.y) > 4.0F)
+			continue;
+		StrAppend(result, "\nmonster #", ActiveMonsters[i], " hp ", monster.hitPoints, " mode ", static_cast<int>(monster.mode), " frame ", monster.animInfo.currentFrame, "/", monster.animInfo.numberOfFrames);
+	}
+	int corpses = 0;
+	for (int y = 0; y < MAXDUNY; y++)
+		for (int x = 0; x < MAXDUNX; x++)
+			if (dCorpse[x][y] != 0)
+				corpses++;
+	StrAppend(result, "\ncorpse tiles: ", corpses);
+	return result;
 }
 
 std::string DebugCmdFpOn(bool enabled)
@@ -116,7 +215,10 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "view", "(yawDegrees: number, pitch: number = nil)", "Set first-person view angles (0 = +x, 90 = +y).", &DebugCmdFpView);
 	LuaSetDocFn(table, "teleport", "(x: number, y: number)", "Move the player to a free tile.", &DebugCmdFpGoto);
 	LuaSetDocFn(table, "info", "(radius: number = 8)", "Describe the camera and nearby billboard entities.", &DebugCmdFpInfo);
-	LuaSetDocFn(table, "dumppieces", "(path: string)", "Dump a contact sheet of solid pieces as PPM.", &DebugCmdFpDumpPieces);
+	LuaSetDocFn(table, "dumppieces", "(path: string, perRow: number = 8, rows: number = 4)", "Dump a contact sheet of solid pieces as PPM.", &DebugCmdFpDumpPieces);
+	LuaSetDocFn(table, "map", "(radius: number = 10)", "Log a tile-type map around the player.", &DebugCmdFpMap);
+	LuaSetDocFn(table, "killmonsters", "()", "Kill every active monster (to look at corpses).", &DebugCmdFpKillMonsters);
+	LuaSetDocFn(table, "monsterstate", "()", "Describe monsters near the player and count corpse tiles.", &DebugCmdFpMonsterState);
 	LuaSetDocFn(table, "on", "(enabled: boolean)", "Switch between first-person and the original view.", &DebugCmdFpOn);
 	LuaSetDocFn(table, "buildings", "(enabled: boolean)", "Draw town houses as reconstructed 3D models (default) or flat billboards.", &DebugCmdFpBuildings);
 	return table;

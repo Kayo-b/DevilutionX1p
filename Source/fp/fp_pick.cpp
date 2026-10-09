@@ -82,9 +82,9 @@ Pick PickAt(Point screenPosition, bool ignoreMonsters)
 	const int y = std::clamp(screenPosition.y, 0, proj.height - 1);
 
 	const Vec2 ray = proj.columnRay(x);
-	const RayHit wall = CastRay(proj.pos, ray);
-	const float wallDepth = wall.hit ? wall.distance : std::numeric_limits<float>::infinity();
 	const float slope = proj.rowSlope(y);
+	const RayHit wall = CastRayThroughHoles(proj.pos, ray, slope);
+	const float wallDepth = wall.hit ? wall.distance : std::numeric_limits<float>::infinity();
 	const float floorDepth = slope < 0 ? EyeHeight / -slope : std::numeric_limits<float>::infinity();
 	const float ceilingDepth = slope > 0 ? (WallHeight() - EyeHeight) / slope : std::numeric_limits<float>::infinity();
 	const float surfaceDepth = std::min({ wallDepth, floorDepth, ceilingDepth, MaxPickDistance });

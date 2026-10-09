@@ -37,6 +37,9 @@ constexpr float UsableOpaqueShare = 0.6F;
 constexpr float StructureFillShare = 0.5F;
 /** Art must rise at least this many pixels above the floor diamond (about 2 tiles) to count as part of a building. */
 constexpr int StructureMinRows = 70;
+/** Upright art up to this wide (of 64 px) and at least this tall (px above the floor diamond) is a pillar. */
+constexpr int PillarMaxWidth = 34;
+constexpr int PillarMinRows = 60;
 
 /** Light tables that leave colours untouched, so extracted textures hold raw palette indices. */
 const std::array<std::array<uint8_t, LightTableSize>, NumLightingLevels> &IdentityLightTables()
@@ -71,6 +74,7 @@ struct Cache {
 	std::vector<std::unique_ptr<PieceTextures>> pieces = std::vector<std::unique_ptr<PieceTextures>>(MAXTILES);
 	std::vector<int16_t> fallbackFace;
 	std::vector<int16_t> groundFloor;
+	int wallRows = 0;
 };
 
 Cache &GetCache()
@@ -82,6 +86,7 @@ Cache &GetCache()
 		for (auto &piece : cache.pieces)
 			piece.reset();
 		cache.fallbackFace.clear();
+		cache.wallRows = 0;
 		cache.groundFloor.clear();
 	}
 	return cache;
@@ -161,7 +166,7 @@ std::vector<int16_t> RenderColumnWithAlpha(uint16_t pieceId, int height, bool fl
  * vertex; the right column (x 32..63) the edge from the top vertex down to the right vertex. Face texture
  * column u runs along the edge in world-axis order, row 0 is the top of the wall.
  */
-std::vector<int16_t> ExtractFace(const std::vector<int16_t> &column, int height, bool leftEdge, bool &usable)
+std::vector<int16_t> ExtractFace(const std::vector<int16_t> &column, int height, bool leftEdge, bool &usable, int &rows, std::vector<uint8_t> &holes)
 {
 	const int faceHeight = FaceTextureHeight();
 	const int bottom = height - 1;
@@ -183,6 +188,25 @@ std::vector<int16_t> ExtractFace(const std::vector<int16_t> &column, int height,
 		}
 	}
 	usable = static_cast<float>(opaque) >= UsableOpaqueShare * static_cast<float>(face.size());
+	// A texel without art is an opening (arch, window) if there is art above it in the same column.
+	holes.assign(face.size(), 0);
+	for (int u = 0; u < FaceTextureWidth; u++) {
+		bool artAbove = false;
+		for (int row = 0; row < faceHeight; row++) {
+			const size_t at = static_cast<size_t>(row) * FaceTextureWidth + u;
+			if (face[at] != NoPixel)
+				artAbove = true;
+			else if (artAbove)
+				holes[at] = 1;
+		}
+	}
+	rows = 0;
+	for (int row = 0; row < faceHeight && rows == 0; row++)
+		for (int u = 0; u < FaceTextureWidth; u++)
+			if (face[static_cast<size_t>(row) * FaceTextureWidth + u] != NoPixel) {
+				rows = faceHeight - row;
+				break;
+			}
 	return face;
 }
 
@@ -208,10 +232,11 @@ std::unique_ptr<PieceTextures> BuildPieceTextures(uint16_t pieceId)
 	auto textures = std::make_unique<PieceTextures>();
 	const int height = ColumnHeight();
 	const std::vector<int16_t> column = RenderColumnWithAlpha(pieceId, height, false);
-	textures->faceX = ExtractFace(column, height, true, textures->faceXUsable);
-	textures->faceY = ExtractFace(column, height, false, textures->faceYUsable);
+	textures->faceX = ExtractFace(column, height, true, textures->faceXUsable, textures->faceXRows, textures->holesX);
+	textures->faceY = ExtractFace(column, height, false, textures->faceYUsable, textures->faceYRows, textures->holesY);
 	textures->hasTallArt = false;
 	textures->isStructure = false;
+	textures->isPillar = false;
 	int opaque = 0;
 	int minRow = height;
 	int minX = ColumnWidth;
@@ -227,6 +252,7 @@ std::unique_ptr<PieceTextures> BuildPieceTextures(uint16_t pieceId)
 			}
 		}
 	}
+	textures->isPillar = textures->hasTallArt && maxX - minX + 1 <= PillarMaxWidth && height - TILE_HEIGHT - minRow >= PillarMinRows;
 	if (textures->hasTallArt) {
 		// Trees are sparse; buildings fill their bounding box.
 		const int box = (height - TILE_HEIGHT - minRow) * (maxX - minX + 1);
@@ -288,13 +314,44 @@ const std::vector<int16_t> &GetGroundFloor()
 	return cache.groundFloor;
 }
 
+int LevelWallRows()
+{
+	Cache &cache = GetCache();
+	if (cache.wallRows > 0)
+		return cache.wallRows;
+	// The art height of the usable wall faces, weighted by how often each piece occurs.
+	std::unordered_map<int, int> votes;
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			if (!IsTileSolid({ x, y }))
+				continue;
+			const PieceTextures &textures = GetPieceTextures(dPiece[x][y]);
+			if (textures.faceXUsable && textures.faceXRows > 0)
+				votes[textures.faceXRows]++;
+			if (textures.faceYUsable && textures.faceYRows > 0)
+				votes[textures.faceYRows]++;
+		}
+	}
+	int best = FaceTextureHeight();
+	int bestVotes = 0;
+	for (const auto &[rows, count] : votes) {
+		if (count > bestVotes) {
+			bestVotes = count;
+			best = rows;
+		}
+	}
+	cache.wallRows = std::min(best, FaceTextureHeight());
+	return cache.wallRows;
+}
+
 const std::vector<int16_t> &GetFallbackFace()
 {
 	Cache &cache = GetCache();
 	if (!cache.fallbackFace.empty())
 		return cache.fallbackFace;
 
-	// The most common piece among solid tiles that has a full face is the level's typical plain wall.
+	// The most common solid piece with a plain face (almost no openings) is the level's typical wall; arches
+	// would show up as repeating arcs wherever the filler is used.
 	std::unordered_map<uint16_t, int> counts;
 	for (int y = 0; y < MAXDUNY; y++) {
 		for (int x = 0; x < MAXDUNX; x++) {
@@ -306,12 +363,26 @@ const std::vector<int16_t> &GetFallbackFace()
 	for (const auto &[piece, count] : counts)
 		ranked.emplace_back(count, piece);
 	std::sort(ranked.begin(), ranked.end(), std::greater<>());
-	for (const auto &[count, piece] : ranked) {
-		const PieceTextures &textures = GetPieceTextures(piece);
-		if (textures.faceXUsable || textures.faceYUsable) {
-			cache.fallbackFace = textures.faceXUsable ? textures.faceX : textures.faceY;
-			break;
+	auto opaqueShare = [](const std::vector<int16_t> &face) {
+		return static_cast<float>(std::count_if(face.begin(), face.end(), [](int16_t p) { return p != NoPixel; })) / static_cast<float>(face.size());
+	};
+	for (const float minShare : { 0.55F, 0.0F }) {
+		for (const auto &[count, piece] : ranked) {
+			const PieceTextures &textures = GetPieceTextures(piece);
+			for (const bool useX : { true, false }) {
+				if (!(useX ? textures.faceXUsable : textures.faceYUsable))
+					continue;
+				const std::vector<int16_t> &face = useX ? textures.faceX : textures.faceY;
+				if (opaqueShare(face) < minShare)
+					continue;
+				cache.fallbackFace = face;
+				break;
+			}
+			if (!cache.fallbackFace.empty())
+				break;
 		}
+		if (!cache.fallbackFace.empty())
+			break;
 	}
 	if (cache.fallbackFace.empty())
 		cache.fallbackFace.assign(static_cast<size_t>(FaceTextureWidth) * FaceTextureHeight(), 0);

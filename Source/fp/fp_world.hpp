@@ -42,6 +42,8 @@ struct Entity {
 	/** Colour translation used instead of lighting (unique monsters, petrified), as the iso renderer does. */
 	const uint8_t *trn;
 	bool lit; // apply the light table of the entity's tile
+	/** Drawn lying on the floor from the original iso art (corpses), instead of standing up as a billboard. */
+	bool flat = false;
 };
 
 /**

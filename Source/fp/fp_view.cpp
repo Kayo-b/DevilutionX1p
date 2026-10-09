@@ -95,56 +95,89 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj)
 	}
 }
 
-/** @brief The face texture for a wall hit: the piece's own art for that face, else the other face, else the level's plain wall. */
-const std::vector<int16_t> &FaceForHit(const RayHit &hit)
+/** @brief The art and openings used for one wall face. */
+struct FaceArt {
+	const std::vector<int16_t> *face;
+	const std::vector<uint8_t> *holes; // null if the face has no openings to look through
+};
+
+/** @brief The face art for a wall hit: the piece's own art for that face, else the other face, else the level's plain wall. */
+FaceArt FaceForHit(const RayHit &hit)
 {
 	if (!InDungeonBounds(hit.tile)) {
 		// The edge of the map is a plain black wall.
 		static const std::vector<int16_t> Black(static_cast<size_t>(FaceTextureWidth) * ColumnPixelHeight, 0);
-		return Black;
+		return { &Black, nullptr };
 	}
 	const PieceTextures &textures = GetPieceTextures(dPiece[hit.tile.x][hit.tile.y]);
 	const bool wantX = hit.xSide;
 	if (wantX ? textures.faceXUsable : textures.faceYUsable)
-		return wantX ? textures.faceX : textures.faceY;
+		return wantX ? FaceArt { &textures.faceX, &textures.holesX } : FaceArt { &textures.faceY, &textures.holesY };
 	if (wantX ? textures.faceYUsable : textures.faceXUsable)
-		return wantX ? textures.faceY : textures.faceX;
-	return GetFallbackFace();
+		return wantX ? FaceArt { &textures.faceY, &textures.holesY } : FaceArt { &textures.faceX, &textures.holesX };
+	return { &GetFallbackFace(), nullptr };
 }
 
-void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &zBuffer)
+/**
+ * @brief Draws the walls. Openings in a wall (arches) are looked through to the walls behind them.
+ * @param depthBuffer per-pixel camera depth (width * height); wall pixels write their depth, the rest stays infinite
+ */
+void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &zBuffer, std::vector<float> &depthBuffer)
 {
 	const float wallHeight = WallHeight();
+	const int wallRows = LevelWallRows();
 	const int faceHeight = FaceTextureHeight();
 	const std::vector<int16_t> &fallback = GetFallbackFace();
+	static std::vector<uint8_t> filled;
+	filled.resize(static_cast<size_t>(proj.height));
 
 	for (int x = 0; x < proj.width; x++) {
-		const RayHit hit = CastRay(proj.pos, proj.columnRay(x));
-		zBuffer[x] = hit.distance;
-		if (!hit.hit)
-			continue;
+		const Vec2 ray = proj.columnRay(x);
+		std::fill(filled.begin(), filled.end(), uint8_t { 0 });
+		zBuffer[x] = MaxRayDistance;
+		for (int layer = 0; layer < MaxWallLayers; layer++) {
+			const RayHit hit = CastRay(proj.pos, ray, layer);
+			if (!hit.hit)
+				break;
+			if (layer == 0)
+				zBuffer[x] = hit.distance;
 
-		const float scale = proj.focal / std::max(hit.distance, 0.01F);
-		const float topF = static_cast<float>(proj.horizon) - (wallHeight - EyeHeight) * scale;
-		const float bottomF = static_cast<float>(proj.horizon) + EyeHeight * scale;
-		const int top = std::max(0, static_cast<int>(topF));
-		const int bottom = std::min(proj.height - 1, static_cast<int>(bottomF));
+			const float scale = proj.focal / std::max(hit.distance, 0.01F);
+			const float topF = static_cast<float>(proj.horizon) - (wallHeight - EyeHeight) * scale;
+			const float bottomF = static_cast<float>(proj.horizon) + EyeHeight * scale;
+			const int top = std::max(0, static_cast<int>(topF));
+			const int bottom = std::min(proj.height - 1, static_cast<int>(bottomF));
 
-		// Position along the face in world-axis order; the hidden back faces show the art mirrored.
-		float along = hit.xSide ? hit.point.y - static_cast<float>(hit.tile.y) : hit.point.x - static_cast<float>(hit.tile.x);
-		if (hit.backFace)
-			along = 1.0F - along;
-		const int u = std::clamp(static_cast<int>(along * FaceTextureWidth), 0, FaceTextureWidth - 1);
+			// Position along the face in world-axis order; the hidden back faces show the art mirrored.
+			float along = hit.xSide ? hit.point.y - static_cast<float>(hit.tile.y) : hit.point.x - static_cast<float>(hit.tile.x);
+			if (hit.backFace)
+				along = 1.0F - along;
+			const int u = std::clamp(static_cast<int>(along * FaceTextureWidth), 0, FaceTextureWidth - 1);
 
-		const std::vector<int16_t> &face = FaceForHit(hit);
-		const uint8_t *light = LightTables[LightAt(hit.previous)].data();
-		const float rowsPerPixel = static_cast<float>(faceHeight) / (bottomF - topF);
-		for (int y = top; y <= bottom; y++) {
-			const int row = std::clamp(static_cast<int>((static_cast<float>(y) - topF) * rowsPerPixel), 0, faceHeight - 1);
-			int16_t texel = face[row * FaceTextureWidth + u];
-			if (texel == NoPixel)
-				texel = fallback[row * FaceTextureWidth + u];
-			*out.at(x, y) = light[texel];
+			const FaceArt art = FaceForHit(hit);
+			const uint8_t *light = LightTables[LightAt(hit.previous)].data();
+			// The wall covers the bottom `wallRows` rows of the face texture.
+			const float rowsPerPixel = static_cast<float>(wallRows) / (bottomF - topF);
+			bool sawOpening = false;
+			for (int y = top; y <= bottom; y++) {
+				if (filled[y] != 0)
+					continue;
+				const int row = std::clamp(faceHeight - wallRows + static_cast<int>((static_cast<float>(y) - topF) * rowsPerPixel), 0, faceHeight - 1);
+				const size_t at = static_cast<size_t>(row) * FaceTextureWidth + u;
+				int16_t texel = (*art.face)[at];
+				if (texel == NoPixel) {
+					if (art.holes != nullptr && (*art.holes)[at] != 0) {
+						sawOpening = true; // look through to the next wall
+						continue;
+					}
+					texel = fallback[at];
+				}
+				*out.at(x, y) = light[texel];
+				filled[y] = 1;
+				depthBuffer[static_cast<size_t>(y) * proj.width + x] = hit.distance;
+			}
+			if (!sawOpening)
+				break;
 		}
 	}
 }
@@ -172,7 +205,7 @@ void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::
 	const int y0 = std::max(0, rect.top);
 	const int y1 = std::min(proj.height, rect.bottom);
 	for (int x = x0; x < x1; x++) {
-		if (zBuffer[x] < rect.depth)
+		if (depthBuffer == nullptr && zBuffer[x] < rect.depth)
 			continue;
 		const int u = (x - rect.left) * spriteWidth / screenWidth;
 		for (int y = y0; y < y1; y++) {
@@ -182,7 +215,74 @@ void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::
 			if (pixel <= 0)
 				continue;
 			if (depthBuffer != nullptr && rect.depth > (*depthBuffer)[static_cast<size_t>(y) * proj.width + x])
-				continue; // behind a building
+				continue; // behind a wall or building
+			uint8_t color = static_cast<uint8_t>(pixel);
+			if (entity.trn != nullptr)
+				color = entity.trn[color];
+			else if (light != nullptr)
+				color = light[color];
+			*out.at(x, y) = color;
+		}
+	}
+}
+
+/**
+ * @brief Draws an iso sprite lying on the floor (a corpse) with the exact ground mapping of the original view.
+ *
+ * The sprite is anchored at the bottom vertex of its tile's diamond. A floor point q (in tiles, relative to that vertex)
+ * appeared on screen at ((qx - qy) * 32, (qx + qy) * 16), so each floor pixel of the first-person view looks its colour up
+ * through that mapping. Perspective, foreshortening and walls then come out right from any viewpoint.
+ */
+void DrawFlatSprite(const Surface &out, const Projection &proj, const std::vector<float> &depthBuffer, const Entity &entity)
+{
+	static std::vector<int16_t> pixels;
+	const ClxSprite sprite = *entity.sprite;
+	DecodeClx(sprite, pixels);
+	const int width = sprite.width();
+	const int height = sprite.height();
+	const Vec2 anchor { static_cast<float>(entity.tile.x) + 1.0F, static_cast<float>(entity.tile.y) + 1.0F };
+
+	// Screen rectangle that can contain the footprint.
+	float minX = 1e30F;
+	float maxX = -1e30F;
+	float minY = 1e30F;
+	float maxY = -1e30F;
+	for (const int cornerX : { 0, width }) {
+		for (const int cornerY : { 0, height }) {
+			const float sx = static_cast<float>(cornerX) - static_cast<float>(width) / 2.0F;
+			const float sy = static_cast<float>(cornerY - height);
+			const Vec2 world { anchor.x + (sx / 32.0F + sy / 16.0F) / 2.0F, anchor.y + (sy / 16.0F - sx / 32.0F) / 2.0F };
+			const float rx = world.x - proj.pos.x;
+			const float ry = world.y - proj.pos.y;
+			const float depth = std::max(rx * proj.dir.x + ry * proj.dir.y, 0.1F);
+			const float lateral = (rx * proj.plane.x + ry * proj.plane.y) / (PlaneLength * PlaneLength);
+			minX = std::min(minX, (lateral / depth + 1.0F) * static_cast<float>(proj.width) / 2.0F);
+			maxX = std::max(maxX, (lateral / depth + 1.0F) * static_cast<float>(proj.width) / 2.0F);
+			const float sy2 = static_cast<float>(proj.horizon) + EyeHeight / depth * proj.focal;
+			minY = std::min(minY, sy2);
+			maxY = std::max(maxY, sy2);
+		}
+	}
+	const int x0 = std::max(0, static_cast<int>(std::floor(minX)));
+	const int x1 = std::min(proj.width - 1, static_cast<int>(std::ceil(maxX)));
+	const int y0 = std::max(proj.horizon + 1, static_cast<int>(std::floor(minY)));
+	const int y1 = std::min(proj.height - 1, static_cast<int>(std::ceil(maxY)));
+	const uint8_t *light = entity.lit ? LightTables[LightAt(entity.tile)].data() : nullptr;
+	for (int y = y0; y <= y1; y++) {
+		const float depth = EyeHeight / -proj.rowSlope(y); // floor distance for this row
+		for (int x = x0; x <= x1; x++) {
+			if (depth >= depthBuffer[static_cast<size_t>(y) * proj.width + x])
+				continue; // behind a wall
+			const Vec2 ray = proj.columnRay(x);
+			const float qx = proj.pos.x + ray.x * depth - anchor.x;
+			const float qy = proj.pos.y + ray.y * depth - anchor.y;
+			const int px = static_cast<int>(std::floor((qx - qy) * 32.0F + static_cast<float>(width) / 2.0F));
+			const int py = static_cast<int>(std::floor((qx + qy) * 16.0F + static_cast<float>(height)));
+			if (px < 0 || py < 0 || px >= width || py >= height)
+				continue;
+			const int16_t pixel = pixels[static_cast<size_t>(py) * width + px];
+			if (pixel <= 0)
+				continue;
 			uint8_t color = static_cast<uint8_t>(pixel);
 			if (entity.trn != nullptr)
 				color = entity.trn[color];
@@ -200,7 +300,16 @@ void DrawEntities(const Surface &out, const Projection &proj, const std::vector<
 	CollectEntities(proj.pos, entities);
 
 	sorted.clear();
+	// Things lying on the floor go first; everything standing is drawn over them.
+	if (depthBuffer != nullptr) {
+		for (const Entity &entity : entities) {
+			if (entity.flat && entity.sprite)
+				DrawFlatSprite(out, proj, *depthBuffer, entity);
+		}
+	}
 	for (const Entity &entity : entities) {
+		if (entity.flat && depthBuffer != nullptr)
+			continue;
 		const BillboardRect rect = ProjectBillboard(proj, entity);
 		if (rect.visible && (entity.sprite || entity.pixels != nullptr))
 			sorted.emplace_back(rect, &entity);
@@ -257,13 +366,11 @@ void DrawFirstPersonView(const Surface &out)
 	zBuffer.resize(static_cast<size_t>(proj.width));
 
 	DrawFloorAndCeiling(out, proj);
-	DrawWalls(out, proj, zBuffer);
-	const bool drawBuildings = leveltype == DTYPE_TOWN && BuildingsEnabled();
-	if (drawBuildings) {
-		depthBuffer.assign(static_cast<size_t>(proj.width) * proj.height, std::numeric_limits<float>::infinity());
+	depthBuffer.assign(static_cast<size_t>(proj.width) * proj.height, std::numeric_limits<float>::infinity());
+	DrawWalls(out, proj, zBuffer, depthBuffer);
+	if (leveltype == DTYPE_TOWN && BuildingsEnabled())
 		DrawBuildings(out, proj, zBuffer, depthBuffer);
-	}
-	DrawEntities(out, proj, zBuffer, drawBuildings ? &depthBuffer : nullptr);
+	DrawEntities(out, proj, zBuffer, &depthBuffer);
 	if (IsMouseLookActive())
 		DrawCrosshair(out);
 	DrawDebugInfo(out, proj);
