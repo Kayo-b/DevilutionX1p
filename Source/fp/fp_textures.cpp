@@ -33,6 +33,10 @@ namespace {
 constexpr int FloorHeight = 32;
 /** A face counts as usable art if at least this share of its pixels is opaque. */
 constexpr float UsableOpaqueShare = 0.6F;
+/** Share of its bounding box that tall art must fill to count as a building rather than foliage. */
+constexpr float StructureFillShare = 0.5F;
+/** Art must rise at least this many pixels above the floor diamond (about 2 tiles) to count as part of a building. */
+constexpr int StructureMinRows = 70;
 
 /** Light tables that leave colours untouched, so extracted textures hold raw palette indices. */
 const std::array<std::array<uint8_t, LightTableSize>, NumLightingLevels> &IdentityLightTables()
@@ -207,12 +211,28 @@ std::unique_ptr<PieceTextures> BuildPieceTextures(uint16_t pieceId)
 	textures->faceX = ExtractFace(column, height, true, textures->faceXUsable);
 	textures->faceY = ExtractFace(column, height, false, textures->faceYUsable);
 	textures->hasTallArt = false;
-	for (int y = 0; y < height - TILE_HEIGHT && !textures->hasTallArt; y++)
-		for (int x = 0; x < ColumnWidth; x++)
+	textures->isStructure = false;
+	int opaque = 0;
+	int minRow = height;
+	int minX = ColumnWidth;
+	int maxX = -1;
+	for (int y = 0; y < height - TILE_HEIGHT; y++) {
+		for (int x = 0; x < ColumnWidth; x++) {
 			if (column[static_cast<size_t>(y) * ColumnWidth + x] != NoPixel) {
 				textures->hasTallArt = true;
-				break;
+				opaque++;
+				minRow = std::min(minRow, y);
+				minX = std::min(minX, x);
+				maxX = std::max(maxX, x);
 			}
+		}
+	}
+	if (textures->hasTallArt) {
+		// Trees are sparse; buildings fill their bounding box.
+		const int box = (height - TILE_HEIGHT - minRow) * (maxX - minX + 1);
+		const bool tallEnough = height - TILE_HEIGHT - minRow >= StructureMinRows;
+		textures->isStructure = tallEnough && static_cast<float>(opaque) >= StructureFillShare * static_cast<float>(box);
+	}
 	textures->column = column;
 	// Only floor pieces have floor triangles; other pieces' bottom micros must not be decoded as triangles.
 	// In town, solid pieces without tall art (water, the void outside the map) are flat ground as well.

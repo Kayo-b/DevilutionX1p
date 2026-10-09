@@ -17,6 +17,7 @@
 #include "levels/gendung.h"
 #include "missiles.h"
 #include "monster.h"
+#include "fp/fp_buildings.hpp"
 #include "fp/fp_textures.hpp"
 #include "utils/clx_decode.hpp"
 #include "objects.h"
@@ -219,6 +220,8 @@ void CollectProps(Vec2 viewerPos, std::vector<Entity> &entities)
 			const PieceTextures &textures = GetPieceTextures(dPiece[x][y]);
 			if (!textures.hasTallArt)
 				continue;
+			if (BuildingsEnabled() && IsBuildingTile(tile))
+				continue; // drawn as part of a reconstructed building
 			Entity entity {};
 			entity.kind = EntityKind::Prop;
 			entity.id = -1;

@@ -82,6 +82,8 @@ set(libdevilutionx_SRCS
   engine/render/automap_render.cpp
   engine/render/scrollrt.cpp
 
+  fp/fp_autotest.cpp
+  fp/fp_buildings.cpp
   fp/fp_controls.cpp
   fp/fp_pick.cpp
   fp/fp_raycast.cpp

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,7 @@
 #include "engine/palette.h"
 #include "engine/render/text_render.hpp"
 #include "fp/fp_controls.hpp"
+#include "fp/fp_buildings.hpp"
 #include "fp/fp_raycast.hpp"
 #include "fp/fp_textures.hpp"
 #include "fp/fp_world.hpp"
@@ -147,7 +149,7 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 	}
 }
 
-void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::vector<float> &zBuffer, const Entity &entity, const BillboardRect &rect)
+void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::vector<float> &zBuffer, const std::vector<float> *depthBuffer, const Entity &entity, const BillboardRect &rect)
 {
 	static std::vector<int16_t> decoded;
 	const std::vector<int16_t> *source = entity.pixels;
@@ -179,6 +181,8 @@ void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::
 			// Colour 0 is the baked-in ground shadow, which would stand upright on a billboard.
 			if (pixel <= 0)
 				continue;
+			if (depthBuffer != nullptr && rect.depth > (*depthBuffer)[static_cast<size_t>(y) * proj.width + x])
+				continue; // behind a building
 			uint8_t color = static_cast<uint8_t>(pixel);
 			if (entity.trn != nullptr)
 				color = entity.trn[color];
@@ -189,7 +193,7 @@ void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::
 	}
 }
 
-void DrawEntities(const Surface &out, const Projection &proj, const std::vector<float> &zBuffer)
+void DrawEntities(const Surface &out, const Projection &proj, const std::vector<float> &zBuffer, const std::vector<float> *depthBuffer)
 {
 	static std::vector<Entity> entities;
 	static std::vector<std::pair<BillboardRect, const Entity *>> sorted;
@@ -205,7 +209,7 @@ void DrawEntities(const Surface &out, const Projection &proj, const std::vector<
 	std::sort(sorted.begin(), sorted.end(), [](const auto &a, const auto &b) { return a.first.depth > b.first.depth; });
 
 	for (const auto &[rect, entity] : sorted)
-		DrawSpriteBillboard(out, proj, zBuffer, *entity, rect);
+		DrawSpriteBillboard(out, proj, zBuffer, depthBuffer, *entity, rect);
 }
 
 void DrawCrosshair(const Surface &out)
@@ -247,13 +251,19 @@ void ToggleFirstPerson()
 void DrawFirstPersonView(const Surface &out)
 {
 	static std::vector<float> zBuffer;
+	static std::vector<float> depthBuffer;
 
 	const Projection proj = GetProjection();
 	zBuffer.resize(static_cast<size_t>(proj.width));
 
 	DrawFloorAndCeiling(out, proj);
 	DrawWalls(out, proj, zBuffer);
-	DrawEntities(out, proj, zBuffer);
+	const bool drawBuildings = leveltype == DTYPE_TOWN && BuildingsEnabled();
+	if (drawBuildings) {
+		depthBuffer.assign(static_cast<size_t>(proj.width) * proj.height, std::numeric_limits<float>::infinity());
+		DrawBuildings(out, proj, zBuffer, depthBuffer);
+	}
+	DrawEntities(out, proj, zBuffer, drawBuildings ? &depthBuffer : nullptr);
 	if (IsMouseLookActive())
 		DrawCrosshair(out);
 	DrawDebugInfo(out, proj);

@@ -36,6 +36,8 @@ struct PieceTextures {
 	std::vector<int16_t> column;
 	/** Whether the piece draws art above its floor diamond (a tree, house, rock) rather than a flat floor. */
 	bool hasTallArt;
+	/** Dense tall art (walls, roofs) that is better rebuilt as part of a 3D building than drawn as a flat billboard. */
+	bool isStructure;
 };
 
 /** @brief Height in pixels of wall face textures on the current level (depends on the tileset). */

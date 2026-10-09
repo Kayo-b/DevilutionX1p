@@ -37,6 +37,7 @@
 #include "engine/render/text_render.hpp"
 #include "engine/trn.hpp"
 #include "engine/world_tile.hpp"
+#include "fp/fp_autotest.hpp"
 #include "fp/fp_controls.hpp"
 #include "fp/fp_view.hpp"
 #include "game_mode.hpp"
@@ -1320,6 +1321,7 @@ void DrawView(const Surface &out, Point startPosition)
 	DebugCoordsMap.clear();
 #endif
 	Displacement offset = {};
+	fp::AutotestTick();
 	if (fp::IsFirstPersonActive()) {
 		UpdateMissilesRendererData();
 		fp::DrawFirstPersonView(out.subregionY(0, gnViewportHeight));

@@ -11,6 +11,7 @@
 
 #include <sol/sol.hpp>
 
+#include "fp/fp_buildings.hpp"
 #include "fp/fp_controls.hpp"
 #include "fp/fp_raycast.hpp"
 #include "fp/fp_textures.hpp"
@@ -94,6 +95,19 @@ std::string DebugCmdFpDumpPieces(std::string path)
 	return "Dumped.";
 }
 
+std::string DebugCmdFpOn(bool enabled)
+{
+	if (fp::IsFirstPersonActive() != enabled)
+		fp::ToggleFirstPerson();
+	return enabled ? "First person on." : "First person off.";
+}
+
+std::string DebugCmdFpBuildings(bool enabled)
+{
+	fp::SetBuildingsEnabled(enabled);
+	return enabled ? "Reconstructed buildings on." : "Reconstructed buildings off (flat billboards).";
+}
+
 } // namespace
 
 sol::table LuaDevFirstPersonModule(sol::state_view &lua)
@@ -103,6 +117,8 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "teleport", "(x: number, y: number)", "Move the player to a free tile.", &DebugCmdFpGoto);
 	LuaSetDocFn(table, "info", "(radius: number = 8)", "Describe the camera and nearby billboard entities.", &DebugCmdFpInfo);
 	LuaSetDocFn(table, "dumppieces", "(path: string)", "Dump a contact sheet of solid pieces as PPM.", &DebugCmdFpDumpPieces);
+	LuaSetDocFn(table, "on", "(enabled: boolean)", "Switch between first-person and the original view.", &DebugCmdFpOn);
+	LuaSetDocFn(table, "buildings", "(enabled: boolean)", "Draw town houses as reconstructed 3D models (default) or flat billboards.", &DebugCmdFpBuildings);
 	return table;
 }
 
