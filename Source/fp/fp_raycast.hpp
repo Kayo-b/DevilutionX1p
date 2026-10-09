@@ -21,7 +21,7 @@ constexpr float PlaneLength = 1.0F; // tan(FOV / 2), FOV = 90 degrees
 constexpr float SpritePixelsPerTileX = 45.25F;
 constexpr float SpritePixelsPerTileY = 39.2F;
 /** A warrior sprite is ~1.8 tiles tall at this scale. */
-constexpr float EyeHeight = 1.6F;
+constexpr float EyeHeight = 1.3F;
 
 /** @brief Wall (and ceiling) height of the current level, from the height of its wall art. */
 [[nodiscard]] float WallHeight();

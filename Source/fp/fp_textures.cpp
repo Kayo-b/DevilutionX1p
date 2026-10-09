@@ -11,9 +11,13 @@
 #include <memory>
 #include <numeric>
 #include <span>
+#include <string>
 #include <unordered_map>
 
+#include <cstdio>
+
 #include "engine/light_tables.hpp"
+#include "engine/palette.h"
 #include "engine/render/dun_render.hpp"
 #include "engine/render/light_render.hpp"
 #include "engine/surface.hpp"
@@ -26,7 +30,6 @@ namespace devilution::fp {
 
 namespace {
 
-constexpr int ColumnWidth = 64;
 constexpr int FloorHeight = 32;
 /** A face counts as usable art if at least this share of its pixels is opaque. */
 constexpr float UsableOpaqueShare = 0.6F;
@@ -63,6 +66,7 @@ struct Cache {
 	LevelKey key {};
 	std::vector<std::unique_ptr<PieceTextures>> pieces = std::vector<std::unique_ptr<PieceTextures>>(MAXTILES);
 	std::vector<int16_t> fallbackFace;
+	std::vector<int16_t> groundFloor;
 };
 
 Cache &GetCache()
@@ -74,6 +78,7 @@ Cache &GetCache()
 		for (auto &piece : cache.pieces)
 			piece.reset();
 		cache.fallbackFace.clear();
+		cache.groundFloor.clear();
 	}
 	return cache;
 }
@@ -201,8 +206,21 @@ std::unique_ptr<PieceTextures> BuildPieceTextures(uint16_t pieceId)
 	const std::vector<int16_t> column = RenderColumnWithAlpha(pieceId, height, false);
 	textures->faceX = ExtractFace(column, height, true, textures->faceXUsable);
 	textures->faceY = ExtractFace(column, height, false, textures->faceYUsable);
+	textures->hasTallArt = false;
+	for (int y = 0; y < height - TILE_HEIGHT && !textures->hasTallArt; y++)
+		for (int x = 0; x < ColumnWidth; x++)
+			if (column[static_cast<size_t>(y) * ColumnWidth + x] != NoPixel) {
+				textures->hasTallArt = true;
+				break;
+			}
+	textures->column = column;
 	// Only floor pieces have floor triangles; other pieces' bottom micros must not be decoded as triangles.
-	if (!HasAnyOf(SOLData[pieceId], TileProperties::Solid | TileProperties::BlockMissile))
+	// In town, solid pieces without tall art (water, the void outside the map) are flat ground as well.
+	if (leveltype == DTYPE_TOWN && textures->hasTallArt) {
+		// A town building or tree stands on its own ground: take it from the bottom of the drawn column.
+		const std::vector<int16_t> ground(column.end() - static_cast<ptrdiff_t>(FloorHeight) * ColumnWidth, column.end());
+		textures->floor = ExtractFloor(ground);
+	} else if (!HasAnyOf(SOLData[pieceId], TileProperties::Solid | TileProperties::BlockMissile) || leveltype == DTYPE_TOWN)
 		textures->floor = ExtractFloor(RenderColumnWithAlpha(pieceId, FloorHeight, true));
 	else
 		textures->floor.assign(static_cast<size_t>(FloorTextureSize) * FloorTextureSize, NoPixel);
@@ -223,6 +241,31 @@ const PieceTextures &GetPieceTextures(uint16_t pieceId)
 	if (textures == nullptr)
 		textures = BuildPieceTextures(pieceId);
 	return *textures;
+}
+
+const std::vector<int16_t> &GetGroundFloor()
+{
+	Cache &cache = GetCache();
+	if (!cache.groundFloor.empty())
+		return cache.groundFloor;
+	std::unordered_map<uint16_t, int> counts;
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			if (!IsTileSolid({ x, y }))
+				counts[dPiece[x][y]]++;
+		}
+	}
+	int best = 0;
+	uint16_t bestPiece = 0;
+	for (const auto &[piece, count] : counts) {
+		if (count > best) {
+			best = count;
+			bestPiece = piece;
+		}
+	}
+	cache.groundFloor = ExtractFloor(RenderColumnWithAlpha(bestPiece, FloorHeight, true));
+	std::replace(cache.groundFloor.begin(), cache.groundFloor.end(), NoPixel, int16_t { 0 });
+	return cache.groundFloor;
 }
 
 const std::vector<int16_t> &GetFallbackFace()
@@ -256,5 +299,63 @@ const std::vector<int16_t> &GetFallbackFace()
 	std::replace(cache.fallbackFace.begin(), cache.fallbackFace.end(), NoPixel, int16_t { 0 });
 	return cache.fallbackFace;
 }
+
+#ifdef _DEBUG
+void DumpSolidPieces(const char *path, int perRow, int rows)
+{
+	std::unordered_map<uint16_t, int> counts;
+	for (int y = 0; y < MAXDUNY; y++)
+		for (int x = 0; x < MAXDUNX; x++)
+			if (IsTileSolid({ x, y }))
+				counts[dPiece[x][y]]++;
+	std::vector<std::pair<int, uint16_t>> ranked;
+	for (const auto &[piece, count] : counts)
+		ranked.emplace_back(count, piece);
+	std::sort(ranked.begin(), ranked.end(), std::greater<>());
+
+	const int height = ColumnHeight();
+	const int cellW = ColumnWidth + 2 * FaceTextureWidth + 8;
+	const int width = cellW * perRow;
+	const int totalHeight = (height + 4) * rows;
+	std::vector<uint8_t> image(static_cast<size_t>(width) * totalHeight * 3, 40);
+	auto put = [&](int x, int y, int color) {
+		const SDL_Color c = logical_palette[color];
+		uint8_t *px = &image[(static_cast<size_t>(y) * width + x) * 3];
+		px[0] = c.r;
+		px[1] = c.g;
+		px[2] = c.b;
+	};
+	const std::string listPath = std::string(path) + ".txt";
+	FILE *list = std::fopen(listPath.c_str(), "w");
+	for (size_t i = 0; i < ranked.size() && i < static_cast<size_t>(perRow * rows); i++) {
+		const uint16_t piece = ranked[i].second;
+		const int ox = static_cast<int>(i % perRow) * cellW;
+		const int oy = static_cast<int>(i / perRow) * (height + 4);
+		const std::vector<int16_t> column = RenderColumnWithAlpha(piece, height, false);
+		for (int y = 0; y < height; y++)
+			for (int x = 0; x < ColumnWidth; x++)
+				if (column[static_cast<size_t>(y) * ColumnWidth + x] != NoPixel)
+					put(ox + x, oy + y, column[static_cast<size_t>(y) * ColumnWidth + x]);
+		const PieceTextures &t = GetPieceTextures(piece);
+		const std::vector<int16_t> *faces[2] = { &t.faceX, &t.faceY };
+		for (int f = 0; f < 2; f++)
+			for (int y = 0; y < FaceTextureHeight(); y++)
+				for (int x = 0; x < FaceTextureWidth; x++) {
+					const int16_t px = (*faces[f])[static_cast<size_t>(y) * FaceTextureWidth + x];
+					if (px != NoPixel)
+						put(ox + ColumnWidth + f * FaceTextureWidth + x, oy + y, px);
+				}
+		if (list != nullptr)
+			std::fprintf(list, "%zu piece %d count %d usableX %d usableY %d\n", i, piece, ranked[i].first, t.faceXUsable, t.faceYUsable);
+	}
+	if (list != nullptr)
+		std::fclose(list);
+	if (FILE *f = std::fopen(path, "wb")) {
+		std::fprintf(f, "P6\n%d %d\n255\n", width, totalHeight);
+		std::fwrite(image.data(), 1, image.size(), f);
+		std::fclose(f);
+	}
+}
+#endif
 
 } // namespace devilution::fp

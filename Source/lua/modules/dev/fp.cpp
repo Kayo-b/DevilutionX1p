@@ -13,6 +13,7 @@
 
 #include "fp/fp_controls.hpp"
 #include "fp/fp_raycast.hpp"
+#include "fp/fp_textures.hpp"
 #include "fp/fp_view.hpp"
 #include "fp/fp_world.hpp"
 #include "lua/metadoc.hpp"
@@ -62,6 +63,7 @@ const char *KindName(fp::EntityKind kind)
 	case fp::EntityKind::Item: return "item";
 	case fp::EntityKind::Missile: return "missile";
 	case fp::EntityKind::Corpse: return "corpse";
+	case fp::EntityKind::Prop: return "prop";
 	}
 	return "?";
 }
@@ -86,6 +88,12 @@ std::string DebugCmdFpInfo(std::optional<int> radius)
 	return result;
 }
 
+std::string DebugCmdFpDumpPieces(std::string path)
+{
+	fp::DumpSolidPieces(path.c_str(), 8, 4);
+	return "Dumped.";
+}
+
 } // namespace
 
 sol::table LuaDevFirstPersonModule(sol::state_view &lua)
@@ -94,6 +102,7 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "view", "(yawDegrees: number, pitch: number = nil)", "Set first-person view angles (0 = +x, 90 = +y).", &DebugCmdFpView);
 	LuaSetDocFn(table, "teleport", "(x: number, y: number)", "Move the player to a free tile.", &DebugCmdFpGoto);
 	LuaSetDocFn(table, "info", "(radius: number = 8)", "Describe the camera and nearby billboard entities.", &DebugCmdFpInfo);
+	LuaSetDocFn(table, "dumppieces", "(path: string)", "Dump a contact sheet of solid pieces as PPM.", &DebugCmdFpDumpPieces);
 	return table;
 }
 

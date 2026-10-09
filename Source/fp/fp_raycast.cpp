@@ -10,6 +10,7 @@
 #include "fp/fp_controls.hpp"
 #include "fp/fp_textures.hpp"
 #include "levels/dun_tile_data.hpp"
+#include "levels/gendung.h"
 #include "levels/tile_properties.hpp"
 #include "utils/ui_fwd.h"
 
@@ -37,7 +38,10 @@ Projection GetProjection()
 
 bool IsOpaque(Point tile)
 {
-	return !InDungeonBounds(tile) || IsTileSolid(tile);
+	if (!InDungeonBounds(tile))
+		return true;
+	// Town has no walls: its buildings and trees are drawn as billboards (see CollectProps) and the rest is ground.
+	return leveltype != DTYPE_TOWN && IsTileSolid(tile);
 }
 
 RayHit CastRay(Vec2 origin, Vec2 ray)

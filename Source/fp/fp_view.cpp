@@ -48,7 +48,8 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj)
 	const Vec2 rayLeft { proj.dir.x - proj.plane.x, proj.dir.y - proj.plane.y };
 	const Vec2 rayRight { proj.dir.x + proj.plane.x, proj.dir.y + proj.plane.y };
 	const float wallHeight = WallHeight();
-	const bool hasCeiling = leveltype != DTYPE_TOWN;
+	const bool isTown = leveltype == DTYPE_TOWN;
+	const bool hasCeiling = !isTown;
 
 	for (int y = 0; y < proj.height; y++) {
 		const bool isFloor = y > proj.horizon;
@@ -81,7 +82,9 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj)
 			const std::vector<int16_t> &floor = GetPieceTextures(dPiece[tile.x][tile.y]).floor;
 			const int u = std::min(static_cast<int>((wx - fx) * FloorTextureSize), FloorTextureSize - 1);
 			const int v = std::min(static_cast<int>((wy - fy) * FloorTextureSize), FloorTextureSize - 1);
-			const int16_t texel = floor[v * FloorTextureSize + u];
+			int16_t texel = floor[v * FloorTextureSize + u];
+			if (isTown && texel <= 0)
+				texel = GetGroundFloor()[v * FloorTextureSize + u]; // baked shadows and holes in town ground
 			uint8_t light = LightAt(tile);
 			if (!isFloor)
 				light = std::min<uint8_t>(light + CeilingExtraDarkness, LightsMax);
@@ -93,6 +96,11 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj)
 /** @brief The face texture for a wall hit: the piece's own art for that face, else the other face, else the level's plain wall. */
 const std::vector<int16_t> &FaceForHit(const RayHit &hit)
 {
+	if (!InDungeonBounds(hit.tile)) {
+		// The edge of the map is a plain black wall.
+		static const std::vector<int16_t> Black(static_cast<size_t>(FaceTextureWidth) * ColumnPixelHeight, 0);
+		return Black;
+	}
 	const PieceTextures &textures = GetPieceTextures(dPiece[hit.tile.x][hit.tile.y]);
 	const bool wantX = hit.xSide;
 	if (wantX ? textures.faceXUsable : textures.faceYUsable)
@@ -139,52 +147,20 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 	}
 }
 
-/**
- * @brief Decodes a CLX frame into a top-to-bottom pixel buffer; -1 marks transparent pixels.
- *
- * CLX pixel data runs bottom-to-top, left-to-right, and runs may continue onto the next row.
- */
-void DecodeClx(ClxSprite sprite, std::vector<int16_t> &pixels)
-{
-	const int width = sprite.width();
-	const int height = sprite.height();
-	pixels.assign(static_cast<size_t>(width * height), -1);
-	const size_t total = pixels.size();
-
-	const uint8_t *src = sprite.pixelData();
-	const uint8_t *end = src + sprite.pixelDataSize();
-	size_t index = 0; // linear position in bottom-to-top order
-	auto put = [&](uint8_t color) {
-		const size_t x = index % width;
-		const size_t row = height - 1 - index / width;
-		pixels[row * width + x] = color;
-		index++;
-	};
-	while (src < end && index < total) {
-		uint8_t control = *src++;
-		if (!IsClxOpaque(control)) {
-			index += control;
-		} else if (IsClxOpaqueFill(control)) {
-			const uint8_t count = GetClxOpaqueFillWidth(control);
-			const uint8_t color = *src++;
-			for (uint8_t i = 0; i < count && index < total; i++)
-				put(color);
-		} else {
-			const uint8_t count = GetClxOpaquePixelsWidth(control);
-			for (uint8_t i = 0; i < count && index < total; i++)
-				put(*src++);
-		}
-	}
-}
-
 void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::vector<float> &zBuffer, const Entity &entity, const BillboardRect &rect)
 {
-	static std::vector<int16_t> pixels;
-	const ClxSprite sprite = *entity.sprite;
-	DecodeClx(sprite, pixels);
-
-	const int spriteWidth = sprite.width();
-	const int spriteHeight = sprite.height();
+	static std::vector<int16_t> decoded;
+	const std::vector<int16_t> *source = entity.pixels;
+	int spriteWidth = entity.pixelsWidth;
+	int spriteHeight = entity.pixelsHeight;
+	if (source == nullptr) {
+		const ClxSprite sprite = *entity.sprite;
+		DecodeClx(sprite, decoded);
+		source = &decoded;
+		spriteWidth = sprite.width();
+		spriteHeight = sprite.height();
+	}
+	const std::vector<int16_t> &pixels = *source;
 	const uint8_t *light = entity.lit ? LightTables[LightAt(entity.tile)].data() : nullptr;
 	const int screenWidth = rect.right - rect.left;
 	const int screenHeight = rect.bottom - rect.top;
@@ -222,7 +198,7 @@ void DrawEntities(const Surface &out, const Projection &proj, const std::vector<
 	sorted.clear();
 	for (const Entity &entity : entities) {
 		const BillboardRect rect = ProjectBillboard(proj, entity);
-		if (rect.visible && entity.sprite)
+		if (rect.visible && (entity.sprite || entity.pixels != nullptr))
 			sorted.emplace_back(rect, &entity);
 	}
 	// Far to near, so nearer sprites overwrite farther ones.

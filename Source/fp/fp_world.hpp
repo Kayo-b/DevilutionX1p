@@ -23,6 +23,7 @@ enum class EntityKind : uint8_t {
 	Item,
 	Missile,
 	Corpse,
+	Prop, // level art drawn as a billboard (town buildings, trees, rocks)
 };
 
 struct Entity {
@@ -34,10 +35,24 @@ struct Entity {
 	float height;
 	float bottom; // height of the sprite's bottom edge above the floor (negative: extends below)
 	std::optional<ClxSprite> sprite;
+	/** Alternative to sprite: raw palette pixels (-1 transparent), row 0 = top. */
+	const std::vector<int16_t> *pixels = nullptr;
+	int pixelsWidth = 0;
+	int pixelsHeight = 0;
 	/** Colour translation used instead of lighting (unique monsters, petrified), as the iso renderer does. */
 	const uint8_t *trn;
 	bool lit; // apply the light table of the entity's tile
 };
+
+/**
+ * @brief Decodes a CLX frame into a top-to-bottom pixel buffer; -1 marks transparent pixels.
+ *
+ * CLX pixel data runs bottom-to-top, left-to-right, and runs may continue onto the next row.
+ */
+void DecodeClx(ClxSprite sprite, std::vector<int16_t> &pixels);
+
+/** @brief Number of empty (or shadow-only, colour 0) pixel rows under the lowest visible pixel of a sprite. */
+[[nodiscard]] int SpriteBottomPadding(ClxSprite sprite);
 
 /** @brief Light table index of a tile (LightsMax outside the dungeon). */
 [[nodiscard]] uint8_t LightAt(Point tile);

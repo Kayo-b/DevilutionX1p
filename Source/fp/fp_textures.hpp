@@ -16,6 +16,9 @@ namespace devilution::fp {
 
 /** @brief Width of a wall face texture (one tile edge spans 32px in iso). */
 constexpr int FaceTextureWidth = 32;
+/** @brief Size of a piece's whole iso column in pixels. */
+constexpr int ColumnWidth = 64;
+constexpr int ColumnPixelHeight = 256; // MicroTileLen / 2 rows of 32px micros
 /** @brief Size of a floor texture (a tile is a 64x32 diamond in iso). */
 constexpr int FloorTextureSize = 32;
 /** @brief Texture pixel that has no art (shows the fallback texture instead). */
@@ -29,6 +32,10 @@ struct PieceTextures {
 	std::vector<int16_t> floor;
 	bool faceXUsable;
 	bool faceYUsable;
+	/** The whole iso column (ColumnWidth x ColumnHeight, row 0 = top), for drawing the piece as a billboard. */
+	std::vector<int16_t> column;
+	/** Whether the piece draws art above its floor diamond (a tree, house, rock) rather than a flat floor. */
+	bool hasTallArt;
 };
 
 /** @brief Height in pixels of wall face textures on the current level (depends on the tileset). */
@@ -39,5 +46,13 @@ struct PieceTextures {
 
 /** @brief A wall face to use where a piece has no usable art for the face being drawn. */
 [[nodiscard]] const std::vector<int16_t> &GetFallbackFace();
+
+/** @brief Floor of the level's most common walkable piece, used where a piece has no ground art of its own. */
+[[nodiscard]] const std::vector<int16_t> &GetGroundFloor();
+
+#ifdef _DEBUG
+/** @brief Debug: writes a PPM contact sheet (iso column, face X, face Y) of the most common solid pieces. */
+void DumpSolidPieces(const char *path, int perRow, int rows);
+#endif
 
 } // namespace devilution::fp

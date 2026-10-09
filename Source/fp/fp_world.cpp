@@ -17,6 +17,8 @@
 #include "levels/gendung.h"
 #include "missiles.h"
 #include "monster.h"
+#include "fp/fp_textures.hpp"
+#include "utils/clx_decode.hpp"
 #include "objects.h"
 #include "towners.h"
 #include "utils/is_of.hpp"
@@ -28,6 +30,7 @@ namespace {
 /** Actor sprites have their feet a few pixels above the frame's bottom edge (2-11px in the original art). */
 constexpr float FootOffsetPixels = 6.0F;
 constexpr int CorpseSearchRadius = 24;
+constexpr int PropSearchRadius = 26;
 /** Direction the iso camera looks in (screen up = North). Sprites are drawn as seen from this direction. */
 const float IsoViewYaw = DirectionToYaw(Direction::North);
 
@@ -53,15 +56,20 @@ Direction ViewRelativeDirection(Direction facing, Vec2 viewerPos, Vec2 actorPos)
 	return YawToDirection(DirectionToYaw(facing) - (viewYaw - IsoViewYaw));
 }
 
-Entity MakeSpriteEntity(EntityKind kind, int id, Point tile, Vec2 pos, ClxSprite sprite)
+/** Actors are drawn larger than the iso scale so they stand above the eye line and read at distance. */
+constexpr float MonsterScale = 1.7F;
+/** Townspeople are ordinary humans, so they stay near the player's own height. */
+constexpr float TownerScale = 1.15F;
+
+Entity MakeSpriteEntity(EntityKind kind, int id, Point tile, Vec2 pos, ClxSprite sprite, float scale = 1.0F)
 {
 	Entity entity {};
 	entity.kind = kind;
 	entity.id = id;
 	entity.tile = tile;
 	entity.pos = pos;
-	entity.width = static_cast<float>(sprite.width()) / SpritePixelsPerTileX;
-	entity.height = static_cast<float>(sprite.height()) / SpritePixelsPerTileY;
+	entity.width = scale * static_cast<float>(sprite.width()) / SpritePixelsPerTileX;
+	entity.height = scale * static_cast<float>(sprite.height()) / SpritePixelsPerTileY;
 	entity.bottom = -FootOffsetPixels / SpritePixelsPerTileY;
 	entity.sprite = sprite;
 	entity.trn = nullptr;
@@ -101,7 +109,7 @@ void CollectMonsters(Vec2 viewerPos, std::vector<Entity> &entities)
 			pos = Add(pos, ScreenToWorld(GetOffsetForWalking(monster.animInfo, monster.direction)));
 
 		const ClxSprite sprite = MonsterSprite(monster, ViewRelativeDirection(monster.direction, viewerPos, pos));
-		Entity entity = MakeSpriteEntity(EntityKind::Monster, id, monster.position.tile, pos, sprite);
+		Entity entity = MakeSpriteEntity(EntityKind::Monster, id, monster.position.tile, pos, sprite, MonsterScale);
 		if (monster.isUnique())
 			entity.trn = monster.uniqueMonsterTRN.get();
 		if (monster.mode == MonsterMode::Petrified)
@@ -118,7 +126,9 @@ void CollectTowners(std::vector<Entity> &entities)
 		const Towner &towner = Towners[i];
 		if (!towner.anim)
 			continue;
-		Entity entity = MakeSpriteEntity(EntityKind::Towner, static_cast<int>(i), towner.position, TileCenter(towner.position), towner.currentSprite());
+		Entity entity = MakeSpriteEntity(EntityKind::Towner, static_cast<int>(i), towner.position, TileCenter(towner.position), towner.currentSprite(), TownerScale);
+		// Townsperson frames have empty rows under the feet; lower the sprite so the feet touch the ground.
+		entity.bottom = -TownerScale * static_cast<float>(SpriteBottomPadding(*entity.sprite)) / SpritePixelsPerTileY;
 		entity.lit = false; // the iso renderer draws towners unlit
 		entities.push_back(entity);
 	}
@@ -187,7 +197,7 @@ void CollectCorpses(Vec2 viewerPos, std::vector<Entity> &entities)
 			const Vec2 pos = TileCenter(tile);
 			const auto facing = static_cast<Direction>((value >> 5) & 7);
 			const ClxSprite sprite = corpse.spritesForDirection(ViewRelativeDirection(facing, viewerPos, pos))[corpse.frame];
-			Entity entity = MakeSpriteEntity(EntityKind::Corpse, -1, tile, pos, sprite);
+			Entity entity = MakeSpriteEntity(EntityKind::Corpse, -1, tile, pos, sprite, MonsterScale);
 			if (corpse.translationPaletteIndex != 0)
 				entity.trn = Monsters[corpse.translationPaletteIndex - 1].uniqueMonsterTRN.get();
 			entities.push_back(entity);
@@ -195,7 +205,88 @@ void CollectCorpses(Vec2 viewerPos, std::vector<Entity> &entities)
 	}
 }
 
+/** @brief Town buildings, trees and rocks: each tile with tall art becomes a billboard of its own iso column. */
+void CollectProps(Vec2 viewerPos, std::vector<Entity> &entities)
+{
+	if (leveltype != DTYPE_TOWN)
+		return;
+	const Point center { static_cast<int>(viewerPos.x), static_cast<int>(viewerPos.y) };
+	for (int y = center.y - PropSearchRadius; y <= center.y + PropSearchRadius; y++) {
+		for (int x = center.x - PropSearchRadius; x <= center.x + PropSearchRadius; x++) {
+			const Point tile { x, y };
+			if (!InDungeonBounds(tile))
+				continue;
+			const PieceTextures &textures = GetPieceTextures(dPiece[x][y]);
+			if (!textures.hasTallArt)
+				continue;
+			Entity entity {};
+			entity.kind = EntityKind::Prop;
+			entity.id = -1;
+			entity.tile = tile;
+			entity.pos = TileCenter(tile);
+			entity.width = static_cast<float>(ColumnWidth) / SpritePixelsPerTileX;
+			entity.height = static_cast<float>(ColumnPixelHeight) / SpritePixelsPerTileY;
+			entity.bottom = -FootOffsetPixels / SpritePixelsPerTileY;
+			entity.pixels = &textures.column;
+			entity.pixelsWidth = ColumnWidth;
+			entity.pixelsHeight = ColumnPixelHeight;
+			entity.lit = true;
+			entities.push_back(entity);
+		}
+	}
+}
+
 } // namespace
+
+/**
+ * @brief Decodes a CLX frame into a top-to-bottom pixel buffer; -1 marks transparent pixels.
+ *
+ * CLX pixel data runs bottom-to-top, left-to-right, and runs may continue onto the next row.
+ */
+void DecodeClx(ClxSprite sprite, std::vector<int16_t> &pixels)
+{
+	const int width = sprite.width();
+	const int height = sprite.height();
+	pixels.assign(static_cast<size_t>(width * height), -1);
+	const size_t total = pixels.size();
+
+	const uint8_t *src = sprite.pixelData();
+	const uint8_t *end = src + sprite.pixelDataSize();
+	size_t index = 0; // linear position in bottom-to-top order
+	auto put = [&](uint8_t color) {
+		const size_t x = index % width;
+		const size_t row = height - 1 - index / width;
+		pixels[row * width + x] = color;
+		index++;
+	};
+	while (src < end && index < total) {
+		uint8_t control = *src++;
+		if (!IsClxOpaque(control)) {
+			index += control;
+		} else if (IsClxOpaqueFill(control)) {
+			const uint8_t count = GetClxOpaqueFillWidth(control);
+			const uint8_t color = *src++;
+			for (uint8_t i = 0; i < count && index < total; i++)
+				put(color);
+		} else {
+			const uint8_t count = GetClxOpaquePixelsWidth(control);
+			for (uint8_t i = 0; i < count && index < total; i++)
+				put(*src++);
+		}
+	}
+}
+
+int SpriteBottomPadding(ClxSprite sprite)
+{
+	std::vector<int16_t> pixels;
+	DecodeClx(sprite, pixels);
+	const int width = sprite.width();
+	for (int row = sprite.height() - 1; row >= 0; row--)
+		for (int x = 0; x < width; x++)
+			if (pixels[static_cast<size_t>(row) * width + x] > 0)
+				return sprite.height() - 1 - row;
+	return 0;
+}
 
 uint8_t LightAt(Point tile)
 {
@@ -213,11 +304,12 @@ void CollectEntities(Vec2 viewerPos, std::vector<Entity> &entities)
 	CollectItems(entities);
 	CollectMissiles(entities);
 	CollectCorpses(viewerPos, entities);
+	CollectProps(viewerPos, entities);
 }
 
 bool IsSelectableKind(EntityKind kind)
 {
-	return IsNoneOf(kind, EntityKind::Missile, EntityKind::Corpse);
+	return IsNoneOf(kind, EntityKind::Missile, EntityKind::Corpse, EntityKind::Prop);
 }
 
 BillboardRect ProjectBillboard(const Projection &projection, const Entity &entity)
