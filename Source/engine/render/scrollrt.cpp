@@ -1321,6 +1321,7 @@ void DrawView(const Surface &out, Point startPosition)
 #endif
 	Displacement offset = {};
 	if (fp::IsFirstPersonActive()) {
+		UpdateMissilesRendererData();
 		fp::DrawFirstPersonView(out.subregionY(0, gnViewportHeight));
 	} else {
 		CalcFirstTilePosition(startPosition, offset);

@@ -5,6 +5,7 @@
 
 #include "lua/metadoc.hpp"
 #include "lua/modules/dev/display.hpp"
+#include "lua/modules/dev/fp.hpp"
 #include "lua/modules/dev/items.hpp"
 #include "lua/modules/dev/level.hpp"
 #include "lua/modules/dev/monsters.hpp"
@@ -19,6 +20,7 @@ sol::table LuaDevModule(sol::state_view &lua)
 {
 	sol::table table = lua.create_table();
 	LuaSetDoc(table, "display", "", "Debugging HUD and rendering commands.", LuaDevDisplayModule(lua));
+	LuaSetDoc(table, "fp", "", "First-person view commands.", LuaDevFirstPersonModule(lua));
 	LuaSetDoc(table, "items", "", "Item-related commands.", LuaDevItemsModule(lua));
 	LuaSetDoc(table, "level", "", "Level-related commands.", LuaDevLevelModule(lua));
 	LuaSetDoc(table, "monsters", "", "Monster-related commands.", LuaDevMonstersModule(lua));

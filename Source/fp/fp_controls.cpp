@@ -27,6 +27,7 @@
 #include "controls/plrctrls.h"
 #include "cursor.h"
 #include "diablo.h"
+#include "automap.h"
 #include "doom.h"
 #include "effects.h"
 #include "engine/render/scrollrt.h"
@@ -55,6 +56,8 @@ constexpr float CollisionRadius = 0.2F;     // half-size of the camera's collisi
 constexpr float MouseSensitivity = 0.0025F; // radians per mouse count
 constexpr float StickTurnSpeed = 3.0F;      // radians per second at full deflection
 constexpr float StickPitchSpeed = 1.5F;     // focal fractions per second at full deflection
+constexpr float KeyTurnSpeed = 2.5F;        // radians per second (arrow keys)
+constexpr float KeyPitchSpeed = 1.0F;       // focal fractions per second (arrow keys)
 constexpr float MaxPitch = 0.6F;
 constexpr float StepSoundDistance = 0.9F; // tiles between footstep sounds
 constexpr float Pi = 3.14159265F;
@@ -188,6 +191,19 @@ void ApplyLook(float dt)
 	if (!NeedsCursor()) {
 		View.yaw += rightStickX * StickTurnSpeed * dt;
 		View.pitch += rightStickY * StickPitchSpeed * dt;
+	}
+
+	// Arrow keys turn and look for keyboard-only play; the automap uses them for scrolling.
+	if (!NeedsCursor() && KeyboardMovementAllowed() && !AutomapActive) {
+#ifdef USE_SDL3
+		const bool *keys = SDL_GetKeyboardState(nullptr);
+#else
+		const Uint8 *keys = SDL_GetKeyboardState(nullptr);
+#endif
+		if (keys[SDL_SCANCODE_LEFT]) View.yaw -= KeyTurnSpeed * dt;
+		if (keys[SDL_SCANCODE_RIGHT]) View.yaw += KeyTurnSpeed * dt;
+		if (keys[SDL_SCANCODE_UP]) View.pitch += KeyPitchSpeed * dt;
+		if (keys[SDL_SCANCODE_DOWN]) View.pitch -= KeyPitchSpeed * dt;
 	}
 
 	View.yaw = std::remainder(View.yaw, 2.0F * Pi);
@@ -382,6 +398,24 @@ void ProcessFrame()
 	ApplyMovement(player, dt);
 	ApplyFacing(player);
 	UpdateLightOffset(player);
+}
+
+void SetViewAngles(float yaw, float pitch)
+{
+	View.yaw = std::remainder(yaw, 2.0F * Pi);
+	View.pitch = std::clamp(pitch, -MaxPitch, MaxPitch);
+}
+
+bool TeleportPlayer(Point tile)
+{
+	Player &player = *MyPlayer;
+	if (!InDungeonBounds(tile) || !IsTileWalkable(tile) || dMonster[tile.x][tile.y] != 0 || player._pmode != PM_STAND)
+		return false;
+	MovePlayerToTile(player, tile);
+	const Vec2 center = TileCenter(tile);
+	View.x = center.x;
+	View.y = center.y;
+	return true;
 }
 
 void PinMouseToCrosshair()

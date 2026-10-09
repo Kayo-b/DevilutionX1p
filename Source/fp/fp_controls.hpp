@@ -11,6 +11,8 @@
 #include <SDL.h>
 #endif
 
+#include "engine/point.hpp"
+
 namespace devilution::fp {
 
 struct ViewState {
@@ -39,6 +41,10 @@ bool HandleEvent(const SDL_Event &event);
 
 /** @brief Per-frame update: look, movement, collision and syncing the player's logical tile. */
 void ProcessFrame();
+
+/** @brief Debug helpers (console): set the view angles, or move the player to a free tile. */
+void SetViewAngles(float yaw, float pitch);
+bool TeleportPlayer(Point tile);
 
 /** @brief While the mouse is captured, clicks act on the crosshair: call after taking the position from a mouse event. */
 void PinMouseToCrosshair();

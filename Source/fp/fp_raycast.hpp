@@ -12,8 +12,10 @@ namespace devilution::fp {
 
 // World units are tiles.
 constexpr float PlaneLength = 1.0F; // tan(FOV / 2), FOV = 90 degrees
-constexpr float WallHeight = 1.5F;
-constexpr float EyeHeight = 0.75F;
+// Matched to the original art (see SpritePixelsPerTileY): a warrior is ~1.8 tiles tall and cathedral
+// walls are about twice that.
+constexpr float WallHeight = 3.4F;
+constexpr float EyeHeight = 1.6F;
 constexpr float MaxRayDistance = 48.0F;
 
 /** @brief Camera plus the screen mapping of the game viewport. */

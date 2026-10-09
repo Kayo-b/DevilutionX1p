@@ -23,6 +23,7 @@
 #include "fp/fp_world.hpp"
 #include "levels/dun_tile_data.hpp"
 #include "levels/gendung.h"
+#include "utils/clx_decode.hpp"
 #include "utils/str_cat.hpp"
 
 namespace devilution::fp {
@@ -30,13 +31,6 @@ namespace devilution::fp {
 namespace {
 
 bool FirstPersonActive = false;
-
-uint8_t LightAt(Point tile)
-{
-	if (!InDungeonBounds(tile))
-		return LightsMax;
-	return dLight[tile.x][tile.y];
-}
 
 uint8_t Shade(uint8_t color, uint8_t light)
 {
@@ -93,48 +87,97 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 	}
 }
 
-uint8_t EntityColor(EntityKind kind)
+/**
+ * @brief Decodes a CLX frame into a top-to-bottom pixel buffer; -1 marks transparent pixels.
+ *
+ * CLX pixel data runs bottom-to-top, left-to-right, and runs may continue onto the next row.
+ */
+void DecodeClx(ClxSprite sprite, std::vector<int16_t> &pixels)
 {
-	switch (kind) {
-	case EntityKind::Monster:
-		return PAL16_RED + 4;
-	case EntityKind::Towner:
-		return PAL16_ORANGE + 4;
-	case EntityKind::Object:
-		return PAL8_YELLOW + 2;
-	case EntityKind::Item:
-		return PAL16_YELLOW + 2;
+	const int width = sprite.width();
+	const int height = sprite.height();
+	pixels.assign(static_cast<size_t>(width * height), -1);
+	const size_t total = pixels.size();
+
+	const uint8_t *src = sprite.pixelData();
+	const uint8_t *end = src + sprite.pixelDataSize();
+	size_t index = 0; // linear position in bottom-to-top order
+	auto put = [&](uint8_t color) {
+		const size_t x = index % width;
+		const size_t row = height - 1 - index / width;
+		pixels[row * width + x] = color;
+		index++;
+	};
+	while (src < end && index < total) {
+		uint8_t control = *src++;
+		if (!IsClxOpaque(control)) {
+			index += control;
+		} else if (IsClxOpaqueFill(control)) {
+			const uint8_t count = GetClxOpaqueFillWidth(control);
+			const uint8_t color = *src++;
+			for (uint8_t i = 0; i < count && index < total; i++)
+				put(color);
+		} else {
+			const uint8_t count = GetClxOpaquePixelsWidth(control);
+			for (uint8_t i = 0; i < count && index < total; i++)
+				put(*src++);
+		}
 	}
-	return PAL16_GRAY;
 }
 
-/** @brief Placeholder billboards (flat coloured boxes) until real sprites land in M3. */
+void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::vector<float> &zBuffer, const Entity &entity, const BillboardRect &rect)
+{
+	static std::vector<int16_t> pixels;
+	const ClxSprite sprite = *entity.sprite;
+	DecodeClx(sprite, pixels);
+
+	const int spriteWidth = sprite.width();
+	const int spriteHeight = sprite.height();
+	const uint8_t *light = entity.lit ? LightTables[LightAt(entity.tile)].data() : nullptr;
+	const int screenWidth = rect.right - rect.left;
+	const int screenHeight = rect.bottom - rect.top;
+
+	const int x0 = std::max(0, rect.left);
+	const int x1 = std::min(proj.width, rect.right);
+	const int y0 = std::max(0, rect.top);
+	const int y1 = std::min(proj.height, rect.bottom);
+	for (int x = x0; x < x1; x++) {
+		if (zBuffer[x] < rect.depth)
+			continue;
+		const int u = (x - rect.left) * spriteWidth / screenWidth;
+		for (int y = y0; y < y1; y++) {
+			const int v = (y - rect.top) * spriteHeight / screenHeight;
+			const int16_t pixel = pixels[v * spriteWidth + u];
+			// Colour 0 is the baked-in ground shadow, which would stand upright on a billboard.
+			if (pixel <= 0)
+				continue;
+			uint8_t color = static_cast<uint8_t>(pixel);
+			if (entity.trn != nullptr)
+				color = entity.trn[color];
+			else if (light != nullptr)
+				color = light[color];
+			*out.at(x, y) = color;
+		}
+	}
+}
+
 void DrawEntities(const Surface &out, const Projection &proj, const std::vector<float> &zBuffer)
 {
 	static std::vector<Entity> entities;
 	static std::vector<std::pair<BillboardRect, const Entity *>> sorted;
-	CollectEntities(entities);
+	CollectEntities(proj.pos, entities);
 
 	sorted.clear();
 	for (const Entity &entity : entities) {
-		const BillboardRect rect = ProjectBillboard(proj, entity.pos, entity.width, entity.height);
-		if (rect.visible)
+		const BillboardRect rect = ProjectBillboard(proj, entity);
+		if (rect.visible && entity.sprite)
 			sorted.emplace_back(rect, &entity);
 	}
-	// Far to near, so nearer boxes overwrite farther ones.
+	// Far to near, so nearer sprites overwrite farther ones.
 	std::sort(sorted.begin(), sorted.end(), [](const auto &a, const auto &b) { return a.first.depth > b.first.depth; });
 
-	for (const auto &[rect, entity] : sorted) {
-		const uint8_t color = Shade(EntityColor(entity->kind), LightAt(entity->tile));
-		const int top = std::max(0, rect.top);
-		const int bottom = std::min(proj.height - 1, rect.bottom);
-		for (int x = std::max(0, rect.centerX - rect.halfWidth); x < std::min(proj.width, rect.centerX + rect.halfWidth); x++) {
-			if (zBuffer[x] < rect.depth)
-				continue;
-			for (int y = top; y <= bottom; y++)
-				*out.at(x, y) = color;
-		}
-	}
+	for (const auto &[rect, entity] : sorted)
+		DrawSpriteBillboard(out, proj, zBuffer, *entity, rect);
 }
 
 void DrawCrosshair(const Surface &out)

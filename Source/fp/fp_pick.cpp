@@ -8,8 +8,10 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 #include <vector>
 
+#include "engine/render/clx_render.hpp"
 #include "fp/fp_raycast.hpp"
 #include "levels/dun_tile_data.hpp"
 #include "monster.h"
@@ -20,8 +22,8 @@ namespace devilution::fp {
 namespace {
 
 constexpr float MaxPickDistance = 24.0F;
-// Hit boxes are a little wider than the drawn billboards so aiming isn't fiddly.
-constexpr float TargetWidthScale = 1.3F;
+// Aiming tolerance around opaque sprite pixels, in screen pixels.
+constexpr int AimTolerance = 6;
 // Items lie on the floor; also accept the crosshair landing on the floor near them.
 constexpr float ItemFloorRadius = 0.6F;
 
@@ -40,6 +42,28 @@ bool IsSelectable(const Entity &entity, bool ignoreMonsters)
 		return Objects[entity.id].canInteractWith();
 	case EntityKind::Item:
 		return true;
+	}
+	return false;
+}
+
+/** @brief Whether the screen position lands on (or within AimTolerance of) an opaque pixel of the billboard. */
+bool HitsSprite(const Entity &entity, const BillboardRect &rect, int x, int y)
+{
+	if (x < rect.left - AimTolerance || x >= rect.right + AimTolerance || y < rect.top - AimTolerance || y >= rect.bottom + AimTolerance)
+		return false;
+	if (!entity.sprite)
+		return true;
+	const ClxSprite sprite = *entity.sprite;
+	const int screenWidth = rect.right - rect.left;
+	const int screenHeight = rect.bottom - rect.top;
+	for (const auto [dx, dy] : { std::pair { 0, 0 }, { -AimTolerance, 0 }, { AimTolerance, 0 }, { 0, -AimTolerance }, { 0, AimTolerance } }) {
+		const int sx = x + dx - rect.left;
+		const int sy = y + dy - rect.top;
+		if (sx < 0 || sx >= screenWidth || sy < 0 || sy >= screenHeight)
+			continue;
+		const Point pixel { sx * sprite.width() / screenWidth, sy * sprite.height() / screenHeight };
+		if (IsPointWithinClx(pixel, sprite))
+			return true;
 	}
 	return false;
 }
@@ -79,20 +103,19 @@ Pick PickAt(Point screenPosition, bool ignoreMonsters)
 	}
 
 	static std::vector<Entity> entities;
-	CollectEntities(entities);
+	CollectEntities(proj.pos, entities);
 	const Vec2 floorPoint { proj.pos.x + ray.x * floorDepth, proj.pos.y + ray.y * floorDepth };
 
 	for (const Entity &entity : entities) {
-		if (!IsSelectable(entity, ignoreMonsters))
+		if (!IsSelectableKind(entity.kind) || !IsSelectable(entity, ignoreMonsters))
 			continue;
-		const BillboardRect rect = ProjectBillboard(proj, entity.pos, entity.width * TargetWidthScale, entity.height);
-		if (!rect.visible || rect.depth >= wallDepth)
+		const BillboardRect rect = ProjectBillboard(proj, entity);
+		if (!rect.visible || rect.depth >= wallDepth || rect.depth >= bestDepth + 0.25F)
 			continue;
-		bool hit = x >= rect.centerX - rect.halfWidth && x <= rect.centerX + rect.halfWidth && y >= rect.top && y <= rect.bottom;
-		if (!hit && entity.kind == EntityKind::Item && floorDepth < wallDepth) {
+		bool hit = HitsSprite(entity, rect, x, y);
+		if (!hit && entity.kind == EntityKind::Item && floorDepth < wallDepth)
 			hit = std::hypot(floorPoint.x - entity.pos.x, floorPoint.y - entity.pos.y) <= ItemFloorRadius;
-		}
-		if (!hit || rect.depth >= bestDepth + 0.25F)
+		if (!hit)
 			continue;
 		pick = { true, entity.kind, entity.id, entity.tile, entity.tile };
 		bestDepth = rect.depth;

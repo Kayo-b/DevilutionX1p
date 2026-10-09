@@ -103,6 +103,7 @@ set(libdevilutionx_SRCS
   lua/modules/hellfire.cpp
   lua/modules/dev.cpp
   lua/modules/dev/display.cpp
+  lua/modules/dev/fp.cpp
   lua/modules/dev/items.cpp
   lua/modules/dev/level.cpp
   lua/modules/dev/level/map.cpp
