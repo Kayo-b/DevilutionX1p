@@ -37,6 +37,7 @@
 #include "engine/render/text_render.hpp"
 #include "engine/trn.hpp"
 #include "engine/world_tile.hpp"
+#include "fp/fp_view.hpp"
 #include "game_mode.hpp"
 #include "gmenu.h"
 #include "headless_mode.hpp"
@@ -1316,8 +1317,12 @@ void DrawView(const Surface &out, Point startPosition)
 	DebugCoordsMap.clear();
 #endif
 	Displacement offset = {};
-	CalcFirstTilePosition(startPosition, offset);
-	DrawGame(out, startPosition, offset);
+	if (fp::IsFirstPersonActive()) {
+		fp::DrawFirstPersonView(out.subregionY(0, gnViewportHeight));
+	} else {
+		CalcFirstTilePosition(startPosition, offset);
+		DrawGame(out, startPosition, offset);
+	}
 	if (AutomapActive) {
 		DrawAutomap(out.subregionY(0, gnViewportHeight));
 	}
@@ -1391,7 +1396,8 @@ void DrawView(const Surface &out, Point startPosition)
 #endif
 	DrawItemNameLabels(out);
 	DrawMonsterHealthBar(out);
-	DrawFloatingNumbers(out, startPosition, offset);
+	if (!fp::IsFirstPersonActive())
+		DrawFloatingNumbers(out, startPosition, offset);
 
 	if (IsPlayerInStore() && !qtextflag)
 		DrawSText(out);

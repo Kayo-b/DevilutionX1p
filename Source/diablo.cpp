@@ -51,6 +51,7 @@
 #include "engine/random.hpp"
 #include "engine/render/clx_render.hpp"
 #include "engine/sound.h"
+#include "fp/fp_view.hpp"
 #include "game_mode.hpp"
 #include "gamemenu.h"
 #include "gmenu.h"
@@ -2055,6 +2056,14 @@ void InitKeymapActions()
 	    nullptr,
 	    IsGameRunning);
 	options.Keymapper.AddAction(
+	    "ToggleFirstPerson",
+	    N_("Toggle first person"),
+	    N_("Switch between first person and isometric view."),
+	    SDLK_F4,
+	    [] { fp::ToggleFirstPerson(); },
+	    nullptr,
+	    CanPlayerTakeAction);
+	options.Keymapper.AddAction(
 	    "Zoom",
 	    N_("Zoom"),
 	    N_("Zoom Game Screen."),
@@ -2572,6 +2581,14 @@ void InitPadmapActions()
 	    },
 	    nullptr,
 	    IsGameRunning);
+	options.Padmapper.AddAction(
+	    "ToggleFirstPerson",
+	    N_("Toggle first person"),
+	    N_("Switch between first person and isometric view."),
+	    ControllerButton_NONE,
+	    [] { fp::ToggleFirstPerson(); },
+	    nullptr,
+	    CanPlayerTakeAction);
 	options.Padmapper.AddAction(
 	    "Zoom",
 	    N_("Zoom"),
