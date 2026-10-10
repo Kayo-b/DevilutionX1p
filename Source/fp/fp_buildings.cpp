@@ -22,6 +22,8 @@
 #include "fp/fp_world.hpp"
 #include "levels/gendung.h"
 #include "levels/tile_properties.hpp"
+#include "levels/trigs.h"
+#include "interfac.h"
 #include "utils/log.hpp"
 #include "utils/paths.h"
 #include "utils/str_cat.hpp"
@@ -97,6 +99,13 @@ struct WorldTriangle {
 	float slopeScale;   // roof: length along the slope per unit of horizontal distance
 	float downX;        // roof: horizontal direction straight down the slope
 	float downY;
+	// Projectively textured structures (MeshProjective, MeshPit):
+	float mirrorX;      // surfaces turned away from the iso camera show the art of the point mirrored through
+	float mirrorY;      // this vertical plane (through the part's middle, across the surface's normal)
+	float normalX;      // horizontal outward normal, unit length, or 0 for a horizontal surface
+	float normalY;
+	bool mirrored;
+	uint8_t fallback;   // colour where the art has no pixel
 };
 
 enum : uint8_t {
@@ -104,6 +113,8 @@ enum : uint8_t {
 	MeshWallAlongY,
 	MeshFlat, // horizontal: u, v follow world x, y
 	MeshRoof, // a roof slope: u along it, v up it
+	MeshProjective, // the structure's own iso art, projected (mirrored on the far side)
+	MeshPit,        // below the floor, where the art shows nothing: the structure's wall art repeated, darkening with depth
 };
 
 struct Building {
@@ -240,11 +251,12 @@ uint8_t PatchColor(int16_t art)
 }
 
 /** Brightness kept by each step of a mesh surface's darkness (see WorldTriangle::darkness). */
-constexpr std::array<float, 4> SurfaceShade { 1.0F, 0.85F, 0.7F, 0.55F };
+constexpr std::array<float, 6> SurfaceShade { 1.0F, 0.85F, 0.7F, 0.55F, 0.4F, 0.25F };
 
 /**
- * @brief The palette colour closest to a colour dimmed by one of the SurfaceShade steps. The light tables are not
- * used for this: stepping some of the town's thatch colours along them ends in reds.
+ * @brief A colour dimmed by one of the SurfaceShade steps: the closest colour of its own 16-colour ramp (the
+ * palette is laid out in ramps of one hue from light to dark), so the hue stays. The light tables are not used for
+ * this: stepping some of the town's thatch colours along them ends in reds.
  */
 uint8_t ShadeColor(uint8_t color, int darkness)
 {
@@ -259,8 +271,9 @@ uint8_t ShadeColor(uint8_t color, int darkness)
 				const float bl = static_cast<float>(c.b) * SurfaceShade[level];
 				float best = std::numeric_limits<float>::max();
 				table[level][i] = static_cast<uint8_t>(i);
-				for (int j = 1; j < 256; j++) {
-					if (j >= 112 && j <= 127)
+				const int ramp = i & ~15;
+				for (int j = ramp; j < ramp + 16; j++) {
+					if (j == 0 || (j >= 112 && j <= 127 && (i < 112 || i > 127)))
 						continue; // see PatchColor
 					const SDL_Color o = logical_palette[j];
 					const float distance = (o.r - r) * (o.r - r) * 3 + (o.g - g) * (o.g - g) * 6 + (o.b - bl) * (o.b - bl);
@@ -410,15 +423,19 @@ void BuildCanvas(Building &b, const std::vector<Point> &artTiles, const std::vec
 		const Point q = c.first;
 		return p.x + p.y != q.x + q.y ? p.x + p.y < q.x + q.y : p.x < q.x;
 	});
+	if (tiles.empty())
+		return;
+	// Columns are 256 rows in town and fewer in the dungeons (160 in the cathedral).
+	const int rows = static_cast<int>(GetPieceTextures(dPiece[tiles[0].first.x][tiles[0].first.y]).column.size() / ColumnWidth);
 	int minX = std::numeric_limits<int>::max();
 	int maxX = std::numeric_limits<int>::min();
 	int minY = std::numeric_limits<int>::max();
 	int maxY = std::numeric_limits<int>::min();
 	for (const auto &[t, isGround] : tiles) {
-		// Column pixel (cx, cy) sits at screen ((x - y) * 32 + cx - 32, (x + y + 2) * 16 + cy - 255).
+		// Column pixel (cx, cy) sits at screen ((x - y) * 32 + cx - 32, (x + y + 2) * 16 + cy - (rows - 1)).
 		minX = std::min(minX, (t.x - t.y) * 32 - 32);
 		maxX = std::max(maxX, (t.x - t.y) * 32 + 31);
-		minY = std::min(minY, (t.x + t.y + 2) * 16 - 255);
+		minY = std::min(minY, (t.x + t.y + 2) * 16 - (rows - 1));
 		maxY = std::max(maxY, (t.x + t.y + 2) * 16);
 	}
 	b.originX = minX;
@@ -430,8 +447,8 @@ void BuildCanvas(Building &b, const std::vector<Point> &artTiles, const std::vec
 	for (const auto &[t, isGround] : tiles) {
 		const PieceTextures &textures = GetPieceTextures(dPiece[t.x][t.y]);
 		const int left = (t.x - t.y) * 32 - 32 - minX;
-		const int top = (t.x + t.y + 2) * 16 - 255 - minY;
-		for (int cy = 0; cy < ColumnPixelHeight; cy++) {
+		const int top = (t.x + t.y + 2) * 16 - (rows - 1) - minY;
+		for (int cy = 0; cy < rows && static_cast<size_t>(cy + 1) * ColumnWidth <= textures.column.size(); cy++) {
 			for (int cx = 0; cx < ColumnWidth; cx++) {
 				const int16_t pixel = textures.column[static_cast<size_t>(cy) * ColumnWidth + cx];
 				if (pixel <= 0)
@@ -636,7 +653,7 @@ struct LandmarkPlacement {
 const std::array<LandmarkPlacement, 2> Landmarks { {
 	// Griswold's smithy: the long hall along x, and over the forge where he stands an open porch roof on two posts.
 	// The plaza porch eaves are low; the art has them at the hall's wall height, high enough to stand under.
-	{ "smithy", { 60, 56 }, { 71, 65 }, 60.6F, 72.25F, 55.75F, 65.5F, 1.45F, 1.0F, 0.55F, true, { Vec2 { 61.3F, 64.9F }, Vec2 { 64.7F, 64.9F } } },
+	{ "smithy", { 60, 56 }, { 71, 65 }, 60.6F, 72.25F, 55.75F, 65.5F, 1.45F, 1.0F, 0.55F, true, { Vec2 { 62.25F, 65.2F }, Vec2 { 65.25F, 65.2F } } },
 	// Ogden's tavern: two front gables with the door in the corner between them, where Ogden stands.
 	{ "ogden", { 46, 53 }, { 57, 63 }, 46.75F, 57.0F, 55.0F, 64.0F, 0.76F, 100.0F, 0.76F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } } },
 } };
@@ -1614,15 +1631,15 @@ struct CameraVertex {
 };
 
 /**
- * @brief Draws the house as its triangle mesh: each triangle is clipped at the near plane and filled with
- * perspective-correct texturing from the house's art patches, sharing the depth buffer with the rest of the scene.
+ * @brief Fills world triangles into the view: each is clipped at the near plane and filled with
+ * perspective-correct world positions, sharing the depth buffer with the rest of the scene.
+ * @param shade palette colour (lit) of a surface point of a triangle, or -1 to leave the pixel alone
  */
-void DrawHouseMesh(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer, const Building &b)
+template <typename ShadeFn>
+void RasterizeTriangles(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer, const std::vector<WorldTriangle> &triangles, ShadeFn shade)
 {
 	constexpr float Near = 0.05F;
 	const float halfWidth = static_cast<float>(proj.width) / 2.0F;
-	const Point lightMin { static_cast<int>(b.x0), static_cast<int>(b.y0) };
-	const Point lightMax { static_cast<int>(b.x1) - 1, static_cast<int>(b.y1) - 1 };
 	auto toCamera = [&](const V3 &w) {
 		const float rx = w.x - proj.pos.x;
 		const float ry = w.y - proj.pos.y;
@@ -1632,14 +1649,7 @@ void DrawHouseMesh(const Surface &out, const Projection &proj, std::vector<float
 		return CameraVertex { a.depth + (c.depth - a.depth) * t, a.lateral + (c.lateral - a.lateral) * t, a.height + (c.height - a.height) * t,
 			{ a.world.x + (c.world.x - a.world.x) * t, a.world.y + (c.world.y - a.world.y) * t, a.world.z + (c.world.z - a.world.z) * t } };
 	};
-	// Light per tile, looked up once per frame for the footprint.
-	const int lightWidth = lightMax.x - lightMin.x + 1;
-	std::vector<uint8_t> light(static_cast<size_t>(lightWidth) * (lightMax.y - lightMin.y + 1));
-	for (int y = lightMin.y; y <= lightMax.y; y++)
-		for (int x = lightMin.x; x <= lightMax.x; x++)
-			light[static_cast<size_t>(y - lightMin.y) * lightWidth + x - lightMin.x] = LightAt({ x, y });
-
-	for (const WorldTriangle &tri : b.mesh) {
+	for (const WorldTriangle &tri : triangles) {
 		std::array<CameraVertex, 3> in { toCamera(tri.p[0]), toCamera(tri.p[1]), toCamera(tri.p[2]) };
 		if (in[0].depth < Near && in[1].depth < Near && in[2].depth < Near)
 			continue;
@@ -1697,16 +1707,35 @@ void DrawHouseMesh(const Surface &out, const Projection &proj, std::vector<float
 					const float wx = (w0 * v0.worldOverDepth.x + w1 * v1.worldOverDepth.x + w2 * v2.worldOverDepth.x) * distance;
 					const float wy = (w0 * v0.worldOverDepth.y + w1 * v1.worldOverDepth.y + w2 * v2.worldOverDepth.y) * distance;
 					const float wz = (w0 * v0.worldOverDepth.z + w1 * v1.worldOverDepth.z + w2 * v2.worldOverDepth.z) * distance;
-					const uint8_t color = MeshColor(b, tri, wx, wy, wz);
-					const int tx = std::clamp(static_cast<int>(std::floor(wx)), lightMin.x, lightMax.x);
-					const int ty = std::clamp(static_cast<int>(std::floor(wy)), lightMin.y, lightMax.y);
-					const uint8_t level = light[static_cast<size_t>(ty - lightMin.y) * lightWidth + tx - lightMin.x];
+					const int color = shade(tri, wx, wy, wz);
+					if (color < 0)
+						continue;
 					stored = distance;
-					*out.at(x, y) = LightTables[level][ShadeColor(color, tri.darkness)];
+					*out.at(x, y) = static_cast<uint8_t>(color);
 				}
 			}
 		}
 	}
+}
+
+/** @brief Draws the house as its triangle mesh, textured from the house's art patches. */
+void DrawHouseMesh(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer, const Building &b)
+{
+	const Point lightMin { static_cast<int>(b.x0), static_cast<int>(b.y0) };
+	const Point lightMax { static_cast<int>(b.x1) - 1, static_cast<int>(b.y1) - 1 };
+	// Light per tile, looked up once per frame for the footprint.
+	const int lightWidth = lightMax.x - lightMin.x + 1;
+	std::vector<uint8_t> light(static_cast<size_t>(lightWidth) * (lightMax.y - lightMin.y + 1));
+	for (int y = lightMin.y; y <= lightMax.y; y++)
+		for (int x = lightMin.x; x <= lightMax.x; x++)
+			light[static_cast<size_t>(y - lightMin.y) * lightWidth + x - lightMin.x] = LightAt({ x, y });
+	RasterizeTriangles(out, proj, depthBuffer, b.mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
+		const uint8_t color = MeshColor(b, tri, wx, wy, wz);
+		const int tx = std::clamp(static_cast<int>(std::floor(wx)), lightMin.x, lightMax.x);
+		const int ty = std::clamp(static_cast<int>(std::floor(wy)), lightMin.y, lightMax.y);
+		const uint8_t level = light[static_cast<size_t>(ty - lightMin.y) * lightWidth + tx - lightMin.x];
+		return static_cast<int>(LightTables[level][ShadeColor(color, tri.darkness)]);
+	});
 }
 
 void DrawBuilding(const Surface &out, const Projection &proj, const std::vector<float> &zBuffer, std::vector<float> &depthBuffer, const Building &b)
@@ -1794,6 +1823,495 @@ void DrawBuilding(const Surface &out, const Projection &proj, const std::vector<
 			depthBuffer[index] = bestT;
 		}
 	}
+}
+
+
+// ---------------------------------------------------------------------------------------------------------------
+// Dungeon structures drawn as meshes: free-standing columns (and torch stands) and the cathedral's stairs down.
+
+/** @brief A piece of a dungeon drawn as a mesh, with the iso art it is textured from. */
+struct Structure {
+	Building art; // canvas (and origin) of the art; the mesh is art.mesh
+	// For MeshPit surfaces: where the art shows a stretch of plain wall to repeat.
+	V3 pitSource { 0, 0, 0 };
+	float pitSpanY = 1.0F;
+	float pitSpanZ = 1.0F;
+};
+
+std::vector<Structure> Structures;
+std::vector<uint8_t> StructureTiles; // 1: drawn by a structure (no wall cube, no billboard); 2: also has a floor hole
+std::vector<std::array<float, 4>> FloorHoles; // x0, y0, x1, y1
+LevelKey StructuresFor { nullptr, -1, -1, false };
+
+/** @brief Adds a flat polygon (3 or 4 corners) of a structure with its outward normal. */
+void AddStructureFace(Building &b, std::initializer_list<V3> corners, V3 normal, Vec2 mirror, uint8_t mapping, uint8_t darkness = 0)
+{
+	const std::vector<V3> p(corners);
+	const float length = std::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
+	if (length > 1e-6F)
+		normal = { normal.x / length, normal.y / length, normal.z / length };
+	WorldTriangle tri {};
+	tri.mapping = mapping;
+	tri.mirrorX = mirror.x;
+	tri.mirrorY = mirror.y;
+	const float horizontal = std::sqrt(normal.x * normal.x + normal.y * normal.y);
+	tri.normalX = horizontal > 0.25F ? normal.x / horizontal : 0.0F;
+	tri.normalY = horizontal > 0.25F ? normal.y / horizontal : 0.0F;
+	// The iso camera looks from +x, +y: it saw the surfaces facing that way, and the tops.
+	tri.mirrored = horizontal > 0.25F && tri.normalX + tri.normalY < -0.05F;
+	tri.darkness = darkness;
+	if (normal.z < -0.5F)
+		tri.darkness = std::max<uint8_t>(darkness, 3);
+	else if (horizontal > 0.25F && tri.normalX + tri.normalY < -0.5F)
+		tri.darkness = std::max<uint8_t>(darkness, 1);
+	tri.fallback = 0;
+	tri.slopeScale = 1.0F;
+	for (size_t k = 1; k + 1 < p.size(); k++) {
+		tri.p = { p[0], p[k], p[k + 1] };
+		b.mesh.push_back(tri);
+	}
+}
+
+/** @brief An axis-aligned box: four sides and the top (and the bottom if asked). */
+void AddStructureBox(Building &b, float x0, float y0, float z0, float x1, float y1, float z1, uint8_t mapping = MeshProjective, bool bottom = false)
+{
+	const Vec2 mid { (x0 + x1) / 2.0F, (y0 + y1) / 2.0F };
+	AddStructureFace(b, { { x1, y0, z0 }, { x1, y1, z0 }, { x1, y1, z1 }, { x1, y0, z1 } }, { 1, 0, 0 }, mid, mapping);
+	AddStructureFace(b, { { x0, y0, z0 }, { x0, y1, z0 }, { x0, y1, z1 }, { x0, y0, z1 } }, { -1, 0, 0 }, mid, mapping);
+	AddStructureFace(b, { { x0, y1, z0 }, { x1, y1, z0 }, { x1, y1, z1 }, { x0, y1, z1 } }, { 0, 1, 0 }, mid, mapping);
+	AddStructureFace(b, { { x0, y0, z0 }, { x1, y0, z0 }, { x1, y0, z1 }, { x0, y0, z1 } }, { 0, -1, 0 }, mid, mapping);
+	AddStructureFace(b, { { x0, y0, z1 }, { x1, y0, z1 }, { x1, y1, z1 }, { x0, y1, z1 } }, { 0, 0, 1 }, mid, mapping);
+	if (bottom)
+		AddStructureFace(b, { { x0, y0, z0 }, { x1, y0, z0 }, { x1, y1, z0 }, { x0, y1, z0 } }, { 0, 0, -1 }, mid, mapping);
+}
+
+/** @brief An upright many-sided prism (a round shaft), with its top if asked. */
+void AddStructureShaft(Building &b, Vec2 c, float radius, float z0, float z1, bool top, int sides = 12)
+{
+	constexpr float Pi = 3.14159265F;
+	for (int i = 0; i < sides; i++) {
+		const float a0 = 2.0F * Pi * static_cast<float>(i) / static_cast<float>(sides);
+		const float a1 = 2.0F * Pi * static_cast<float>(i + 1) / static_cast<float>(sides);
+		const float am = (a0 + a1) / 2.0F;
+		const V3 p0 { c.x + radius * std::cos(a0), c.y + radius * std::sin(a0), z0 };
+		const V3 p1 { c.x + radius * std::cos(a1), c.y + radius * std::sin(a1), z0 };
+		AddStructureFace(b, { p0, p1, { p1.x, p1.y, z1 }, { p0.x, p0.y, z1 } }, { std::cos(am), std::sin(am), 0 }, c, MeshProjective);
+		if (top)
+			AddStructureFace(b, { { c.x, c.y, z1 }, { p0.x, p0.y, z1 }, { p1.x, p1.y, z1 } }, { 0, 0, 1 }, c, MeshProjective);
+	}
+}
+
+/** @brief A slice of a column's profile: square or round, from z0 up to z1, its size changing linearly. */
+struct ColumnSlice {
+	float z0;
+	float z1;
+	float size0; // half side (square) or radius (round) at z0, in tiles
+	float size1; // the same at z1
+	bool square;
+};
+
+/**
+ * @brief The profile of a free-standing column, read off its iso art row by row. A point at the left or right
+ * extreme of an upright square or round shape has x + y equal to the axis's, so the widest pixels of a row are at
+ * the height that row shows: z = (rows above the tile centre) / 39.2. Squares (plinths, capitals) look 64 px wide
+ * per tile of half side, round shafts 45 px per tile of radius; parts much wider than a stout shaft are taken as
+ * square. Empty if the art is not one symmetric upright piece (the arcade pillars carry half a wall).
+ */
+std::vector<ColumnSlice> ColumnProfile(const PieceTextures &textures, int &axisTwice)
+{
+	const int rows = static_cast<int>(textures.column.size() / ColumnWidth);
+	const int centerRow = rows - 1 - 16; // the middle of the tile's floor diamond
+	std::vector<std::pair<float, float>> widths; // z, half width in px
+	int asymmetric = 0;
+	// The floor diamond takes up the rows just above the centre too: its pixels are told apart from the base's
+	// by colour, the floor using the level's ground colours.
+	std::array<bool, 256> groundColor {};
+	for (const int16_t texel : GetGroundFloor())
+		if (texel > 0)
+			groundColor[static_cast<uint8_t>(texel)] = true;
+	struct RowSpan {
+		float z;
+		int first;
+		int last;
+	};
+	std::vector<RowSpan> spans;
+	int gap = 0;
+	for (int row = centerRow - 1; row >= 0; row--) {
+		const bool inFloor = row >= centerRow - 16;
+		int first = ColumnWidth;
+		int last = -1;
+		for (int x = 0; x < ColumnWidth; x++) {
+			const int16_t pixel = textures.column[static_cast<size_t>(row) * ColumnWidth + x];
+			if (pixel > 0 && !(inFloor && groundColor[static_cast<uint8_t>(pixel)])) {
+				first = std::min(first, x);
+				last = x;
+			}
+		}
+		if (last < first) {
+			// Thin poles are dithered, with empty rows: only a long run of them is above the top.
+			if (!spans.empty() && ++gap > 12)
+				break;
+			continue;
+		}
+		gap = 0;
+		spans.push_back({ static_cast<float>(centerRow - row) / SpritePixelsPerTileY, first, last });
+	}
+	if (spans.size() < 6)
+		return {};
+	// The axis: the middle of most rows (twice, in px), which need not be the tile's (a torch stand's pole is a pixel off).
+	std::vector<int> middles;
+	for (const RowSpan &span : spans)
+		middles.push_back(span.first + span.last + 1);
+	std::nth_element(middles.begin(), middles.begin() + static_cast<ptrdiff_t>(middles.size() / 2), middles.end());
+	axisTwice = middles[middles.size() / 2];
+	for (const RowSpan &span : spans) {
+		const int leftHalf = axisTwice - 2 * span.first;   // twice the half widths
+		const int rightHalf = 2 * (span.last + 1) - axisTwice;
+		if (std::abs(leftHalf - rightHalf) > 12)
+			asymmetric++;
+		widths.emplace_back(span.z, static_cast<float>(std::max(leftHalf, rightHalf)) / 2.0F);
+	}
+#ifdef _DEBUG
+	if (std::getenv("FP_DUMP_PROFILES") != nullptr) {
+		std::string line;
+		for (const RowSpan &span : spans)
+			line += StrCat(span.first, "-", span.last, " ");
+		LogInfo("fp: column profile (bottom up, asymmetric {}): {}", asymmetric, line);
+	}
+#endif
+	std::vector<ColumnSlice> slices;
+	if (widths.size() < 6 || asymmetric * 5 > static_cast<int>(widths.size()))
+		return slices;
+	// Median of three rows against single stray pixels.
+	std::vector<float> smooth(widths.size());
+	for (size_t i = 0; i < widths.size(); i++) {
+		std::array<float, 3> near { widths[i > 0 ? i - 1 : i].second, widths[i].second, widths[i + 1 < widths.size() ? i + 1 : i].second };
+		std::sort(near.begin(), near.end());
+		smooth[i] = near[1];
+	}
+	// Rows where the width falls off fast away from a wider part show that part's top or underside (a flat face
+	// seen from above lies across rows), not its sides: they take the width of the narrower part beyond, and at the
+	// very top they are dropped.
+	constexpr float FaceDrop = 1.2F;
+	size_t count = smooth.size();
+	for (size_t i = 1; i < count; i++) {
+		if (smooth[i] >= smooth[i - 1] - FaceDrop)
+			continue;
+		size_t k = i;
+		while (k < count && smooth[k] < smooth[k - 1] - FaceDrop)
+			k++;
+		if (k >= count) {
+			count = i; // the top face of the topmost part
+			break;
+		}
+		for (size_t j = i; j < k; j++)
+			smooth[j] = smooth[k];
+		i = k;
+	}
+	smooth.resize(count);
+	widths.resize(count);
+	for (size_t i = count; i-- > 1;) {
+		if (smooth[i - 1] >= smooth[i] - FaceDrop)
+			continue;
+		size_t k = i - 1;
+		while (k > 0 && smooth[k - 1] < smooth[k] - FaceDrop)
+			k--;
+		if (k == 0)
+			break; // the plinth's front corner reaching the floor stays
+		for (size_t j = k; j < i; j++)
+			smooth[j] = smooth[k - 1];
+		i = k;
+	}
+	if (count < 6)
+		return slices;
+	const size_t top = count - 1;
+	std::vector<float> sorted(smooth.begin() + static_cast<ptrdiff_t>(count / 4), smooth.begin() + static_cast<ptrdiff_t>(count * 3 / 4));
+	std::nth_element(sorted.begin(), sorted.begin() + static_cast<ptrdiff_t>(sorted.size() / 2), sorted.end());
+	const float shaft = sorted[sorted.size() / 2];
+	for (size_t i = 0; i <= top; i++) {
+		const float half = smooth[i];
+		const bool square = shaft >= 6.0F && half > 1.35F * shaft;
+		const float size = square ? half / 64.0F : half / 45.25F;
+		const float z = widths[i].first;
+		const float pixelsPerTile = square ? 64.0F : 45.25F;
+		if (!slices.empty() && slices.back().square == square) {
+			ColumnSlice &last = slices.back();
+			// Keep growing the slice while the row continues its straight taper.
+			const float slope = last.z1 > last.z0 ? (last.size1 - last.size0) / (last.z1 - last.z0) : 0.0F;
+			const float predicted = last.size1 + slope * (z - last.z1);
+			if (std::abs(predicted - size) * pixelsPerTile < 0.75F || std::abs(last.size1 - size) * pixelsPerTile < 0.75F) {
+				if (std::abs(predicted - size) * pixelsPerTile >= 0.75F)
+					last.size0 = last.size1; // flat so far: restart the taper from here
+				last.z1 = z;
+				last.size1 = size;
+				continue;
+			}
+		}
+		slices.push_back({ slices.empty() ? 0.0F : slices.back().z1, z, size, size, square });
+	}
+	return slices;
+}
+
+/** @brief A square frustum (straight-sided, its half side changing from s0 at z0 to s1 at z1), with its top if asked. */
+void AddStructureFrustum(Building &b, Vec2 c, float s0, float s1, float z0, float z1, bool top)
+{
+	const std::array<Vec2, 4> dirs { { { 1, -1 }, { 1, 1 }, { -1, 1 }, { -1, -1 } } };
+	for (int i = 0; i < 4; i++) {
+		const Vec2 a = dirs[i];
+		const Vec2 d = dirs[(i + 1) % 4];
+		const V3 p0 { c.x + a.x * s0, c.y + a.y * s0, z0 };
+		const V3 p1 { c.x + d.x * s0, c.y + d.y * s0, z0 };
+		const V3 p2 { c.x + d.x * s1, c.y + d.y * s1, z1 };
+		const V3 p3 { c.x + a.x * s1, c.y + a.y * s1, z1 };
+		const Vec2 n { (a.x + d.x) / 2.0F, (a.y + d.y) / 2.0F };
+		const float lean = (s0 - s1) / std::max(z1 - z0, 1e-3F);
+		AddStructureFace(b, { p0, p1, p2, p3 }, { n.x, n.y, lean }, c, MeshProjective);
+	}
+	if (top)
+		AddStructureFace(b, { { c.x - s1, c.y - s1, z1 }, { c.x + s1, c.y - s1, z1 }, { c.x + s1, c.y + s1, z1 }, { c.x - s1, c.y + s1, z1 } }, { 0, 0, 1 }, c, MeshProjective);
+}
+
+/** @brief A round frustum, with its top if asked. */
+void AddStructureCone(Building &b, Vec2 c, float r0, float r1, float z0, float z1, bool top, int sides = 12)
+{
+	constexpr float Pi = 3.14159265F;
+	const float lean = (r0 - r1) / std::max(z1 - z0, 1e-3F);
+	for (int i = 0; i < sides; i++) {
+		const float a0 = 2.0F * Pi * static_cast<float>(i) / static_cast<float>(sides);
+		const float a1 = 2.0F * Pi * static_cast<float>(i + 1) / static_cast<float>(sides);
+		const float am = (a0 + a1) / 2.0F;
+		const V3 p0 { c.x + r0 * std::cos(a0), c.y + r0 * std::sin(a0), z0 };
+		const V3 p1 { c.x + r0 * std::cos(a1), c.y + r0 * std::sin(a1), z0 };
+		const V3 p2 { c.x + r1 * std::cos(a1), c.y + r1 * std::sin(a1), z1 };
+		const V3 p3 { c.x + r1 * std::cos(a0), c.y + r1 * std::sin(a0), z1 };
+		AddStructureFace(b, { p0, p1, p2, p3 }, { std::cos(am), std::sin(am), lean }, c, MeshProjective);
+		if (top)
+			AddStructureFace(b, { { c.x, c.y, z1 }, p3, p2 }, { 0, 0, 1 }, c, MeshProjective);
+	}
+}
+
+/** @brief Builds a column's mesh at its tile from the profile of its art. */
+bool BuildColumn(Structure &st, Point tile)
+{
+	const PieceTextures &textures = GetPieceTextures(dPiece[tile.x][tile.y]);
+	int axisTwice = ColumnWidth;
+	const std::vector<ColumnSlice> slices = ColumnProfile(textures, axisTwice);
+#ifdef _DEBUG
+	if (std::getenv("FP_DUMP_PROFILES") != nullptr)
+		LogInfo("fp: column piece {} at {},{}: {} slices, axis {}", dPiece[tile.x][tile.y], tile.x, tile.y, slices.size(), axisTwice);
+#endif
+	if (slices.empty())
+		return false;
+	BuildCanvas(st.art, { tile }, {});
+	// An axis off the tile's middle by d px on screen is off by d / 32 in x - y.
+	const float offset = static_cast<float>(axisTwice - ColumnWidth) / 2.0F / 64.0F;
+	const Vec2 c { static_cast<float>(tile.x) + 0.5F + offset, static_cast<float>(tile.y) + 0.5F - offset };
+	auto reach = [](const ColumnSlice &slice, bool atTop) { return (atTop ? slice.size1 : slice.size0) * (slice.square ? 1.41F : 1.0F); };
+	for (size_t i = 0; i < slices.size(); i++) {
+		const ColumnSlice &slice = slices[i];
+		// A top wherever the next slice up starts smaller (a ledge) or there is none.
+		const bool top = i + 1 == slices.size() || reach(slices[i + 1], false) < reach(slice, true);
+		if (slice.square)
+			AddStructureFrustum(st.art, c, slice.size0, slice.size1, slice.z0, slice.z1, top);
+		else
+			AddStructureCone(st.art, c, slice.size0, slice.size1, slice.z0, slice.z1, top);
+	}
+	return true;
+}
+
+/** @brief The cathedral's stairs down: a low walled enclosure with marble corner pillars around steps into a pit. */
+bool BuildStairsDown(Structure &st, Point trigger)
+{
+	// The enclosure takes the 3 x 3 tiles behind the trigger, open towards +y where the trigger tile is.
+	const Point min { trigger.x - 1, trigger.y - 2 };
+	for (int dy = 0; dy < 3; dy++) {
+		for (int dx = 0; dx < 3; dx++) {
+			const Point t { min.x + dx, min.y + dy };
+			const bool open = dx == 1 && dy == 2;
+			if (!InDungeonBounds(t) || IsTileSolid(t) == open)
+				return false;
+		}
+	}
+	std::vector<Point> art;
+	for (int dy = 0; dy < 3; dy++)
+		for (int dx = 0; dx < 3; dx++)
+			if (GetPieceTextures(dPiece[min.x + dx][min.y + dy]).hasTallArt)
+				art.push_back({ min.x + dx, min.y + dy });
+	BuildCanvas(st.art, art, {});
+	Building &b = st.art;
+	// Measured on the iso art (tile units; heights at 39.2 px per unit).
+	const float x0 = static_cast<float>(min.x) + 0.5F; // pillar axes
+	const float x1 = static_cast<float>(min.x) + 2.5F;
+	const float y0 = static_cast<float>(min.y) + 0.5F;
+	const float y1 = static_cast<float>(min.y) + 2.5F;
+	constexpr float WallHalf = 0.15F;
+	constexpr float WallTop = 1.05F;
+	constexpr float CopingHalf = 0.28F;
+	constexpr float CopingTop = 1.45F;
+	for (const Vec2 c : { Vec2 { x0, y0 }, Vec2 { x1, y0 }, Vec2 { x0, y1 }, Vec2 { x1, y1 } }) {
+		AddStructureBox(b, c.x - 0.22F, c.y - 0.22F, 0.0F, c.x + 0.22F, c.y + 0.22F, 0.15F);
+		AddStructureShaft(b, c, 0.16F, 0.15F, 1.0F, false);
+		AddStructureBox(b, c.x - 0.21F, c.y - 0.21F, 1.0F, c.x + 0.21F, c.y + 0.21F, WallTop);
+	}
+	// Brick walls on three sides, the coping on top of them.
+	AddStructureBox(b, x0 - WallHalf, y0, 0.0F, x0 + WallHalf, y1, WallTop);
+	AddStructureBox(b, x1 - WallHalf, y0, 0.0F, x1 + WallHalf, y1, WallTop);
+	AddStructureBox(b, x0, y0 - WallHalf, 0.0F, x1, y0 + WallHalf, WallTop);
+	AddStructureBox(b, x0 - CopingHalf, y0 - CopingHalf, WallTop, x0 + CopingHalf, y1 + CopingHalf, CopingTop);
+	AddStructureBox(b, x1 - CopingHalf, y0 - CopingHalf, WallTop, x1 + CopingHalf, y1 + CopingHalf, CopingTop);
+	AddStructureBox(b, x0 - CopingHalf, y0 - CopingHalf, WallTop, x1 + CopingHalf, y0 + CopingHalf, CopingTop);
+	// The pit between the walls, and the steps down into it from the open side.
+	const float px0 = x0 + WallHalf;
+	const float px1 = x1 - WallHalf;
+	const float py0 = y0 + WallHalf;
+	const float py1 = y1 + 0.1F;
+	constexpr int Steps = 6;
+	constexpr float StepDrop = 0.2F;
+	const float stepDepth = (py1 - py0) / static_cast<float>(Steps);
+	const float bottom = -StepDrop * static_cast<float>(Steps) - 0.1F;
+	const Vec2 mid { (px0 + px1) / 2.0F, (py0 + py1) / 2.0F };
+	AddStructureFace(b, { { px0, py0, bottom }, { px0, py1, bottom }, { px0, py1, 0 }, { px0, py0, 0 } }, { 1, 0, 0 }, mid, MeshPit);
+	AddStructureFace(b, { { px1, py0, bottom }, { px1, py1, bottom }, { px1, py1, 0 }, { px1, py0, 0 } }, { -1, 0, 0 }, mid, MeshPit);
+	AddStructureFace(b, { { px0, py0, bottom }, { px1, py0, bottom }, { px1, py0, 0 }, { px0, py0, 0 } }, { 0, 1, 0 }, mid, MeshPit);
+	for (int i = 0; i < Steps; i++) {
+		const float front = py1 - stepDepth * static_cast<float>(i);
+		const float back = front - stepDepth;
+		const float top = -StepDrop * static_cast<float>(i + 1);
+		const float above = -StepDrop * static_cast<float>(i);
+		AddStructureFace(b, { { px0, front, top }, { px1, front, top }, { px1, front, above }, { px0, front, above } }, { 0, 1, 0 }, mid, MeshPit);
+		AddStructureFace(b, { { px0, back, top }, { px1, back, top }, { px1, front, top }, { px0, front, top } }, { 0, 0, 1 }, mid, MeshPit);
+	}
+	FloorHoles.push_back({ px0, py0, px1, py1 });
+	// Plain wall to repeat in the pit: the outer face of the +x wall (it faces the iso camera).
+	st.pitSource = { x1 + WallHalf, y0 + 0.25F, 0.15F };
+	st.pitSpanY = (y1 - y0) - 0.5F;
+	st.pitSpanZ = 0.8F;
+	for (int dy = 0; dy < 3; dy++)
+		for (int dx = 0; dx < 3; dx++)
+			StructureTiles[static_cast<size_t>(min.y + dy) * MAXDUNX + min.x + dx] = 2;
+	return true;
+}
+
+/** @brief Fallback colour per triangle: the art at its middle, for where the art has no pixel. */
+void SetStructureFallbacks(Structure &st)
+{
+	for (WorldTriangle &tri : st.art.mesh) {
+		const V3 m { (tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F, (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F, (tri.p[0].z + tri.p[1].z + tri.p[2].z) / 3.0F };
+		int16_t color = -1;
+		for (int k = 0; k < 4 && color <= 0; k++) {
+			const V3 q = k < 3 ? tri.p[k] : m;
+			color = SampleArt(st.art, q.x, q.y, std::max(q.z, 0.05F));
+		}
+		tri.fallback = color > 0 ? PatchColor(color) : uint8_t { 0 };
+	}
+}
+
+void BuildStructures()
+{
+	Structures.clear();
+	FloorHoles.clear();
+	StructureTiles.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY, 0);
+	if (leveltype == DTYPE_TOWN)
+		return;
+	if (leveltype == DTYPE_CATHEDRAL) {
+		for (int i = 0; i < numtrigs; i++) {
+			if (trigs[i]._tmsg != WM_DIABNEXTLVL)
+				continue;
+			Structure st;
+			if (BuildStairsDown(st, trigs[i].position)) {
+				SetStructureFallbacks(st);
+				Structures.push_back(std::move(st));
+			}
+		}
+	}
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			if (StructureTiles[static_cast<size_t>(y) * MAXDUNX + x] != 0 || !GetPieceTextures(dPiece[x][y]).isFreeStanding)
+				continue;
+			Structure st;
+			if (!BuildColumn(st, { x, y }))
+				continue;
+			SetStructureFallbacks(st);
+			StructureTiles[static_cast<size_t>(y) * MAXDUNX + x] = 1;
+			Structures.push_back(std::move(st));
+		}
+	}
+	for (Structure &st : Structures) {
+		float lowest = 0;
+		float highest = 0;
+		float minX = 1e9F;
+		float minY = 1e9F;
+		float maxX = -1e9F;
+		float maxY = -1e9F;
+		for (const WorldTriangle &tri : st.art.mesh) {
+			for (const V3 &p : tri.p) {
+				lowest = std::min(lowest, p.z);
+				highest = std::max(highest, p.z);
+				minX = std::min(minX, p.x);
+				minY = std::min(minY, p.y);
+				maxX = std::max(maxX, p.x);
+				maxY = std::max(maxY, p.y);
+			}
+		}
+		st.art.x0 = minX;
+		st.art.y0 = minY;
+		st.art.x1 = maxX;
+		st.art.y1 = maxY;
+		st.art.lowestZ = lowest;
+		st.art.highestZ = highest;
+	}
+	LogInfo("fp: {} dungeon structures drawn as meshes", Structures.size());
+}
+
+void EnsureStructures()
+{
+	const LevelKey key { pDungeonCels.get(), currlevel, static_cast<int>(leveltype), setlevel };
+	if (key == StructuresFor)
+		return;
+	StructuresFor = key;
+	BuildStructures();
+}
+
+/** @brief Palette colour (before lighting) of a structure's surface point. */
+uint8_t StructureColor(const Structure &st, const WorldTriangle &tri, float wx, float wy, float wz)
+{
+	if (tri.mapping == MeshPit) {
+		// Repeat a stretch of the wall art: along the surface and down, wrapped into the source stretch.
+		const float along = std::abs(tri.normalX) > 0.5F ? wy : wx;
+		const float u = along - std::floor(along / st.pitSpanY) * st.pitSpanY;
+		const float down = tri.normalX == 0 && tri.normalY == 0 ? wy * 0.7F : -wz;
+		const float v = down - std::floor(down / st.pitSpanZ) * st.pitSpanZ;
+		const int16_t art = SampleArt(st.art, st.pitSource.x, st.pitSource.y + u, st.pitSource.z + v);
+		return art > 0 ? PatchColor(art) : tri.fallback;
+	}
+	float x = wx;
+	float y = wy;
+	if (tri.mirrored) {
+		const float d = (x - tri.mirrorX) * tri.normalX + (y - tri.mirrorY) * tri.normalY;
+		x -= 2.0F * d * tri.normalX;
+		y -= 2.0F * d * tri.normalY;
+	}
+	const int16_t art = SampleArt(st.art, x, y, wz);
+	return art > 0 ? PatchColor(art) : tri.fallback;
+}
+
+void DrawStructure(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer, const Structure &st)
+{
+	int left;
+	int top;
+	int right;
+	int bottom;
+	if (!ScreenBounds(st.art, proj, left, top, right, bottom))
+		return;
+	RasterizeTriangles(out, proj, depthBuffer, st.art.mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
+		const uint8_t color = StructureColor(st, tri, wx, wy, wz);
+		uint8_t darkness = tri.darkness;
+		if (wz < -0.02F)
+			darkness = std::max<uint8_t>(darkness, static_cast<uint8_t>(std::min(1.0F + -wz * 3.5F, static_cast<float>(SurfaceShade.size() - 1))));
+		const Point tile { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
+		const uint8_t level = InDungeonBounds(tile) ? LightAt(tile) : LightsMax;
+		return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(color, darkness)]);
+	});
 }
 
 } // namespace
@@ -1903,6 +2421,33 @@ void DrawBuildings(const Surface &out, const Projection &proj, const std::vector
 		else
 			DrawBuilding(out, proj, zBuffer, depthBuffer, building);
 	}
+}
+
+bool IsStructureTile(Point tile)
+{
+	if (leveltype == DTYPE_TOWN || !InDungeonBounds(tile))
+		return false;
+	EnsureStructures();
+	return StructureTiles[static_cast<size_t>(tile.y) * MAXDUNX + tile.x] != 0;
+}
+
+bool IsFloorHole(float x, float y)
+{
+	if (FloorHoles.empty())
+		return false;
+	for (const auto &hole : FloorHoles)
+		if (x >= hole[0] && x < hole[2] && y >= hole[1] && y < hole[3])
+			return true;
+	return false;
+}
+
+void DrawStructures(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer)
+{
+	if (leveltype == DTYPE_TOWN)
+		return;
+	EnsureStructures();
+	for (const Structure &st : Structures)
+		DrawStructure(out, proj, depthBuffer, st);
 }
 
 int BuildingCount()

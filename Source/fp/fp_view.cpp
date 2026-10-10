@@ -45,7 +45,14 @@ constexpr uint8_t TownSkyColor = PAL16_BLUE + 14;
 /** @brief Light levels added to ceilings so they read as darker than the floor they mirror. */
 constexpr uint8_t CeilingExtraDarkness = 4;
 
-void DrawFloorAndCeiling(const Surface &out, const Projection &proj)
+/** Floor depth is stored a little farther than it is, so sprites lying on the floor (corpses) still win. */
+constexpr float FloorDepthBias = 1.03F;
+
+/**
+ * @param depthBuffer per-pixel camera depth; floor pixels write theirs, so things sunk below the floor (the
+ * stairs' pit, the feet of sprites) are hidden by it
+ */
+void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer)
 {
 	const Vec2 rayLeft { proj.dir.x - proj.plane.x, proj.dir.y - proj.plane.y };
 	const Vec2 rayRight { proj.dir.x + proj.plane.x, proj.dir.y + proj.plane.y };
@@ -81,16 +88,24 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj)
 				dst[x] = 0;
 				continue;
 			}
+			if (isFloor && IsFloorHole(wx, wy)) {
+				dst[x] = 0; // open: whatever is down there is drawn into it
+				continue;
+			}
 			const std::vector<int16_t> &floor = GetPieceTextures(dPiece[tile.x][tile.y]).floor;
 			const int u = std::min(static_cast<int>((wx - fx) * FloorTextureSize), FloorTextureSize - 1);
 			const int v = std::min(static_cast<int>((wy - fy) * FloorTextureSize), FloorTextureSize - 1);
 			int16_t texel = floor[v * FloorTextureSize + u];
-			if (isTown && texel <= 0)
+			if (IsStructureTile(tile))
+				texel = GetGroundFloor()[v * FloorTextureSize + u]; // the piece's own art is the structure, drawn as a mesh
+			else if (isTown && texel <= 0)
 				texel = GetGroundFloor()[v * FloorTextureSize + u]; // baked shadows and holes in town ground
 			uint8_t light = LightAt(tile);
 			if (!isFloor)
 				light = std::min<uint8_t>(light + CeilingExtraDarkness, LightsMax);
 			dst[x] = texel == NoPixel ? 0 : Shade(static_cast<uint8_t>(texel), light);
+			if (isFloor)
+				depthBuffer[static_cast<size_t>(y) * proj.width + x] = rowDistance * FloorDepthBias;
 		}
 	}
 }
@@ -370,11 +385,13 @@ void DrawFirstPersonView(const Surface &out)
 	const Projection proj = GetProjection();
 	zBuffer.resize(static_cast<size_t>(proj.width));
 
-	DrawFloorAndCeiling(out, proj);
 	depthBuffer.assign(static_cast<size_t>(proj.width) * proj.height, std::numeric_limits<float>::infinity());
+	DrawFloorAndCeiling(out, proj, depthBuffer);
 	DrawWalls(out, proj, zBuffer, depthBuffer);
 	if (leveltype == DTYPE_TOWN && BuildingsEnabled())
 		DrawBuildings(out, proj, zBuffer, depthBuffer);
+	else
+		DrawStructures(out, proj, depthBuffer);
 	DrawEntities(out, proj, zBuffer, &depthBuffer);
 	if (IsMouseLookActive())
 		DrawCrosshair(out);

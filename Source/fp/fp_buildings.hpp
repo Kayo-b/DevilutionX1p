@@ -48,6 +48,13 @@ bool DumpIsoRegion(int x0, int y0, int x1, int y1, const std::string &path);
 std::string TileMap(int x0, int y0, int x1, int y1);
 #endif
 
+/** @brief Whether a dungeon tile is drawn as part of a mesh structure (a free-standing column, the stairs down) instead of a wall cube or billboard. */
+[[nodiscard]] bool IsStructureTile(Point tile);
+/** @brief Whether the floor is open at a point (the pit of the stairs down), so the floor is not drawn there. */
+[[nodiscard]] bool IsFloorHole(float x, float y);
+/** @brief Draws the dungeon's mesh structures, depth tested against everything drawn so far. */
+void DrawStructures(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer);
+
 /** @brief Number of reconstructed buildings in the current level (debug). */
 [[nodiscard]] int BuildingCount();
 

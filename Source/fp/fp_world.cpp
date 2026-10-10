@@ -79,6 +79,40 @@ int FootPadding(ClxSprite sprite)
 }
 
 /**
+ * @brief How far an object's base reaches in front of its middle in the art, in px: the iso picture of a base W
+ * px wide is a diamond W / 2 px tall, whose front corner (the lowest pixel) is W / 4 below its middle. Cached.
+ */
+int BaseSinkPixels(ClxSprite sprite)
+{
+	static std::unordered_map<const uint8_t *, int> cache;
+	const uint8_t *key = sprite.pixelData();
+	const auto found = cache.find(key);
+	if (found != cache.end())
+		return found->second;
+	if (cache.size() > 8000)
+		cache.clear();
+	std::vector<int16_t> pixels;
+	DecodeClx(sprite, pixels);
+	const int width = sprite.width();
+	const int lowest = sprite.height() - 1 - FootPadding(sprite);
+	int widest = 0;
+	for (int row = lowest; row >= 0 && row > lowest - 16; row--) {
+		int first = width;
+		int last = -1;
+		for (int x = 0; x < width; x++) {
+			if (pixels[static_cast<size_t>(row) * width + x] > 0) {
+				first = std::min(first, x);
+				last = x;
+			}
+		}
+		widest = std::max(widest, last - first + 1);
+	}
+	const int sink = widest / 4;
+	cache.emplace(key, sink);
+	return sink;
+}
+
+/**
  * @param grounded the feet (lowest visible pixel) stand on the floor, scaled with the sprite; otherwise the sprite's
  * bottom edge sits a fixed few pixels below the floor
  */
@@ -166,7 +200,17 @@ void CollectObjects(std::vector<Entity> &entities)
 			continue; // doors are part of the walls
 		if (LightAt(object.position) >= LightsMax)
 			continue;
-		Entity entity = MakeSpriteEntity(EntityKind::Object, id, object.position, TileCenter(object.position), object.currentSprite(), 1.0F, true);
+		const ClxSprite sprite = object.currentSprite();
+		// Sprites that are mostly empty below (the flame of a torch stand, which stands in the tile's own art) keep
+		// the art's alignment: grounding them would drop the flame to the floor.
+		const bool grounded = FootPadding(sprite) * 10 < sprite.height() * 3;
+		Entity entity = MakeSpriteEntity(EntityKind::Object, id, object.position, TileCenter(object.position), sprite, 1.0F, grounded);
+		// A grounded object (a sarcophagus, a barrel) stands on the middle of its base, not on its front corner;
+		// the floor hides the part that sinks below it.
+		if (grounded)
+			entity.bottom -= static_cast<float>(BaseSinkPixels(sprite)) / SpritePixelsPerTileY;
+		else
+			entity.bottom = -static_cast<float>(TILE_HEIGHT / 2) / SpritePixelsPerTileY; // the iso renderer puts the sprite's bottom at the tile's front corner
 		entity.lit = object.applyLighting;
 		entities.push_back(entity);
 	}
@@ -240,6 +284,8 @@ void CollectProps(Vec2 viewerPos, std::vector<Entity> &entities)
 			const PieceTextures &textures = GetPieceTextures(dPiece[x][y]);
 			if (!textures.hasTallArt || (!town && !textures.isFreeStanding))
 				continue;
+			if (!town && IsStructureTile(tile))
+				continue; // drawn as a mesh
 			if (town && BuildingsEnabled() && IsBuildingTile(tile))
 				continue; // drawn as part of a reconstructed building
 			Entity entity {};
