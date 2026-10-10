@@ -269,6 +269,16 @@ std::string DebugCmdFpHouseMeshes(bool enabled)
 	return enabled ? "House meshes on." : "House meshes off (voxels).";
 }
 
+std::string DebugCmdFpDumpIso(int x0, int y0, int x1, int y1, std::string path)
+{
+	return fp::DumpIsoRegion(x0, y0, x1, y1, path) ? "Iso region dumped." : "Could not dump the iso region.";
+}
+
+std::string DebugCmdFpTileMap(int x0, int y0, int x1, int y1)
+{
+	return fp::TileMap(x0, y0, x1, y1);
+}
+
 } // namespace
 
 sol::table LuaDevFirstPersonModule(sol::state_view &lua)
@@ -286,6 +296,8 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "housemodels", "(enabled: boolean)", "Draw town houses with the voxel models from the Tristram plaza reference (default) or as fitted boxes.", &DebugCmdFpHouseModels);
 	LuaSetDocFn(table, "housetextures", "(enabled: boolean)", "Texture the voxel houses with walls and thatch cut out of their own iso art (default) or ranked palette colours.", &DebugCmdFpHouseTextures);
 	LuaSetDocFn(table, "housemeshes", "(enabled: boolean)", "Draw the house models as textured triangle meshes (default) or as voxels.", &DebugCmdFpHouseMeshes);
+	LuaSetDocFn(table, "dumpiso", "(x0: number, y0: number, x1: number, y1: number, path: string)", "Dump the original iso art of a tile rectangle (PPM).", &DebugCmdFpDumpIso);
+	LuaSetDocFn(table, "tilemap", "(x0: number, y0: number, x1: number, y1: number)", "ASCII map of solid (#, s), tall-art (a) and building (B) tiles.", &DebugCmdFpTileMap);
 	LuaSetDocFn(table, "on", "(enabled: boolean)", "Switch between first-person and the original view.", &DebugCmdFpOn);
 	LuaSetDocFn(table, "buildings", "(enabled: boolean)", "Draw town houses as reconstructed 3D models (default) or flat billboards.", &DebugCmdFpBuildings);
 	return table;

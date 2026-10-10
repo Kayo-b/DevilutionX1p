@@ -91,16 +91,19 @@ struct SurfaceTexture {
 /** @brief A triangle of a house mesh in world space, with how its texture is laid on. */
 struct WorldTriangle {
 	std::array<V3, 3> p;
-	uint8_t mapping;    // MeshWallAlongX / MeshWallAlongY / MeshFlat / MeshRoof
+	uint8_t mapping;    // MeshWallAlongX / MeshWallAlongY / MeshFlat / MeshRoof / MeshRoofFlat
 	uint8_t darkness;   // SurfaceShade step for surfaces turned away from the light
-	float slopeScale;   // roof: length down the slope per unit of horizontal distance
+	bool roof;          // takes the thatch patch (else the wall patch)
+	float slopeScale;   // roof: length along the slope per unit of horizontal distance
+	float downX;        // roof: horizontal direction straight down the slope
+	float downY;
 };
 
 enum : uint8_t {
 	MeshWallAlongX, // a wall running along x: u follows world x
 	MeshWallAlongY,
 	MeshFlat, // horizontal: u, v follow world x, y
-	MeshRoof,
+	MeshRoof, // a roof slope: u along it, v up it
 };
 
 struct Building {
@@ -130,6 +133,7 @@ struct Building {
 	SurfaceTexture roofPatchVoxel;
 	std::vector<WorldTriangle> mesh; // the model's surface in world space, when the model has a mesh
 	float boundsOverhang = 0;        // how far the model reaches past the footprint, for screen culling
+	int landmark = -1;               // index into Landmarks for the hand-placed buildings
 };
 
 struct LevelKey {
@@ -602,6 +606,84 @@ void LoadHouseModels()
 	LoadHouseMeshes();
 }
 
+/** @brief A landmark mesh from landmarks.bin (see research/tristram_plaza/export_landmarks.py). */
+struct LandmarkMesh {
+	std::string name;
+	std::vector<std::array<float, 9>> triangles; // u, w (0..1 over the plaza extent), z (plaza units) per vertex
+	std::vector<uint8_t> classes;                // 0 wall, 1 roof, 2 door
+};
+
+/**
+ * @brief Where a landmark's plaza mesh goes in town. These buildings are too complex for the footprint detection
+ * (an L-shaped tavern, a smithy hall with an open porch), so they are placed by hand over the town map, measured
+ * against the iso art (research/tristram_plaza: fitted by silhouette overlap, then checked by eye).
+ */
+struct LandmarkPlacement {
+	const char *name;
+	Point claimMin; // tiles that belong to the landmark: detected houses overlapping them are dropped
+	Point claimMax;
+	float x0;       // world position of the plaza extent: u = 0 .. 1 maps to x0 .. x1
+	float x1;
+	float y0;       // w = 0 .. 1 maps to y0 .. y1 (after flipW)
+	float y1;
+	float zScale;   // world height per plaza unit, up to eaveIn
+	float eaveIn;   // plaza height where the scale changes (the eaves)
+	float zScaleAbove; // world height per plaza unit above it, so a low eave can be lifted without a towering ridge
+	bool flipW;     // the plaza's y axis runs the other way round to the town's
+	std::array<Vec2, 2> posts; // thin wooden posts holding up an open roof; { 0, 0 } for none
+};
+
+const std::array<LandmarkPlacement, 2> Landmarks { {
+	// Griswold's smithy: the long hall along x, and over the forge where he stands an open porch roof on two posts.
+	// The plaza porch eaves are low; the art has them at the hall's wall height, high enough to stand under.
+	{ "smithy", { 60, 56 }, { 71, 65 }, 60.6F, 72.25F, 55.75F, 65.5F, 1.45F, 1.0F, 0.55F, true, { Vec2 { 61.3F, 64.9F }, Vec2 { 64.7F, 64.9F } } },
+	// Ogden's tavern: two front gables with the door in the corner between them, where Ogden stands.
+	{ "ogden", { 46, 53 }, { 57, 63 }, 46.75F, 57.0F, 55.0F, 64.0F, 0.76F, 100.0F, 0.76F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } } },
+} };
+
+std::vector<LandmarkMesh> LandmarkMeshes;
+bool LandmarksLoaded = false;
+
+void LoadLandmarks()
+{
+	if (LandmarksLoaded)
+		return;
+	LandmarksLoaded = true;
+	FILE *f = OpenHouseAsset("FP_LANDMARKS", "landmarks.bin");
+	if (f == nullptr) {
+		LogInfo("fp: landmarks not found (landmarks.bin)");
+		return;
+	}
+	auto readAll = [&](void *dst, size_t size) { return std::fread(dst, 1, size, f) == size; };
+	char magic[4];
+	uint32_t count = 0;
+	if (!readAll(magic, 4) || std::memcmp(magic, "FPL1", 4) != 0 || !readAll(&count, 4)) {
+		std::fclose(f);
+		return;
+	}
+	for (uint32_t m = 0; m < count; m++) {
+		LandmarkMesh mesh;
+		uint8_t nameLength = 0;
+		float height = 0;
+		uint32_t triangleCount = 0;
+		if (!readAll(&nameLength, 1))
+			break;
+		mesh.name.resize(nameLength);
+		if (!readAll(mesh.name.data(), nameLength) || !readAll(&height, 4) || !readAll(&triangleCount, 4))
+			break;
+		mesh.triangles.resize(triangleCount);
+		mesh.classes.resize(triangleCount);
+		bool ok = true;
+		for (uint32_t t = 0; t < triangleCount && ok; t++)
+			ok = readAll(mesh.triangles[t].data(), sizeof(float) * 9) && readAll(&mesh.classes[t], 1);
+		if (!ok)
+			break;
+		LandmarkMeshes.push_back(std::move(mesh));
+	}
+	std::fclose(f);
+	LogInfo("fp: loaded {} landmark meshes", LandmarkMeshes.size());
+}
+
 int PaletteBrightness(int index)
 {
 	const SDL_Color c = logical_palette[index];
@@ -836,6 +918,29 @@ float VoxelSize(const Building &b)
 }
 
 /**
+ * @brief Texel of a patch laid over a surface in patch-sized cells, each cell taking the patch from its own hashed
+ * offset and mirroring, so the repeats do not line up into a visible grid. Coordinates in art pixels.
+ */
+uint8_t ScatteredTexel(const SurfaceTexture &patch, float u, float v)
+{
+	const int cellU = static_cast<int>(std::floor(u / static_cast<float>(patch.width)));
+	const int cellV = static_cast<int>(std::floor(v / static_cast<float>(patch.height)));
+	uint32_t hash = static_cast<uint32_t>(cellU) * 73856093U ^ static_cast<uint32_t>(cellV) * 19349663U;
+	hash ^= hash >> 13;
+	hash *= 0x5bd1e995U;
+	hash ^= hash >> 15;
+	int x = static_cast<int>(std::floor(u)) - cellU * patch.width;
+	int y = static_cast<int>(std::floor(-v)) + (cellV + 1) * patch.height;
+	x = std::clamp(x, 0, patch.width - 1);
+	y = std::clamp(y, 0, patch.height - 1);
+	if ((hash & 1) != 0)
+		x = patch.width - 1 - x;
+	x = (x + static_cast<int>((hash >> 8) % static_cast<uint32_t>(patch.width))) % patch.width;
+	y = (y + static_cast<int>((hash >> 20) % static_cast<uint32_t>(patch.height))) % patch.height;
+	return patch.pixels[static_cast<size_t>(y) * patch.width + x];
+}
+
+/**
  * @brief Blurs a patch over the size one voxel covers, so a voxel shows the average of the art under it instead of
  * one point of it (which beats into stripes against fine thatch strands). Results stay in the patch's own colours.
  */
@@ -883,6 +988,8 @@ void FilterPatch(SurfaceTexture &patch, int sizeX, int sizeY)
 	patch.pixels.swap(filtered);
 }
 
+void AddMeshTriangle(Building &b, const std::array<V3, 3> &p, bool roof, V3 middle);
+
 /** @brief Places the model's mesh over the footprint, the same way DrawHouseModel places its voxels. */
 void BuildMesh(Building &b)
 {
@@ -910,27 +1017,43 @@ void BuildMesh(Building &b)
 		return V3 { cx + (b.longAlongX ? along : across), cy + (b.longAlongX ? across : along), q[2] * stepUp };
 	};
 	for (size_t t = 0; t < model.triangles.size(); t++) {
-		WorldTriangle tri;
+		std::array<V3, 3> p;
 		for (int k = 0; k < 3; k++)
-			tri.p[k] = toWorld(&model.triangles[t][static_cast<size_t>(k) * 3]);
+			p[k] = toWorld(&model.triangles[t][static_cast<size_t>(k) * 3]);
+		AddMeshTriangle(b, p, model.triangleClasses[t] == 1, { cx, cy, b.highestZ * 0.3F });
+	}
+}
+
+/** @brief Adds a world triangle to the building's mesh, working out how it is textured and shaded. */
+void AddMeshTriangle(Building &b, const std::array<V3, 3> &p, bool roof, V3 middle)
+{
+	WorldTriangle tri;
+	tri.p = p;
+	{
+		const float cx = middle.x;
+		const float cy = middle.y;
 		const V3 e1 { tri.p[1].x - tri.p[0].x, tri.p[1].y - tri.p[0].y, tri.p[1].z - tri.p[0].z };
 		const V3 e2 { tri.p[2].x - tri.p[0].x, tri.p[2].y - tri.p[0].y, tri.p[2].z - tri.p[0].z };
 		V3 n { e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x };
 		const float length = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
 		if (length < 1e-9F)
-			continue;
+			return;
 		n = { n.x / length, n.y / length, n.z / length };
 		// The mesh's winding is not reliable: orient the normal away from the middle of the house.
 		const V3 centroid { (tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F, (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F, (tri.p[0].z + tri.p[1].z + tri.p[2].z) / 3.0F };
-		if (n.x * (centroid.x - cx) + n.y * (centroid.y - cy) + n.z * (centroid.z - b.highestZ * 0.3F) < 0)
+		if (n.x * (centroid.x - cx) + n.y * (centroid.y - cy) + n.z * (centroid.z - middle.z) < 0)
 			n = { -n.x, -n.y, -n.z };
-		const bool roof = model.triangleClasses[t] == 1;
+		tri.roof = roof;
 		tri.slopeScale = 1.0F;
-		if (roof) {
+		tri.downX = 0;
+		tri.downY = 0;
+		const float horizontal = std::sqrt(n.x * n.x + n.y * n.y);
+		if (roof && horizontal > 0.15F && std::abs(n.z) > 0.25F) {
+			// A slope: the strands of the thatch run straight down it, as they do in the art.
 			tri.mapping = MeshRoof;
-			const float acrossNormal = std::abs(b.longAlongX ? n.y : n.x);
-			const float g = std::min(acrossNormal / std::max(std::abs(n.z), 0.2F), 5.0F);
-			tri.slopeScale = std::sqrt(1.0F + g * g);
+			tri.downX = n.x / horizontal;
+			tri.downY = n.y / horizontal;
+			tri.slopeScale = 1.0F / std::abs(n.z);
 		} else if (std::abs(n.z) > 0.7F) {
 			tri.mapping = MeshFlat;
 		} else {
@@ -945,6 +1068,139 @@ void BuildMesh(Building &b)
 		else if (n.x + n.y < 0.0F)
 			tri.darkness = 1;
 		b.mesh.push_back(tri);
+	}
+}
+
+/** @brief Lowest roof surface above a point (the underside a post holds up); -1 if no roof covers it. */
+float RoofHeightAt(const Building &b, float x, float y)
+{
+	float lowest = -1.0F;
+	for (const WorldTriangle &tri : b.mesh) {
+		if (!tri.roof)
+			continue;
+		const V3 &a = tri.p[0];
+		const V3 &c = tri.p[1];
+		const V3 &d = tri.p[2];
+		const float area = (c.x - a.x) * (d.y - a.y) - (c.y - a.y) * (d.x - a.x);
+		if (std::abs(area) < 1e-6F)
+			continue;
+		const float w1 = ((x - a.x) * (d.y - a.y) - (y - a.y) * (d.x - a.x)) / area;
+		const float w2 = ((c.x - a.x) * (y - a.y) - (c.y - a.y) * (x - a.x)) / area;
+		if (w1 < 0 || w2 < 0 || w1 + w2 > 1)
+			continue;
+		const float z = a.z + w1 * (c.z - a.z) + w2 * (d.z - a.z);
+		if (lowest < 0 || z < lowest)
+			lowest = z;
+	}
+	return lowest;
+}
+
+/** @brief Builds a landmark's mesh from its plaza model and placement, adding the posts of open roofs. */
+void BuildLandmarkMesh(Building &b, const LandmarkPlacement &place, const LandmarkMesh &mesh)
+{
+	b.mesh.clear();
+	float top = 0;
+	auto height = [&](float z) {
+		return z <= place.eaveIn ? z * place.zScale : place.eaveIn * place.zScale + (z - place.eaveIn) * place.zScaleAbove;
+	};
+	auto toWorld = [&](const float *q) {
+		const float w = place.flipW ? 1.0F - q[1] : q[1];
+		return V3 { place.x0 + q[0] * (place.x1 - place.x0), place.y0 + w * (place.y1 - place.y0), height(q[2]) };
+	};
+	for (const auto &t : mesh.triangles)
+		for (int k = 0; k < 3; k++)
+			top = std::max(top, height(t[static_cast<size_t>(k) * 3 + 2]));
+	const V3 middle { (place.x0 + place.x1) / 2.0F, (place.y0 + place.y1) / 2.0F, top * 0.3F };
+	for (size_t t = 0; t < mesh.triangles.size(); t++) {
+		std::array<V3, 3> p;
+		for (int k = 0; k < 3; k++)
+			p[k] = toWorld(&mesh.triangles[t][static_cast<size_t>(k) * 3]);
+		AddMeshTriangle(b, p, mesh.classes[t] == 1, middle);
+	}
+	// Posts: square timbers from the ground to the roof above them, shaded a step darker than the thatch.
+	constexpr float PostHalfWidth = 0.07F;
+	for (const Vec2 post : place.posts) {
+		if (post.x == 0 && post.y == 0)
+			continue;
+		float postHeight = RoofHeightAt(b, post.x, post.y);
+		if (postHeight <= 0)
+			postHeight = 1.5F;
+		const std::array<Vec2, 4> corners { { { post.x - PostHalfWidth, post.y - PostHalfWidth }, { post.x + PostHalfWidth, post.y - PostHalfWidth },
+			{ post.x + PostHalfWidth, post.y + PostHalfWidth }, { post.x - PostHalfWidth, post.y + PostHalfWidth } } };
+		for (int side = 0; side < 4; side++) {
+			const Vec2 a = corners[side];
+			const Vec2 c = corners[(side + 1) % 4];
+			const V3 low0 { a.x, a.y, 0 };
+			const V3 low1 { c.x, c.y, 0 };
+			const V3 high0 { a.x, a.y, postHeight };
+			const V3 high1 { c.x, c.y, postHeight };
+			const V3 inside { post.x, post.y, postHeight / 2.0F };
+			// Timber: the brown of the thatch suits it better than the wall stone.
+			const size_t first = b.mesh.size();
+			AddMeshTriangle(b, { low0, low1, high1 }, true, inside);
+			AddMeshTriangle(b, { low0, high1, high0 }, true, inside);
+			for (size_t i = first; i < b.mesh.size(); i++)
+				b.mesh[i].darkness = std::min<uint8_t>(b.mesh[i].darkness + 1, SurfaceShade.size() - 1);
+		}
+	}
+	b.highestZ = std::max(b.highestZ, top);
+	b.boundsOverhang = std::max({ b.params.overhang, b.x0 - place.x0, place.x1 - b.x1, b.y0 - place.y0, place.y1 - b.y1, 0.0F }) + 0.1F;
+}
+
+/**
+ * @brief Adds the hand-placed landmark buildings, replacing whatever the footprint detection made of their tiles.
+ * Their art is stitched and fitted like any house, for cutting the wall and thatch patches.
+ */
+void AddLandmarks()
+{
+	LoadLandmarks();
+	for (size_t l = 0; l < Landmarks.size(); l++) {
+		const LandmarkPlacement &place = Landmarks[l];
+		const auto mesh = std::find_if(LandmarkMeshes.begin(), LandmarkMeshes.end(), [&](const LandmarkMesh &m) { return m.name == place.name; });
+		if (mesh == LandmarkMeshes.end())
+			continue;
+		// Only where the town map has the building (a modded town may not).
+		int solid = 0;
+		int tiles = 0;
+		for (int y = place.claimMin.y; y <= place.claimMax.y; y++)
+			for (int x = place.claimMin.x; x <= place.claimMax.x; x++, tiles++)
+				solid += IsTileSolid({ x, y }) || GetPieceTextures(dPiece[x][y]).hasTallArt ? 1 : 0;
+		if (solid * 2 < tiles) {
+			LogInfo("fp: landmark {} not found on this town map", place.name);
+			continue;
+		}
+		std::erase_if(Buildings, [&](const Building &b) {
+			return b.x0 <= static_cast<float>(place.claimMax.x) && b.x1 > static_cast<float>(place.claimMin.x) && b.y0 <= static_cast<float>(place.claimMax.y)
+			    && b.y1 > static_cast<float>(place.claimMin.y);
+		});
+		Building b {};
+		b.x0 = static_cast<float>(place.claimMin.x);
+		b.y0 = static_cast<float>(place.claimMin.y);
+		b.x1 = static_cast<float>(place.claimMax.x + 1);
+		b.y1 = static_cast<float>(place.claimMax.y + 1);
+		b.landmark = static_cast<int>(l);
+		std::vector<Point> artTiles;
+		std::vector<Point> groundTiles;
+		for (int y = place.claimMin.y - 2; y <= place.claimMax.y + 2; y++) {
+			for (int x = place.claimMin.x - 2; x <= place.claimMax.x + 2; x++) {
+				if (!InDungeonBounds({ x, y }))
+					continue;
+				const bool inside = x >= place.claimMin.x && x <= place.claimMax.x && y >= place.claimMin.y && y <= place.claimMax.y;
+				if (GetPieceTextures(dPiece[x][y]).hasTallArt && (inside || IsTileSolid({ x, y })))
+					artTiles.push_back({ x, y });
+				else if (inside)
+					groundTiles.push_back({ x, y });
+			}
+		}
+		BuildCanvas(b, artTiles, groundTiles);
+		FitBuilding(b);
+		BuildRamps(b);
+		BuildTextures(b);
+		for (const Point t : artTiles)
+			BuildingTiles[static_cast<size_t>(t.y) * MAXDUNX + t.x] = 1;
+		BuildLandmarkMesh(b, place, *mesh);
+		LogInfo("fp: landmark {} placed with {} triangles", place.name, b.mesh.size());
+		Buildings.push_back(std::move(b));
 	}
 }
 
@@ -1178,23 +1434,39 @@ void BuildAll()
 			Buildings.push_back(std::move(chosen->building));
 		}
 	}
-	// A house whose art shows too little wall or thatch borrows the biggest patch of another house.
-	auto biggest = [](SurfaceTexture Building::*patch) {
-		const SurfaceTexture *best = nullptr;
-		for (const Building &b : Buildings)
-			if ((b.*patch).valid && (best == nullptr || (b.*patch).pixels.size() > best->pixels.size()))
-				best = &(b.*patch);
-		return best != nullptr ? *best : SurfaceTexture {};
+	AddLandmarks();
+	// A house whose art shows too little wall or thatch borrows the patch of the nearest house that has one:
+	// neighbours are built alike, while the biggest patch in town may be the church's.
+	auto usable = [](const SurfaceTexture &patch) { return patch.valid && patch.width >= BorrowPatchBelow && patch.height >= BorrowPatchBelow; };
+	auto nearest = [&](const Building &to, SurfaceTexture Building::*patch) {
+		const Building *best = nullptr;
+		float bestDistance = 0;
+		for (const Building &b : Buildings) {
+			if (&b == &to || !usable(b.*patch))
+				continue;
+			const float dx = (b.x0 + b.x1 - to.x0 - to.x1) / 2.0F;
+			const float dy = (b.y0 + b.y1 - to.y0 - to.y1) / 2.0F;
+			const float distance = dx * dx + dy * dy;
+			if (best == nullptr || distance < bestDistance) {
+				best = &b;
+				bestDistance = distance;
+			}
+		}
+		return best != nullptr ? best->*patch : SurfaceTexture {};
 	};
-	const SurfaceTexture wall = biggest(&Building::wallPatch);
-	const SurfaceTexture roof = biggest(&Building::roofPatch);
-	for (Building &b : Buildings) {
-		if (b.model < 0)
+	std::vector<std::pair<SurfaceTexture, SurfaceTexture>> borrowed(Buildings.size());
+	for (size_t i = 0; i < Buildings.size(); i++) {
+		const Building &b = Buildings[i];
+		borrowed[i] = { usable(b.wallPatch) ? b.wallPatch : nearest(b, &Building::wallPatch), usable(b.roofPatch) ? b.roofPatch : nearest(b, &Building::roofPatch) };
+	}
+	for (size_t i = 0; i < Buildings.size(); i++) {
+		Building &b = Buildings[i];
+		if (b.model < 0 && b.landmark < 0)
 			continue;
-		if (!b.wallPatch.valid || b.wallPatch.width < BorrowPatchBelow || b.wallPatch.height < BorrowPatchBelow)
-			b.wallPatch = wall;
-		if (!b.roofPatch.valid || b.roofPatch.width < BorrowPatchBelow || b.roofPatch.height < BorrowPatchBelow)
-			b.roofPatch = roof;
+		b.wallPatch = borrowed[i].first;
+		b.roofPatch = borrowed[i].second;
+		if (b.landmark >= 0)
+			continue; // the mesh is built already, and there is no voxel model
 		const float voxel = VoxelSize(b);
 		b.wallPatchVoxel = b.wallPatch;
 		b.roofPatchVoxel = b.roofPatch;
@@ -1319,18 +1591,17 @@ void DrawHouseModel(const Surface &out, const Projection &proj, std::vector<floa
 /** @brief Palette colour of a mesh surface point: the house's own art patches tiled at the art's pixel density. */
 uint8_t MeshColor(const Building &b, const WorldTriangle &tri, float wx, float wy, float wz)
 {
+	const SurfaceTexture &patch = tri.roof ? b.roofPatch : b.wallPatch;
+	const float up = tri.roof ? 32.0F : HeightPixels;
 	switch (tri.mapping) {
-	case MeshRoof: {
-		const float along = b.longAlongX ? wx : wy;
-		const float across = b.longAlongX ? wy - (b.y0 + b.y1) / 2.0F : wx - (b.x0 + b.x1) / 2.0F;
-		return TiledTexel(b.roofPatch, along * 32.0F, -std::abs(across) * tri.slopeScale * 32.0F, false);
-	}
+	case MeshRoof:
+		return ScatteredTexel(patch, (tri.downX * wy - tri.downY * wx) * 32.0F, -(tri.downX * wx + tri.downY * wy) * tri.slopeScale * 32.0F);
 	case MeshFlat:
-		return TiledTexel(b.wallPatch, wx * 32.0F, wy * 32.0F, false);
+		return ScatteredTexel(patch, wx * 32.0F, wy * 32.0F);
 	case MeshWallAlongX:
-		return TiledTexel(b.wallPatch, wx * 32.0F, wz * HeightPixels, false);
+		return ScatteredTexel(patch, wx * 32.0F, wz * up);
 	default:
-		return TiledTexel(b.wallPatch, wy * 32.0F, wz * HeightPixels, false);
+		return ScatteredTexel(patch, wy * 32.0F, wz * up);
 	}
 }
 
@@ -1527,6 +1798,57 @@ void DrawBuilding(const Surface &out, const Projection &proj, const std::vector<
 
 } // namespace
 
+#ifdef _DEBUG
+std::string TileMap(int x0, int y0, int x1, int y1)
+{
+	// Rows are y, columns x. '#' solid with tall art, 's' solid flat, 'a' tall art only, 'B' a reconstructed
+	// building's art tile, '.' open ground.
+	std::string map = StrCat("x ", x0, "..", x1, ", y ", y0, "..", y1, "\n");
+	for (int y = y0; y <= y1; y++) {
+		map += StrCat(y < 10 ? " " : "", y, " ");
+		for (int x = x0; x <= x1; x++) {
+			if (!InDungeonBounds({ x, y })) {
+				map += ' ';
+				continue;
+			}
+			const bool solid = IsTileSolid({ x, y });
+			const bool tall = GetPieceTextures(dPiece[x][y]).hasTallArt;
+			char c = solid ? (tall ? '#' : 's') : (tall ? 'a' : '.');
+			if (!BuildingTiles.empty() && BuildingTiles[static_cast<size_t>(y) * MAXDUNX + x] != 0)
+				c = 'B';
+			map += c;
+		}
+		map += '\n';
+	}
+	return map;
+}
+
+bool DumpIsoRegion(int x0, int y0, int x1, int y1, const std::string &path)
+{
+	std::vector<Point> tiles;
+	for (int y = y0; y <= y1; y++)
+		for (int x = x0; x <= x1; x++)
+			if (InDungeonBounds({ x, y }))
+				tiles.push_back({ x, y });
+	if (tiles.empty())
+		return false;
+	Building region {};
+	BuildCanvas(region, tiles, {});
+	FILE *f = std::fopen(path.c_str(), "wb");
+	if (f == nullptr)
+		return false;
+	std::fprintf(f, "P6\n%d %d\n255\n", region.canvasWidth, region.canvasHeight);
+	for (const int16_t pixel : region.canvas) {
+		const SDL_Color c = pixel > 0 ? logical_palette[pixel] : SDL_Color { 0, 0, 0, 255 };
+		std::fputc(c.r, f);
+		std::fputc(c.g, f);
+		std::fputc(c.b, f);
+	}
+	std::fclose(f);
+	return true;
+}
+#endif
+
 bool BuildingsEnabled()
 {
 	return Enabled;
@@ -1573,7 +1895,8 @@ void DrawBuildings(const Surface &out, const Projection &proj, const std::vector
 		int bottom;
 		if (!ScreenBounds(building, proj, left, top, right, bottom))
 			continue;
-		if (HouseModelsOn && building.model >= 0 && HouseMeshesOn && !building.mesh.empty() && building.wallPatch.valid && building.roofPatch.valid)
+		if (HouseModelsOn && (building.model >= 0 || building.landmark >= 0) && (HouseMeshesOn || building.landmark >= 0) && !building.mesh.empty() && building.wallPatch.valid
+		    && building.roofPatch.valid)
 			DrawHouseMesh(out, proj, depthBuffer, building);
 		else if (HouseModelsOn && building.model >= 0)
 			DrawHouseModel(out, proj, depthBuffer, building);

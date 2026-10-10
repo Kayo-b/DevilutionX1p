@@ -10,6 +10,7 @@
  */
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include "engine/point.hpp"
@@ -39,6 +40,13 @@ void SetHouseMeshesEnabled(bool enabled);
  * be hidden behind buildings.
  */
 void DrawBuildings(const Surface &out, const Projection &proj, const std::vector<float> &zBuffer, std::vector<float> &depthBuffer);
+
+#ifdef _DEBUG
+/** @brief Debug: stitches the original iso art of a tile rectangle into a PPM, with the tile grid's own layout. */
+bool DumpIsoRegion(int x0, int y0, int x1, int y1, const std::string &path);
+/** @brief Debug: an ASCII map of solid, tall-art and building tiles in a rectangle. */
+std::string TileMap(int x0, int y0, int x1, int y1);
+#endif
 
 /** @brief Number of reconstructed buildings in the current level (debug). */
 [[nodiscard]] int BuildingCount();

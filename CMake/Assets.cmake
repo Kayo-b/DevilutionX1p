@@ -45,6 +45,7 @@ endif()
 
 set(devilutionx_assets
   fp/housemesh.bin
+  fp/landmarks.bin
   fp/houses.bin
   ASSETS_VERSION
   arena/church.dun
