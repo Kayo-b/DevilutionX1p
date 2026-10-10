@@ -42,7 +42,10 @@ bool IsOpaque(Point tile)
 	if (!InDungeonBounds(tile))
 		return true;
 	// Town has no walls: its buildings and trees are drawn as billboards (see CollectProps) and the rest is ground.
-	return leveltype != DTYPE_TOWN && IsTileSolid(tile);
+	if (leveltype == DTYPE_TOWN || !IsTileSolid(tile))
+		return false;
+	// Free-standing columns are drawn as billboards, so rays pass them.
+	return !GetPieceTextures(dPiece[tile.x][tile.y]).isFreeStanding;
 }
 
 RayHit CastRay(Vec2 origin, Vec2 ray, int skip)

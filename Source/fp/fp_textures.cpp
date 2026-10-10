@@ -40,6 +40,10 @@ constexpr int StructureMinRows = 70;
 /** Upright art up to this wide (of 64 px) and at least this tall (px above the floor diamond) is a pillar. */
 constexpr int PillarMaxWidth = 34;
 constexpr int PillarMinRows = 60;
+/** A free-standing column: thin shaft (px wide, measured this many rows above the floor diamond) under a bigger capital. */
+constexpr int FreeStandingMaxShaft = 30;
+constexpr int FreeStandingShaftRow = 20;
+constexpr int FreeStandingMinOpaque = 300;
 
 /** Light tables that leave colours untouched, so extracted textures hold raw palette indices. */
 const std::array<std::array<uint8_t, LightTableSize>, NumLightingLevels> &IdentityLightTables()
@@ -237,6 +241,7 @@ std::unique_ptr<PieceTextures> BuildPieceTextures(uint16_t pieceId)
 	textures->hasTallArt = false;
 	textures->isStructure = false;
 	textures->isPillar = false;
+	textures->isFreeStanding = false;
 	int opaque = 0;
 	int minRow = height;
 	int minX = ColumnWidth;
@@ -260,9 +265,26 @@ std::unique_ptr<PieceTextures> BuildPieceTextures(uint16_t pieceId)
 		textures->isStructure = tallEnough && static_cast<float>(opaque) >= StructureFillShare * static_cast<float>(box);
 	}
 	textures->column = column;
+	if (textures->hasTallArt && opaque >= FreeStandingMinOpaque && !textures->faceXUsable && !textures->faceYUsable
+	    && HasAnyOf(SOLData[pieceId], TileProperties::Solid | TileProperties::BlockMissile)) {
+		// The width of the shaft, a little above the base: thin for a column, wide for a wall piece.
+		int shaft = 0;
+		for (int row = height - TILE_HEIGHT - FreeStandingShaftRow - 3; row <= height - TILE_HEIGHT - FreeStandingShaftRow + 3; row++) {
+			int first = ColumnWidth;
+			int last = -1;
+			for (int x = 0; x < ColumnWidth; x++) {
+				if (column[static_cast<size_t>(row) * ColumnWidth + x] != NoPixel) {
+					first = std::min(first, x);
+					last = x;
+				}
+			}
+			shaft = std::max(shaft, last >= first ? last - first + 1 : 0);
+		}
+		textures->isFreeStanding = shaft > 0 && shaft <= FreeStandingMaxShaft;
+	}
 	// Only floor pieces have floor triangles; other pieces' bottom micros must not be decoded as triangles.
 	// In town, solid pieces without tall art (water, the void outside the map) are flat ground as well.
-	if (leveltype == DTYPE_TOWN && textures->hasTallArt) {
+	if ((leveltype == DTYPE_TOWN && textures->hasTallArt) || textures->isFreeStanding) {
 		// A town building or tree stands on its own ground: take it from the bottom of the drawn column.
 		const std::vector<int16_t> ground(column.end() - static_cast<ptrdiff_t>(FloorHeight) * ColumnWidth, column.end());
 		textures->floor = ExtractFloor(ground);

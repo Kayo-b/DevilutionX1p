@@ -230,8 +230,7 @@ void CollectCorpses(Vec2 viewerPos, std::vector<Entity> &entities)
 /** @brief Town buildings, trees and rocks: each tile with tall art becomes a billboard of its own iso column. */
 void CollectProps(Vec2 viewerPos, std::vector<Entity> &entities)
 {
-	if (leveltype != DTYPE_TOWN)
-		return;
+	const bool town = leveltype == DTYPE_TOWN;
 	const Point center { static_cast<int>(viewerPos.x), static_cast<int>(viewerPos.y) };
 	for (int y = center.y - PropSearchRadius; y <= center.y + PropSearchRadius; y++) {
 		for (int x = center.x - PropSearchRadius; x <= center.x + PropSearchRadius; x++) {
@@ -239,9 +238,9 @@ void CollectProps(Vec2 viewerPos, std::vector<Entity> &entities)
 			if (!InDungeonBounds(tile))
 				continue;
 			const PieceTextures &textures = GetPieceTextures(dPiece[x][y]);
-			if (!textures.hasTallArt)
+			if (!textures.hasTallArt || (!town && !textures.isFreeStanding))
 				continue;
-			if (BuildingsEnabled() && IsBuildingTile(tile))
+			if (town && BuildingsEnabled() && IsBuildingTile(tile))
 				continue; // drawn as part of a reconstructed building
 			Entity entity {};
 			entity.kind = EntityKind::Prop;
@@ -249,11 +248,12 @@ void CollectProps(Vec2 viewerPos, std::vector<Entity> &entities)
 			entity.tile = tile;
 			entity.pos = TileCenter(tile);
 			entity.width = static_cast<float>(ColumnWidth) / SpritePixelsPerTileX;
-			entity.height = static_cast<float>(ColumnPixelHeight) / SpritePixelsPerTileY;
+			const int columnRows = static_cast<int>(textures.column.size() / ColumnWidth);
+			entity.height = static_cast<float>(columnRows) / SpritePixelsPerTileY;
 			entity.bottom = -FootOffsetPixels / SpritePixelsPerTileY;
 			entity.pixels = &textures.column;
 			entity.pixelsWidth = ColumnWidth;
-			entity.pixelsHeight = ColumnPixelHeight;
+			entity.pixelsHeight = columnRows;
 			entity.lit = true;
 			entities.push_back(entity);
 		}

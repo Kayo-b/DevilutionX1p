@@ -46,6 +46,11 @@ struct PieceTextures {
 	bool isStructure;
 	/** A narrow upright piece of art (round pillar, torch stand) that looks the same from every side, so it can be a billboard. */
 	bool isPillar;
+	/**
+	 * A solid piece that is really a free-standing column (thin shaft under a wider capital). It has no usable wall
+	 * faces, so it is drawn as an upright billboard of its own art instead of as a wall cube.
+	 */
+	bool isFreeStanding;
 };
 
 /** @brief Height in pixels of wall face textures on the current level (depends on the tileset). */

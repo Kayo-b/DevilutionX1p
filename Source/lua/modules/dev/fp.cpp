@@ -17,6 +17,7 @@
 #include "fp/fp_textures.hpp"
 #include "fp/fp_view.hpp"
 #include "fp/fp_world.hpp"
+#include "engine/palette.h"
 #include "lua/metadoc.hpp"
 #include "monster.h"
 #include "player.h"
@@ -121,7 +122,7 @@ std::string DebugCmdFpMap(std::optional<int> radius)
 			if (x == center.x && y == center.y)
 				c = '@';
 			else if (solid)
-				c = t.isPillar ? 'P' : (t.faceXUsable || t.faceYUsable) ? 'S' : (t.hasTallArt ? 'p' : 'R');
+				c = t.isFreeStanding ? 'C' : t.isPillar ? 'P' : (t.faceXUsable || t.faceYUsable) ? 'S' : (t.hasTallArt ? 'p' : 'R');
 			else if (t.hasTallArt)
 				c = 't';
 			row += c;
@@ -194,6 +195,29 @@ std::string DebugCmdFpMonsterState()
 	return result;
 }
 
+std::string DebugCmdFpDumpPiece(int x, int y, std::string path)
+{
+	if (!InDungeonBounds({ x, y }))
+		return "Out of bounds.";
+	const fp::PieceTextures &t = fp::GetPieceTextures(dPiece[x][y]);
+	const int h = static_cast<int>(t.column.size() / 64);
+	std::vector<uint8_t> image(static_cast<size_t>(64) * h * 3, 40);
+	for (int i = 0; i < 64 * h; i++) {
+		if (t.column[i] == fp::NoPixel)
+			continue;
+		const SDL_Color c = logical_palette[t.column[i]];
+		image[i * 3] = c.r;
+		image[i * 3 + 1] = c.g;
+		image[i * 3 + 2] = c.b;
+	}
+	if (FILE *f = std::fopen(path.c_str(), "wb")) {
+		std::fprintf(f, "P6\n64 %d\n255\n", h);
+		std::fwrite(image.data(), 1, image.size(), f);
+		std::fclose(f);
+	}
+	return "Dumped.";
+}
+
 std::string DebugCmdFpOn(bool enabled)
 {
 	if (fp::IsFirstPersonActive() != enabled)
@@ -219,6 +243,7 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "map", "(radius: number = 10)", "Log a tile-type map around the player.", &DebugCmdFpMap);
 	LuaSetDocFn(table, "killmonsters", "()", "Kill every active monster (to look at corpses).", &DebugCmdFpKillMonsters);
 	LuaSetDocFn(table, "monsterstate", "()", "Describe monsters near the player and count corpse tiles.", &DebugCmdFpMonsterState);
+	LuaSetDocFn(table, "dumppiece", "(x: number, y: number, path: string)", "Dump the iso column art of the piece at a tile (PPM).", &DebugCmdFpDumpPiece);
 	LuaSetDocFn(table, "on", "(enabled: boolean)", "Switch between first-person and the original view.", &DebugCmdFpOn);
 	LuaSetDocFn(table, "buildings", "(enabled: boolean)", "Draw town houses as reconstructed 3D models (default) or flat billboards.", &DebugCmdFpBuildings);
 	return table;
