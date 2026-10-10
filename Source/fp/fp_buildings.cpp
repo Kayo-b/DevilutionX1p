@@ -109,6 +109,8 @@ struct WorldTriangle {
 	float normalY;
 	bool mirrored;
 	bool faceX;         // MeshWallFace: the x face texture (else the y face)
+	bool cull = false;  // one-sided: skipped when turned away from the camera (closed shapes, slabs)
+	V3 normal { 0, 0, 0 }; // outward, for culling
 	uint8_t fallback;   // colour where the art has no pixel
 };
 
@@ -1678,7 +1680,11 @@ void RasterizeTriangles(const Surface &out, const Projection &proj, std::vector<
 		return CameraVertex { a.depth + (c.depth - a.depth) * t, a.lateral + (c.lateral - a.lateral) * t, a.height + (c.height - a.height) * t,
 			{ a.world.x + (c.world.x - a.world.x) * t, a.world.y + (c.world.y - a.world.y) * t, a.world.z + (c.world.z - a.world.z) * t } };
 	};
+	const V3 eye { proj.pos.x, proj.pos.y, EyeHeight };
+	static const bool NoCull = std::getenv("FP_NO_CULL") != nullptr; // debug
 	for (const WorldTriangle &tri : triangles) {
+		if (tri.cull && !NoCull && tri.normal.x * (tri.p[0].x - eye.x) + tri.normal.y * (tri.p[0].y - eye.y) + tri.normal.z * (tri.p[0].z - eye.z) > 0)
+			continue;
 		std::array<CameraVertex, 3> in { toCamera(tri.p[0]), toCamera(tri.p[1]), toCamera(tri.p[2]) };
 		if (in[0].depth < Near && in[1].depth < Near && in[2].depth < Near)
 			continue;
@@ -1896,6 +1902,8 @@ void AddStructureFace(Building &b, std::initializer_list<V3> corners, V3 normal,
 		tri.darkness = std::max<uint8_t>(darkness, 1);
 	tri.fallback = 0;
 	tri.slopeScale = 1.0F;
+	tri.cull = true;
+	tri.normal = normal;
 	for (size_t k = 1; k + 1 < p.size(); k++) {
 		tri.p = { p[0], p[k], p[k + 1] };
 		b.mesh.push_back(tri);
