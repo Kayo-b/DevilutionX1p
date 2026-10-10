@@ -293,6 +293,30 @@ void FindRecess(const std::vector<int16_t> &face, int rows, std::vector<int> &re
 				smooth[k] = faceHeight;
 		u = end;
 	}
+	// An arch is highest in its middle and falls away to both sides: within each span, make the outline fall
+	// steadily from its highest point outwards, and soften the steps.
+	for (int u = 0; u < FaceTextureWidth;) {
+		if (smooth[u] >= faceHeight) {
+			u++;
+			continue;
+		}
+		int end = u;
+		while (end < FaceTextureWidth && smooth[end] < faceHeight)
+			end++;
+		int peak = u;
+		for (int k = u; k < end; k++)
+			if (smooth[k] < smooth[peak] || (smooth[k] == smooth[peak] && std::abs(k * 2 - (u + end)) < std::abs(peak * 2 - (u + end))))
+				peak = k;
+		for (int k = peak + 1; k < end; k++)
+			smooth[k] = std::max(smooth[k], smooth[k - 1]);
+		for (int k = peak - 1; k >= u; k--)
+			smooth[k] = std::max(smooth[k], smooth[k + 1]);
+		std::vector<int> soft(smooth.begin() + u, smooth.begin() + end);
+		for (int k = u + 1; k + 1 < end; k++)
+			soft[k - u] = (smooth[k - 1] + 2 * smooth[k] + smooth[k + 1] + 2) / 4;
+		std::copy(soft.begin(), soft.end(), smooth.begin() + u);
+		u = end;
+	}
 	int64_t sum = 0;
 	int count = 0;
 	for (int u = 0; u < FaceTextureWidth; u++)
