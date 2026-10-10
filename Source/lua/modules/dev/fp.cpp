@@ -304,6 +304,50 @@ std::string DebugCmdFpFeatures()
 	return out;
 }
 
+std::string DebugCmdFpDumpFaces(int x0, int y0, int x1, int y1, std::string path)
+{
+	// Both faces of each tile in the rectangle side by side (x face, then y face), tiles in a row; holes in red.
+	const int w = fp::FaceTextureWidth;
+	const int h = fp::FaceTextureHeight();
+	const int cols = (x1 - x0 + 1) * (y1 - y0 + 1);
+	std::vector<uint8_t> image(static_cast<size_t>(cols) * 2 * (w + 2) * h * 3, 40);
+	const int width = cols * 2 * (w + 2);
+	int n = 0;
+	for (int y = y0; y <= y1; y++) {
+		for (int x = x0; x <= x1; x++, n++) {
+			const fp::PieceTextures &t = fp::GetPieceTextures(dPiece[x][y]);
+			for (int side = 0; side < 2; side++) {
+				const std::vector<int16_t> &face = side == 0 ? t.faceX : t.faceY;
+				const std::vector<uint8_t> &holes = side == 0 ? t.holesX : t.holesY;
+				const int left = (n * 2 + side) * (w + 2);
+				for (int v = 0; v < h; v++) {
+					for (int u = 0; u < w; u++) {
+						const size_t at = static_cast<size_t>(v) * w + u;
+						uint8_t *px = &image[(static_cast<size_t>(v) * width + left + u) * 3];
+						if (face[at] > 0) {
+							const SDL_Color c = logical_palette[face[at]];
+							px[0] = c.r;
+							px[1] = c.g;
+							px[2] = c.b;
+						} else if (holes[at] != 0) {
+							px[0] = 200;
+							px[1] = 0;
+							px[2] = 0;
+						}
+					}
+				}
+			}
+		}
+	}
+	FILE *f = std::fopen(path.c_str(), "wb");
+	if (f == nullptr)
+		return "Could not write.";
+	std::fprintf(f, "P6\n%d %d\n255\n", width, h);
+	std::fwrite(image.data(), 1, image.size(), f);
+	std::fclose(f);
+	return StrCat("Faces dumped (", cols, " tiles).");
+}
+
 } // namespace
 
 sol::table LuaDevFirstPersonModule(sol::state_view &lua)
@@ -324,6 +368,7 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "dumpiso", "(x0: number, y0: number, x1: number, y1: number, path: string)", "Dump the original iso art of a tile rectangle (PPM).", &DebugCmdFpDumpIso);
 	LuaSetDocFn(table, "tilemap", "(x0: number, y0: number, x1: number, y1: number)", "ASCII map of solid (#, s), tall-art (a) and building (B) tiles.", &DebugCmdFpTileMap);
 	LuaSetDocFn(table, "features", "()", "List stairs triggers, free-standing column pieces and objects (with sprite size and bottom padding).", &DebugCmdFpFeatures);
+	LuaSetDocFn(table, "dumpfaces", "(x0: number, y0: number, x1: number, y1: number, path: string)", "Dump the wall face textures (x face, y face) of the tiles in a rectangle; openings red (PPM).", &DebugCmdFpDumpFaces);
 	LuaSetDocFn(table, "on", "(enabled: boolean)", "Switch between first-person and the original view.", &DebugCmdFpOn);
 	LuaSetDocFn(table, "buildings", "(enabled: boolean)", "Draw town houses as reconstructed 3D models (default) or flat billboards.", &DebugCmdFpBuildings);
 	return table;

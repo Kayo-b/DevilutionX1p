@@ -44,6 +44,7 @@ if (Gettext_FOUND)
 endif()
 
 set(devilutionx_assets
+  fp/dungeonkit.bin
   fp/housemesh.bin
   fp/landmarks.bin
   fp/houses.bin

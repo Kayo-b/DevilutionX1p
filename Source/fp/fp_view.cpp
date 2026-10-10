@@ -328,7 +328,7 @@ void DrawEntities(const Surface &out, const Projection &proj, const std::vector<
 		}
 	}
 	for (const Entity &entity : entities) {
-		if (entity.flat && depthBuffer != nullptr)
+		if ((entity.flat && depthBuffer != nullptr) || entity.hidden)
 			continue;
 		const BillboardRect rect = ProjectBillboard(proj, entity);
 		if (rect.visible && (entity.sprite || entity.pixels != nullptr))

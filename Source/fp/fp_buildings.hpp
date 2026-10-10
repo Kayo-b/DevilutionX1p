@@ -52,6 +52,8 @@ std::string TileMap(int x0, int y0, int x1, int y1);
 [[nodiscard]] bool IsStructureTile(Point tile);
 /** @brief Whether the floor is open at a point (the pit of the stairs down), so the floor is not drawn there. */
 [[nodiscard]] bool IsFloorHole(float x, float y);
+/** @brief Whether an object is drawn as a 3D box of its own sprite (a sarcophagus) rather than a billboard. */
+[[nodiscard]] bool IsObjectDrawnAsMesh(int id);
 /** @brief Draws the dungeon's mesh structures, depth tested against everything drawn so far. */
 void DrawStructures(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer);
 

@@ -44,6 +44,8 @@ struct Entity {
 	bool lit; // apply the light table of the entity's tile
 	/** Drawn lying on the floor from the original iso art (corpses), instead of standing up as a billboard. */
 	bool flat = false;
+	/** Drawn some other way (as a mesh): kept only so it can be clicked. */
+	bool hidden = false;
 };
 
 /**

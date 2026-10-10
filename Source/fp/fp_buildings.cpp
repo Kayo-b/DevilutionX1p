@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "engine/light_tables.hpp"
@@ -23,6 +24,8 @@
 #include "levels/gendung.h"
 #include "levels/tile_properties.hpp"
 #include "levels/trigs.h"
+#include "objects.h"
+#include "tables/objdat.h"
 #include "interfac.h"
 #include "utils/log.hpp"
 #include "utils/paths.h"
@@ -115,6 +118,7 @@ enum : uint8_t {
 	MeshRoof, // a roof slope: u along it, v up it
 	MeshProjective, // the structure's own iso art, projected (mirrored on the far side)
 	MeshPit,        // below the floor, where the art shows nothing: the structure's wall art repeated, darkening with depth
+	MeshFloorArt,   // the floor art under the point (what the art paints on the floor, raised into 3D: the stairs' fan)
 };
 
 struct Building {
@@ -661,14 +665,12 @@ const std::array<LandmarkPlacement, 2> Landmarks { {
 std::vector<LandmarkMesh> LandmarkMeshes;
 bool LandmarksLoaded = false;
 
-void LoadLandmarks()
+/** @brief Reads a mesh file in the landmarks.bin format (see research/tristram_plaza/export_landmarks.py). */
+void LoadMeshFile(const char *envName, const char *fileName, std::vector<LandmarkMesh> &meshes)
 {
-	if (LandmarksLoaded)
-		return;
-	LandmarksLoaded = true;
-	FILE *f = OpenHouseAsset("FP_LANDMARKS", "landmarks.bin");
+	FILE *f = OpenHouseAsset(envName, fileName);
 	if (f == nullptr) {
-		LogInfo("fp: landmarks not found (landmarks.bin)");
+		LogInfo("fp: {} not found", fileName);
 		return;
 	}
 	auto readAll = [&](void *dst, size_t size) { return std::fread(dst, 1, size, f) == size; };
@@ -695,10 +697,33 @@ void LoadLandmarks()
 			ok = readAll(mesh.triangles[t].data(), sizeof(float) * 9) && readAll(&mesh.classes[t], 1);
 		if (!ok)
 			break;
-		LandmarkMeshes.push_back(std::move(mesh));
+		meshes.push_back(std::move(mesh));
 	}
 	std::fclose(f);
-	LogInfo("fp: loaded {} landmark meshes", LandmarkMeshes.size());
+	LogInfo("fp: loaded {} meshes from {}", meshes.size(), fileName);
+}
+
+void LoadLandmarks()
+{
+	if (LandmarksLoaded)
+		return;
+	LandmarksLoaded = true;
+	LoadMeshFile("FP_LANDMARKS", "landmarks.bin", LandmarkMeshes);
+}
+
+/** @brief Pieces of the dungeon kit (research/dungeon_pieces/export_kit.py), or null if missing. */
+const LandmarkMesh *KitMesh(std::string_view name)
+{
+	static std::vector<LandmarkMesh> kit;
+	static bool loaded = false;
+	if (!loaded) {
+		loaded = true;
+		LoadMeshFile("FP_DUNGEONKIT", "dungeonkit.bin", kit);
+	}
+	for (const LandmarkMesh &mesh : kit)
+		if (mesh.name == name)
+			return &mesh;
+	return nullptr;
 }
 
 int PaletteBrightness(int index)
@@ -2192,6 +2217,87 @@ bool BuildStairsDown(Structure &st, Point trigger)
 	return true;
 }
 
+/**
+ * @brief The cathedral's stairs up to town: the dungeon kit's flight with its round fan of steps (stairs_01),
+ * laid over the tiles where the art draws them. The flight climbs from the trigger towards -y over 4 tiles to the
+ * top of the walls; the fan, which the art paints on the floor in front, spreads 2 tiles towards +y.
+ */
+bool BuildStairsUp(Structure &st, Point trigger)
+{
+	const LandmarkMesh *kit = KitMesh("stairs_01");
+	if (kit == nullptr)
+		return false;
+	for (int dx = 0; dx < 2; dx++) {
+		if (!InDungeonBounds({ trigger.x + dx, trigger.y - 3 }) || IsTileSolid({ trigger.x + dx, trigger.y }))
+			return false;
+		for (int dy = 1; dy <= 3; dy++)
+			if (!IsTileSolid({ trigger.x + dx, trigger.y - dy }))
+				return false;
+	}
+	// The art: the flight's tiles and the floor in front with the painted fan.
+	std::vector<Point> art;
+	for (int y = trigger.y - 4; y <= trigger.y + 2; y++)
+		for (int x = trigger.x - 1; x <= trigger.x + 2; x++)
+			if (InDungeonBounds({ x, y }))
+				art.push_back({ x, y });
+	BuildCanvas(st.art, art, {});
+	// stairs_01 (model units): the flight runs from x = 0 (top, 3.25 high) to x = 2.4, 1.82 wide around y = 2.02;
+	// the fan from x = 2.4 to 4.78, 1.02 high, 4.02 across.
+	constexpr float ModelLength = 4.78F;
+	constexpr float ModelWidth = 4.02F;
+	constexpr float FlightEnd = 2.4F;
+	constexpr float FanTop = 1.02F;
+	constexpr float ModelTop = 3.25F;
+	constexpr float WorldFanTop = 0.45F;
+	constexpr float WorldTop = 2.4F;
+	const float top = static_cast<float>(trigger.y - 4);
+	const float axis = static_cast<float>(trigger.x + 1);
+	auto toWorld = [&](const float *q) {
+		const float along = q[0] * ModelLength;
+		const float across = q[1] * ModelWidth - ModelWidth / 2.0F;
+		const float z = q[2];
+		// The fan is smaller than the model's: the art paints it about 1.5 tiles out from the foot of the flight.
+		const bool fan = along >= FlightEnd;
+		const float wy = fan ? static_cast<float>(trigger.y) + (along - FlightEnd) * 0.63F : top + along * (4.0F / FlightEnd);
+		const float wz = z <= FanTop ? z * (WorldFanTop / FanTop) : WorldFanTop + (z - FanTop) * ((WorldTop - WorldFanTop) / (ModelTop - FanTop));
+		return V3 { axis + across * (fan ? 0.75F : 1.1F), wy, wz };
+	};
+	const Vec2 mid { axis, static_cast<float>(trigger.y) - 1.0F };
+	for (const auto &t : kit->triangles) {
+		const V3 p0 = toWorld(&t[0]);
+		const V3 p1 = toWorld(&t[3]);
+		const V3 p2 = toWorld(&t[6]);
+		const V3 e1 { p1.x - p0.x, p1.y - p0.y, p1.z - p0.z };
+		const V3 e2 { p2.x - p0.x, p2.y - p0.y, p2.z - p0.z };
+		V3 n { e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x };
+		// Outward: treads up; on the flight, risers towards its foot (+y) and sides away from its axis; on the fan,
+		// away from its middle.
+		const V3 c { (p0.x + p1.x + p2.x) / 3.0F, (p0.y + p1.y + p2.y) / 3.0F, (p0.z + p1.z + p2.z) / 3.0F };
+		const float foot = static_cast<float>(trigger.y);
+		bool flip;
+		if (std::abs(n.z) > 0.5F * std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z))
+			flip = n.z < 0;
+		else if (c.y < foot)
+			flip = std::abs(n.y) > std::abs(n.x) ? n.y < 0 : n.x * (c.x - axis) < 0;
+		else
+			flip = n.x * (c.x - axis) + n.y * (c.y - foot) < 0;
+		if (flip)
+			n = { -n.x, -n.y, -n.z };
+		// The fan takes the floor art it stands on; the flight (down to its last riser, on the foot line) its own.
+		const bool tread = std::abs(n.z) > 0.5F * std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+		const bool onFan = c.y > foot + 0.02F || (tread && c.y >= foot - 0.05F);
+		AddStructureFace(st.art, { p0, p1, p2 }, n, mid, onFan ? MeshFloorArt : MeshProjective);
+	}
+	for (int dx = 0; dx < 2; dx++)
+		for (int dy = 1; dy <= 3; dy++)
+			StructureTiles[static_cast<size_t>(trigger.y - dy) * MAXDUNX + trigger.x + dx] = 1;
+	for (int y = trigger.y; y <= trigger.y + 2; y++)
+		for (int x = trigger.x - 1; x <= trigger.x + 2; x++)
+			if (InDungeonBounds({ x, y }) && !IsTileSolid({ x, y }))
+				StructureTiles[static_cast<size_t>(y) * MAXDUNX + x] = 1;
+	return true;
+}
+
 /** @brief Fallback colour per triangle: the art at its middle, for where the art has no pixel. */
 void SetStructureFallbacks(Structure &st)
 {
@@ -2203,18 +2309,118 @@ void SetStructureFallbacks(Structure &st)
 			color = SampleArt(st.art, q.x, q.y, std::max(q.z, 0.05F));
 		}
 		tri.fallback = color > 0 ? PatchColor(color) : uint8_t { 0 };
+		if (tri.mapping == MeshFloorArt) {
+			const int16_t ground = GetGroundFloor()[static_cast<size_t>(FloorTextureSize / 2) * FloorTextureSize + FloorTextureSize / 2];
+			tri.fallback = ground > 0 ? PatchColor(ground) : tri.fallback;
+		}
 	}
+}
+
+/** @brief An object drawn as a box textured with its own sprite (a sarcophagus), rebuilt when its frame changes. */
+struct ObjectBox {
+	const uint8_t *frame = nullptr;
+	Point tile { -1, -1 };
+	Structure st;
+};
+
+std::unordered_map<int, ObjectBox> ObjectBoxes;
+
+bool IsBoxObject(const Object &object)
+{
+	return object._otype == OBJ_SARC;
+}
+
+/**
+ * @brief Measures the box an object's iso sprite shows and builds it. The sprite is drawn centred on its tile with
+ * its bottom row at the tile's front corner. For a box Lx by Ly by H, the iso picture is (Lx + Ly) * 32 px wide;
+ * its lowest pixel (the front corner) lies (Lx - Ly) * 16 px right of the middle, and its height is
+ * (Lx + Ly) * 16 + H * 39.2 px.
+ */
+bool BuildObjectBox(ObjectBox &box, const Object &object, ClxSprite sprite)
+{
+	std::vector<int16_t> pixels;
+	DecodeClx(sprite, pixels);
+	const int w = sprite.width();
+	const int h = sprite.height();
+	for (int16_t &p : pixels)
+		if (p == 0)
+			p = -1; // shadow
+	int left = w;
+	int right = -1;
+	int top = h;
+	int bottom = -1;
+	for (int y = 0; y < h; y++) {
+		for (int x = 0; x < w; x++) {
+			if (pixels[static_cast<size_t>(y) * w + x] <= 0)
+				continue;
+			left = std::min(left, x);
+			right = std::max(right, x);
+			top = std::min(top, y);
+			bottom = std::max(bottom, y);
+		}
+	}
+	if (right < left)
+		return false;
+	auto rowMiddle = [&](int y) {
+		int sum = 0;
+		int n = 0;
+		for (int x = 0; x < w; x++)
+			if (pixels[static_cast<size_t>(y) * w + x] > 0) {
+				sum += x;
+				n++;
+			}
+		return n > 0 ? static_cast<float>(sum) / static_cast<float>(n) : 0.0F;
+	};
+	const float middle = static_cast<float>(left + right) / 2.0F;
+	const float sum = static_cast<float>(right - left + 1) / 32.0F;          // Lx + Ly
+	const float difference = (rowMiddle(bottom) - middle) / 16.0F;           // Lx - Ly
+	const float lx = std::max(0.15F, (sum + difference) / 2.0F);
+	const float ly = std::max(0.15F, (sum - difference) / 2.0F);
+	const float height = std::max(0.2F, (static_cast<float>(bottom - top + 1) - sum * 16.0F) / SpritePixelsPerTileY);
+	const Point tile = object.position;
+	Building &b = box.st.art;
+	b = Building {};
+	b.originX = (tile.x - tile.y) * 32 - w / 2;
+	b.originY = (tile.x + tile.y + 2) * 16 - (h - 1);
+	b.canvasWidth = w;
+	b.canvasHeight = h;
+	b.canvas = std::move(pixels);
+	// The box's middle: on screen, x at the picture's middle, the ground under it (sum * 8) px above the front corner.
+	const float a = (static_cast<float>(b.originX) + middle) / 32.0F;                               // cx - cy
+	const float c = (static_cast<float>(b.originY + bottom) - sum * 8.0F) / 16.0F;                    // cx + cy
+	const float cx = (a + c) / 2.0F;
+	const float cy = (c - a) / 2.0F;
+	AddStructureBox(b, cx - lx / 2.0F, cy - ly / 2.0F, 0.0F, cx + lx / 2.0F, cy + ly / 2.0F, height);
+	SetStructureFallbacks(box.st);
+	b.x0 = cx - lx / 2.0F;
+	b.y0 = cy - ly / 2.0F;
+	b.x1 = cx + lx / 2.0F;
+	b.y1 = cy + ly / 2.0F;
+	b.lowestZ = 0;
+	b.highestZ = height;
+	box.tile = tile;
+	box.frame = sprite.pixelData();
+	return true;
 }
 
 void BuildStructures()
 {
 	Structures.clear();
+	ObjectBoxes.clear();
 	FloorHoles.clear();
 	StructureTiles.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY, 0);
 	if (leveltype == DTYPE_TOWN)
 		return;
 	if (leveltype == DTYPE_CATHEDRAL) {
 		for (int i = 0; i < numtrigs; i++) {
+			if (trigs[i]._tmsg == WM_DIABPREVLVL) {
+				Structure st;
+				if (BuildStairsUp(st, trigs[i].position)) {
+					SetStructureFallbacks(st);
+					Structures.push_back(std::move(st));
+				}
+				continue;
+			}
 			if (trigs[i]._tmsg != WM_DIABNEXTLVL)
 				continue;
 			Structure st;
@@ -2229,8 +2435,24 @@ void BuildStructures()
 			if (StructureTiles[static_cast<size_t>(y) * MAXDUNX + x] != 0 || !GetPieceTextures(dPiece[x][y]).isFreeStanding)
 				continue;
 			Structure st;
-			if (!BuildColumn(st, { x, y }))
-				continue;
+			if (!BuildColumn(st, { x, y })) {
+				// A pillar carrying the end of a wall (lopsided art): a solid block of the tile, as tall as its art,
+				// wearing the art projected on, so the wall reads as continuous instead of a cut-out billboard.
+				const PieceTextures &textures = GetPieceTextures(dPiece[x][y]);
+				const int rows = static_cast<int>(textures.column.size() / ColumnWidth);
+				int topRow = rows;
+				for (int r = 0; r < rows && topRow == rows; r++)
+					for (int cx = 0; cx < ColumnWidth; cx++)
+						if (textures.column[static_cast<size_t>(r) * ColumnWidth + cx] > 0) {
+							topRow = r;
+							break;
+						}
+				const float height = static_cast<float>(rows - 1 - 16 - topRow) / SpritePixelsPerTileY;
+				if (height < 0.5F)
+					continue;
+				BuildCanvas(st.art, { { x, y } }, {});
+				AddStructureBox(st.art, static_cast<float>(x), static_cast<float>(y), 0.0F, static_cast<float>(x + 1), static_cast<float>(y + 1), std::min(height, WallHeight()));
+			}
 			SetStructureFallbacks(st);
 			StructureTiles[static_cast<size_t>(y) * MAXDUNX + x] = 1;
 			Structures.push_back(std::move(st));
@@ -2275,6 +2497,16 @@ void EnsureStructures()
 /** @brief Palette colour (before lighting) of a structure's surface point. */
 uint8_t StructureColor(const Structure &st, const WorldTriangle &tri, float wx, float wy, float wz)
 {
+	if (tri.mapping == MeshFloorArt) {
+		const Point tile { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
+		if (!InDungeonBounds(tile))
+			return tri.fallback;
+		const std::vector<int16_t> &floor = GetPieceTextures(dPiece[tile.x][tile.y]).floor;
+		const int u = std::clamp(static_cast<int>((wx - static_cast<float>(tile.x)) * FloorTextureSize), 0, FloorTextureSize - 1);
+		const int v = std::clamp(static_cast<int>((wy - static_cast<float>(tile.y)) * FloorTextureSize), 0, FloorTextureSize - 1);
+		const int16_t texel = floor.empty() ? int16_t { -1 } : floor[static_cast<size_t>(v) * FloorTextureSize + u];
+		return texel > 0 ? PatchColor(texel) : tri.fallback;
+	}
 	if (tri.mapping == MeshPit) {
 		// Repeat a stretch of the wall art: along the surface and down, wrapped into the source stretch.
 		const float along = std::abs(tri.normalX) > 0.5F ? wy : wx;
@@ -2292,7 +2524,20 @@ uint8_t StructureColor(const Structure &st, const WorldTriangle &tri, float wx, 
 		y -= 2.0F * d * tri.normalY;
 	}
 	const int16_t art = SampleArt(st.art, x, y, wz);
-	return art > 0 ? PatchColor(art) : tri.fallback;
+	if (art > 0)
+		return PatchColor(art);
+	if (tri.normalX != 0 || tri.normalY != 0) {
+		// A side the art does not show: the level's plain wall, laid along the side.
+		const std::vector<int16_t> &face = GetFallbackFace();
+		const int faceHeight = FaceTextureHeight();
+		const float along = std::abs(tri.normalX) > std::abs(tri.normalY) ? wy : wx;
+		const int u = std::clamp(static_cast<int>((along - std::floor(along)) * FaceTextureWidth), 0, FaceTextureWidth - 1);
+		const int v = std::clamp(faceHeight - 1 - static_cast<int>(wz * SpritePixelsPerTileY), 0, faceHeight - 1);
+		const int16_t texel = face[static_cast<size_t>(v) * FaceTextureWidth + u];
+		if (texel > 0)
+			return PatchColor(texel);
+	}
+	return tri.fallback;
 }
 
 void DrawStructure(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer, const Structure &st)
@@ -2313,6 +2558,26 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 		return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(color, darkness)]);
 	});
 }
+
+void DrawObjectBoxes(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer)
+{
+	for (int i = 0; i < ActiveObjectCount; i++) {
+		const int id = ActiveObjects[i];
+		const Object &object = Objects[id];
+		if (!IsBoxObject(object) || !object._oAnimData || !InDungeonBounds(object.position) || dObject[object.position.x][object.position.y] != id + 1)
+			continue;
+		if (LightAt(object.position) >= LightsMax)
+			continue;
+		const ClxSprite sprite = object.currentSprite();
+		ObjectBox &box = ObjectBoxes[id];
+		if (box.frame != sprite.pixelData() || box.tile != object.position) {
+			if (!BuildObjectBox(box, object, sprite))
+				continue;
+		}
+		DrawStructure(out, proj, depthBuffer, box.st);
+	}
+}
+
 
 } // namespace
 
@@ -2448,6 +2713,12 @@ void DrawStructures(const Surface &out, const Projection &proj, std::vector<floa
 	EnsureStructures();
 	for (const Structure &st : Structures)
 		DrawStructure(out, proj, depthBuffer, st);
+	DrawObjectBoxes(out, proj, depthBuffer);
+}
+
+bool IsObjectDrawnAsMesh(int id)
+{
+	return leveltype != DTYPE_TOWN && id >= 0 && id < MAXOBJECTS && IsBoxObject(Objects[id]);
 }
 
 int BuildingCount()

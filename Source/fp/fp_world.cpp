@@ -212,6 +212,7 @@ void CollectObjects(std::vector<Entity> &entities)
 		else
 			entity.bottom = -static_cast<float>(TILE_HEIGHT / 2) / SpritePixelsPerTileY; // the iso renderer puts the sprite's bottom at the tile's front corner
 		entity.lit = object.applyLighting;
+		entity.hidden = IsObjectDrawnAsMesh(id);
 		entities.push_back(entity);
 	}
 }
