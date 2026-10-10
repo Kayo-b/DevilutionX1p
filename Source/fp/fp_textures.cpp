@@ -79,6 +79,9 @@ struct Cache {
 	std::vector<std::unique_ptr<PieceTextures>> pieces = std::vector<std::unique_ptr<PieceTextures>>(MAXTILES);
 	std::vector<int16_t> fallbackFace;
 	std::vector<int16_t> fallbackPair; // the second tile of a run of two (see GetFallbackFace(int))
+	uint16_t pairA = 0;
+	uint16_t pairB = 0;
+	bool pairUseX = false;
 	bool fallbackPairReady = false;
 	std::vector<int16_t> groundFloor;
 	int wallRows = 0;
@@ -656,6 +659,9 @@ const std::vector<int16_t> &GetFallbackFace(int parity)
 			const PieceTextures &b = GetPieceTextures(static_cast<uint16_t>((best >> 1) & 0xFFFF));
 			cache.fallbackFace = useX ? a.faceX : a.faceY;
 			cache.fallbackPair = useX ? b.faceX : b.faceY;
+			cache.pairA = static_cast<uint16_t>(best >> 17);
+			cache.pairB = static_cast<uint16_t>((best >> 1) & 0xFFFF);
+			cache.pairUseX = useX;
 			std::replace(cache.fallbackFace.begin(), cache.fallbackFace.end(), NoPixel, int16_t { 0 });
 			std::replace(cache.fallbackPair.begin(), cache.fallbackPair.end(), NoPixel, int16_t { 0 });
 		}
@@ -663,6 +669,18 @@ const std::vector<int16_t> &GetFallbackFace(int parity)
 	if (cache.fallbackPair.empty())
 		return GetFallbackFace();
 	return (parity & 1) == 0 ? cache.fallbackFace : cache.fallbackPair;
+}
+
+bool GetPlainWallPair(uint16_t &first, uint16_t &second, bool &useX)
+{
+	GetFallbackFace(0);
+	const Cache &cache = GetCache();
+	if (cache.fallbackPair.empty())
+		return false;
+	first = cache.pairA;
+	second = cache.pairB;
+	useX = cache.pairUseX;
+	return true;
 }
 
 bool HasPlainWall()

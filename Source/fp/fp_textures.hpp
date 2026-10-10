@@ -79,6 +79,8 @@ void SetWallRecessesEnabled(bool enabled);
 [[nodiscard]] const std::vector<int16_t> &GetFallbackFace(int parity);
 /** @brief Whether the level has a plain straight wall to use as filler (hell's bone walls do not). */
 [[nodiscard]] bool HasPlainWall();
+/** @brief The pieces of that pair and which of their faces runs along the wall; false if there is none. */
+bool GetPlainWallPair(uint16_t &first, uint16_t &second, bool &useX);
 
 /**
  * @brief Height in face rows (pixels) of the level's walls, taken from the art of its wall pieces.

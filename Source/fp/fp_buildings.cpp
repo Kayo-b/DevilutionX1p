@@ -119,6 +119,8 @@ enum : uint8_t {
 	MeshRoof, // a roof slope: u along it, v up it
 	MeshProjective, // the structure's own iso art, projected (mirrored on the far side)
 	MeshPit,        // below the floor, where the art shows nothing: the structure's wall art repeated, darkening with depth
+	MeshArcade,     // an arch wall between pillars: the level's plain wall pair along it, its painted arch cut open
+	MeshProjectiveCut, // like MeshProjective, but see-through where the art has no pixel
 	MeshWallFace,   // a wall face texture of the tile at (mirrorX, mirrorY) (faceX picks which), open where it has no art
 	MeshFloorArt,   // the floor art under the point (what the art paints on the floor, raised into 3D: the stairs' fan)
 };
@@ -1869,6 +1871,7 @@ std::vector<Structure> Structures;
 std::vector<uint8_t> StructureTiles; // 1: drawn by a structure (no wall cube, no billboard); 2: also has a floor hole; 3: an arch pillar drawn as an open wall
 std::vector<std::array<float, 4>> FloorHoles; // x0, y0, x1, y1
 LevelKey StructuresFor { nullptr, -1, -1, false };
+int StructuresBuildCount = 0; // bumped on every rebuild, to refresh per-level caches
 
 /** @brief Adds a flat polygon (3 or 4 corners) of a structure with its outward normal. */
 void AddStructureFace(Building &b, std::initializer_list<V3> corners, V3 normal, Vec2 mirror, uint8_t mapping, uint8_t darkness = 0)
@@ -2168,59 +2171,76 @@ bool BuildColumn(Structure &st, Point tile)
  * @brief A pillar carrying arch ends (an arcade): its shaft as a round column read off the symmetric lower art,
  * and above the spring of the arches a block wearing the wall face art, the arch openings cut out of it.
  */
-bool BuildArcadePillar(Structure &st, Point tile)
+bool BuildArcadePillar(Structure &st, Point tile, float &spring)
 {
 	const PieceTextures &textures = GetPieceTextures(dPiece[tile.x][tile.y]);
 	int axisTwice = ColumnWidth;
-	float spring = 0;
-	const std::vector<ColumnSlice> slices = ColumnProfile(textures, axisTwice, &spring);
-	if (slices.empty() || spring < 0.4F)
-		return false;
+	spring = 0;
+	std::vector<ColumnSlice> slices = ColumnProfile(textures, axisTwice, &spring);
 	BuildCanvas(st.art, { tile }, {});
+	if (slices.empty() || spring < 0.4F) {
+		// The art does not give a clean shaft: a plain one of the cathedral's proportions.
+		axisTwice = ColumnWidth;
+		spring = 1.0F;
+		slices = { { 0.0F, 0.12F, 0.2F, 0.2F, true }, { 0.12F, 0.9F, 0.15F, 0.15F, false }, { 0.9F, 1.0F, 0.2F, 0.2F, true } };
+	}
 	const float offset = static_cast<float>(axisTwice - ColumnWidth) / 2.0F / 64.0F;
 	const Vec2 c { static_cast<float>(tile.x) + 0.5F + offset, static_cast<float>(tile.y) + 0.5F - offset };
-	for (const ColumnSlice &slice : slices) {
+	for (size_t i = 0; i < slices.size(); i++) {
+		const ColumnSlice &slice = slices[i];
+		const bool top = i + 1 == slices.size();
 		if (slice.square)
-			AddStructureFrustum(st.art, c, slice.size0, slice.size1, slice.z0, slice.z1, false);
+			AddStructureFrustum(st.art, c, slice.size0, slice.size1, slice.z0, slice.z1, top);
 		else
-			AddStructureCone(st.art, c, slice.size0, slice.size1, slice.z0, slice.z1, false);
+			AddStructureCone(st.art, c, slice.size0, slice.size1, slice.z0, slice.z1, top);
 	}
-	// The block from a little under the spring (the shaft runs into it) to the wall top.
-	const float x0 = static_cast<float>(tile.x);
-	const float y0 = static_cast<float>(tile.y);
-	const float z0 = std::max(0.0F, spring - 0.15F);
-	const float z1 = WallHeight();
-	const Vec2 mid { x0 + 0.5F, y0 + 0.5F };
-	auto face = [&](std::initializer_list<V3> corners, V3 normal, bool useX) {
-		const size_t first = st.art.mesh.size();
-		AddStructureFace(st.art, corners, normal, mid, MeshWallFace);
-		for (size_t t = first; t < st.art.mesh.size(); t++) {
-			st.art.mesh[t].mirrorX = x0;
-			st.art.mesh[t].mirrorY = y0;
-			st.art.mesh[t].faceX = useX;
-		}
-	};
-	auto hasArt = [&](bool useX) {
-		const std::vector<int16_t> &f = useX ? textures.faceX : textures.faceY;
-		int opaque = 0;
-		for (const int16_t t : f)
-			opaque += t > 0 ? 1 : 0;
-		return opaque > 200;
-	};
-	const bool artX = hasArt(true);
-	const bool artY = hasArt(false);
-	// The faces along x (x = const) carry the x face art; where a face has none, the arcade runs on through it.
-	if (artX) {
-		face({ { x0 + 1, y0, z0 }, { x0 + 1, y0 + 1, z0 }, { x0 + 1, y0 + 1, z1 }, { x0 + 1, y0, z1 } }, { 1, 0, 0 }, true);
-		face({ { x0, y0, z0 }, { x0, y0 + 1, z0 }, { x0, y0 + 1, z1 }, { x0, y0, z1 } }, { -1, 0, 0 }, true);
-	}
-	if (artY) {
-		face({ { x0, y0 + 1, z0 }, { x0 + 1, y0 + 1, z0 }, { x0 + 1, y0 + 1, z1 }, { x0, y0 + 1, z1 } }, { 0, 1, 0 }, false);
-		face({ { x0, y0, z0 }, { x0 + 1, y0, z0 }, { x0 + 1, y0, z1 }, { x0, y0, z1 } }, { 0, -1, 0 }, false);
-	}
-	AddStructureFace(st.art, { { x0, y0, z1 }, { x0 + 1, y0, z1 }, { x0 + 1, y0 + 1, z1 }, { x0, y0 + 1, z1 } }, { 0, 0, 1 }, mid, MeshProjective);
 	return true;
 }
+
+/** @brief A pillar of an arcade, for joining it to its neighbours with arch walls. */
+struct ArcadePillar {
+	Point tile;
+	float spring;
+	size_t structure;
+};
+
+/**
+ * @brief An arch wall from a pillar towards a neighbour along one axis, from the springing of the arches up to the
+ * wall top. Both sides wear the level's plain wall pair laid along the span with its painted arch centred between
+ * the pillars; the inside of that painted arch is open.
+ */
+void AddArcadeWall(Building &b, Vec2 from, Vec2 to, float spring)
+{
+	constexpr float HalfThickness = 0.14F;
+	const float length = std::hypot(to.x - from.x, to.y - from.y);
+	if (length < 0.5F)
+		return;
+	const Vec2 dir { (to.x - from.x) / length, (to.y - from.y) / length };
+	const Vec2 side { -dir.y, dir.x };
+	const float z0 = std::max(0.0F, spring - 0.05F);
+	const float z1 = WallHeight();
+	auto corner = [&](float along, float across, float z) { return V3 { from.x + dir.x * along + side.x * across, from.y + dir.y * along + side.y * across, z }; };
+	auto addFace = [&](std::initializer_list<V3> corners, V3 normal, uint8_t mapping) {
+		const size_t first = b.mesh.size();
+		AddStructureFace(b, corners, normal, { (from.x + to.x) / 2.0F, (from.y + to.y) / 2.0F }, mapping);
+		if (mapping != MeshArcade)
+			return;
+		for (size_t t = first; t < b.mesh.size(); t++) {
+			WorldTriangle &tri = b.mesh[t];
+			tri.mirrorX = from.x;
+			tri.mirrorY = from.y;
+			tri.downX = dir.x;
+			tri.downY = dir.y;
+			tri.slopeScale = length; // the span, for centring the arch
+		}
+	};
+	for (const float s : { 1.0F, -1.0F }) {
+		const float a = s * HalfThickness;
+		addFace({ corner(0, a, z0), corner(length, a, z0), corner(length, a, z1), corner(0, a, z1) }, { side.x * s, side.y * s, 0 }, MeshArcade);
+	}
+	addFace({ corner(0, -HalfThickness, z1), corner(length, -HalfThickness, z1), corner(length, HalfThickness, z1), corner(0, HalfThickness, z1) }, { 0, 0, 1 }, MeshProjective);
+}
+
 
 /** @brief The cathedral's stairs down: a low walled enclosure with marble corner pillars around steps into a pit. */
 bool BuildStairsDown(Structure &st, Point trigger)
@@ -2508,6 +2528,7 @@ void BuildStructures()
 			}
 		}
 	}
+	std::vector<ArcadePillar> pillars;
 	for (int y = 0; y < MAXDUNY; y++) {
 		for (int x = 0; x < MAXDUNX; x++) {
 			if (StructureTiles[static_cast<size_t>(y) * MAXDUNX + x] != 0 || !GetPieceTextures(dPiece[x][y]).isFreeStanding)
@@ -2515,15 +2536,42 @@ void BuildStructures()
 			Structure st;
 			if (!BuildColumn(st, { x, y })) {
 				st = Structure {};
-				if (!BuildArcadePillar(st, { x, y })) {
-					// Drawn as a wall whose empty art is open.
-					StructureTiles[static_cast<size_t>(y) * MAXDUNX + x] = 3;
-					continue;
-				}
+				float spring;
+				BuildArcadePillar(st, { x, y }, spring);
+				pillars.push_back({ { x, y }, spring, Structures.size() });
 			}
 			SetStructureFallbacks(st);
 			StructureTiles[static_cast<size_t>(y) * MAXDUNX + x] = 1;
 			Structures.push_back(std::move(st));
+		}
+	}
+	// Arch walls between neighbouring pillars of an arcade, and from end pillars to the wall they meet.
+	auto pillarAt = [&](Point t) -> const ArcadePillar * {
+		for (const ArcadePillar &p : pillars)
+			if (p.tile == t)
+				return &p;
+		return nullptr;
+	};
+	for (const ArcadePillar &p : pillars) {
+		for (const Point d : { Point { 1, 0 }, Point { 0, 1 }, Point { -1, 0 }, Point { 0, -1 } }) {
+			for (int k = 1; k <= 3; k++) {
+				const Point t { p.tile.x + d.x * k, p.tile.y + d.y * k };
+				if (!InDungeonBounds(t))
+					break;
+				const ArcadePillar *other = pillarAt(t);
+				const Vec2 from { static_cast<float>(p.tile.x) + 0.5F, static_cast<float>(p.tile.y) + 0.5F };
+				const Vec2 to { static_cast<float>(t.x) + 0.5F, static_cast<float>(t.y) + 0.5F };
+				if (other != nullptr) {
+					if (k > 1 && (d.x > 0 || d.y > 0)) // each span once
+						AddArcadeWall(Structures[p.structure].art, from, to, std::min(p.spring, other->spring));
+					break;
+				}
+				if (IsTileSolid(t)) {
+					if (k > 1 && IsOpaque(t))
+						AddArcadeWall(Structures[p.structure].art, from, to, p.spring);
+					break;
+				}
+			}
 		}
 	}
 	for (Structure &st : Structures) {
@@ -2550,7 +2598,7 @@ void BuildStructures()
 		st.art.lowestZ = lowest;
 		st.art.highestZ = highest;
 	}
-	LogInfo("fp: {} dungeon structures drawn as meshes", Structures.size());
+	LogInfo("fp: {} dungeon structures drawn as meshes ({} arcade pillars)", Structures.size(), pillars.size());
 }
 
 void EnsureStructures()
@@ -2559,6 +2607,7 @@ void EnsureStructures()
 	if (key == StructuresFor)
 		return;
 	StructuresFor = key;
+	StructuresBuildCount++;
 	BuildStructures();
 }
 
@@ -2610,6 +2659,37 @@ uint8_t StructureColor(const Structure &st, const WorldTriangle &tri, float wx, 
 
 void DrawStructure(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer, const Structure &st)
 {
+	// The level's plain wall pair and where its painted arch is centred, for arch walls.
+	static int arcadeFor = -1;
+	static bool arcadeOk = false;
+	static bool hasRecess = false;
+	static uint16_t pairA = 0;
+	static uint16_t pairB = 0;
+	static bool pairUseX = false;
+	static float archCentre = 1.0F;
+	if (arcadeFor != StructuresBuildCount) {
+		arcadeFor = StructuresBuildCount;
+		arcadeOk = GetPlainWallPair(pairA, pairB, pairUseX);
+		hasRecess = false;
+		if (arcadeOk) {
+			const PieceTextures &ta = GetPieceTextures(pairA);
+			const PieceTextures &tb = GetPieceTextures(pairB);
+			const std::vector<int> &ra = pairUseX ? ta.recessX : ta.recessY;
+			const std::vector<int> &rb = pairUseX ? tb.recessX : tb.recessY;
+			const int faceHeight = FaceTextureHeight();
+			int sum = 0;
+			int n = 0;
+			for (int u = 0; u < 2 * FaceTextureWidth; u++) {
+				const std::vector<int> &r = u < FaceTextureWidth ? ra : rb;
+				if (!r.empty() && r[u % FaceTextureWidth] < faceHeight) {
+					sum += u;
+					n++;
+				}
+			}
+			archCentre = n > 0 ? (static_cast<float>(sum) / static_cast<float>(n) + 0.5F) / FaceTextureWidth : 1.0F;
+			hasRecess = n > 0;
+		}
+	}
 	int left;
 	int top;
 	int right;
@@ -2617,6 +2697,56 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 	if (!ScreenBounds(st.art, proj, left, top, right, bottom))
 		return;
 	RasterizeTriangles(out, proj, depthBuffer, st.art.mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
+		if (tri.mapping == MeshArcade) {
+			const float along = (wx - tri.mirrorX) * tri.downX + (wy - tri.mirrorY) * tri.downY;
+			const float span = tri.slopeScale;
+			const float t = along - span / 2.0F + archCentre;
+			const float wrapped = t - 2.0F * std::floor(t / 2.0F);
+			const bool second = wrapped >= 1.0F;
+			const int u = std::clamp(static_cast<int>((wrapped - (second ? 1.0F : 0.0F)) * FaceTextureWidth), 0, FaceTextureWidth - 1);
+			const int faceHeight = FaceTextureHeight();
+			const int row = std::clamp(faceHeight - 1 - static_cast<int>(wz * SpritePixelsPerTileY), 0, faceHeight - 1);
+			int16_t texel = 0;
+			if (arcadeOk) {
+				const PieceTextures &tex = GetPieceTextures(second ? pairB : pairA);
+				const std::vector<int16_t> &face = pairUseX ? tex.faceX : tex.faceY;
+				const std::vector<int> &recess = pairUseX ? tex.recessX : tex.recessY;
+				if (hasRecess && !recess.empty() && row >= recess[u])
+					return -1; // inside the arch
+				texel = face[static_cast<size_t>(row) * FaceTextureWidth + u];
+			}
+			if (!hasRecess) {
+				// No painted arch to follow: a round one between the pillars.
+				const float radius = span / 2.0F - 0.2F;
+				const float offset = along - span / 2.0F;
+				if (std::abs(offset) < radius && wz < 1.0F + std::sqrt(radius * radius - offset * offset) * 0.8F)
+					return -1;
+			}
+			if (texel <= 0)
+				texel = GetFallbackFace()[static_cast<size_t>(row) * FaceTextureWidth + u];
+			const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
+			const uint8_t level = InDungeonBounds(lit) ? LightAt(lit) : LightsMax;
+			return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(PatchColor(texel), tri.darkness)]);
+		}
+		if (tri.mapping == MeshProjectiveCut) {
+			float x = wx;
+			float y = wy;
+			if (tri.mirrored) {
+				const float d = (x - tri.mirrorX) * tri.normalX + (y - tri.mirrorY) * tri.normalY;
+				x -= 2.0F * d * tri.normalX;
+				y -= 2.0F * d * tri.normalY;
+			}
+			const int px = static_cast<int>(std::floor((x - y) * 32.0F)) - st.art.originX;
+			const int py = static_cast<int>(std::floor((x + y) * 16.0F - wz * HeightPixels)) - st.art.originY;
+			if (px < 0 || py < 0 || px >= st.art.canvasWidth || py >= st.art.canvasHeight)
+				return -1;
+			const int16_t art = st.art.canvas[static_cast<size_t>(py) * st.art.canvasWidth + px];
+			if (art <= 0)
+				return -1;
+			const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
+			const uint8_t level = InDungeonBounds(lit) ? LightAt(lit) : LightsMax;
+			return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(PatchColor(art), tri.darkness)]);
+		}
 		if (tri.mapping == MeshWallFace) {
 			const PieceTextures &textures = GetPieceTextures(dPiece[static_cast<int>(tri.mirrorX)][static_cast<int>(tri.mirrorY)]);
 			const std::vector<int16_t> &face = tri.faceX ? textures.faceX : textures.faceY;
