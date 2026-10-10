@@ -139,7 +139,7 @@ FaceArt FaceForHit(const RayHit &hit)
 	auto withRecess = [&](bool useX) {
 		FaceArt art = useX ? FaceArt { &textures.faceX, &textures.holesX, textures.faceXRows } : FaceArt { &textures.faceY, &textures.holesY, textures.faceYRows };
 		const std::vector<int> &recess = useX ? textures.recessX : textures.recessY;
-		if (!recess.empty()) {
+		if (!recess.empty() && WallRecessesEnabled()) {
 			art.recess = &recess;
 			art.recessDepth = useX ? textures.recessDepthX : textures.recessDepthY;
 		}
@@ -149,7 +149,9 @@ FaceArt FaceForHit(const RayHit &hit)
 		return withRecess(wantX);
 	if (wantX ? textures.faceYUsable : textures.faceXUsable)
 		return withRecess(!wantX);
-	return { &GetFallbackFace(), nullptr, 0 };
+	// A wall whose face the iso camera never saw: the level's plain wall, alternating along the wall so its arches
+	// come out whole.
+	return { &GetFallbackFace(wantX ? hit.tile.y : hit.tile.x), nullptr, 0 };
 }
 
 /**
@@ -187,10 +189,9 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 			const int top = std::max(0, static_cast<int>(topF));
 			const int bottom = std::min(proj.height - 1, static_cast<int>(bottomF));
 
-			// Position along the face in world-axis order; the hidden back faces show the art mirrored.
+			// Position along the face in world-axis order. The hidden back faces show the same art unmirrored: mirroring
+			// each tile on its own breaks arches that span neighbouring tiles into repeated halves.
 			float along = hit.xSide ? hit.point.y - static_cast<float>(hit.tile.y) : hit.point.x - static_cast<float>(hit.tile.x);
-			if (hit.backFace)
-				along = 1.0F - along;
 			const int u = std::clamp(static_cast<int>(along * FaceTextureWidth), 0, FaceTextureWidth - 1);
 
 			const uint8_t lightLevel = LightAt(hit.previous);
@@ -202,8 +203,6 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 			if (recessDistance > 0) {
 				const Vec2 p { proj.pos.x + ray.x * recessDistance, proj.pos.y + ray.y * recessDistance };
 				float along2 = hit.xSide ? p.y - static_cast<float>(hit.tile.y) : p.x - static_cast<float>(hit.tile.x);
-				if (hit.backFace)
-					along2 = 1.0F - along2;
 				if (along2 >= 0.0F && along2 < 1.0F)
 					recessU = std::clamp(static_cast<int>(along2 * FaceTextureWidth), 0, FaceTextureWidth - 1);
 			}

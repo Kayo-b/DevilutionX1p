@@ -108,8 +108,6 @@ bool IsHoleAt(const RayHit &hit, float height)
 	const bool useX = ownUsable ? wantX : !wantX;
 	const std::vector<uint8_t> &holes = useX ? textures.holesX : textures.holesY;
 	float along = hit.xSide ? hit.point.y - static_cast<float>(hit.tile.y) : hit.point.x - static_cast<float>(hit.tile.x);
-	if (hit.backFace)
-		along = 1.0F - along;
 	const int u = std::clamp(static_cast<int>(along * FaceTextureWidth), 0, FaceTextureWidth - 1);
 	const int faceHeight = FaceTextureHeight();
 	const int row = faceHeight - 1 - static_cast<int>(height * SpritePixelsPerTileY);

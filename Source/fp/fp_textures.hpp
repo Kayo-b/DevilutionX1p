@@ -61,6 +61,10 @@ struct PieceTextures {
 	bool isFreeStanding;
 };
 
+/** @brief Whether wall recesses (blind arches, niches) are carved into the walls (debug toggle, on by default). */
+[[nodiscard]] bool WallRecessesEnabled();
+void SetWallRecessesEnabled(bool enabled);
+
 /** @brief Height in pixels of wall face textures on the current level (depends on the tileset). */
 [[nodiscard]] int FaceTextureHeight();
 
@@ -69,6 +73,8 @@ struct PieceTextures {
 
 /** @brief A wall face to use where a piece has no usable art for the face being drawn. */
 [[nodiscard]] const std::vector<int16_t> &GetFallbackFace();
+/** @brief Filler wall face for a tile in a run: two neighbouring faces of the level's commonest straight wall, alternating with the parity of the tile's position along the wall. */
+[[nodiscard]] const std::vector<int16_t> &GetFallbackFace(int parity);
 
 /**
  * @brief Height in face rows (pixels) of the level's walls, taken from the art of its wall pieces.

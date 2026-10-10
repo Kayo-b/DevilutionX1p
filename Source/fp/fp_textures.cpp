@@ -25,6 +25,7 @@
 #include "levels/dun_tile_data.hpp"
 #include "levels/gendung.h"
 #include "levels/tile_properties.hpp"
+#include "utils/log.hpp"
 
 namespace devilution::fp {
 
@@ -77,6 +78,8 @@ struct Cache {
 	LevelKey key {};
 	std::vector<std::unique_ptr<PieceTextures>> pieces = std::vector<std::unique_ptr<PieceTextures>>(MAXTILES);
 	std::vector<int16_t> fallbackFace;
+	std::vector<int16_t> fallbackPair; // the second tile of a run of two (see GetFallbackFace(int))
+	bool fallbackPairReady = false;
 	std::vector<int16_t> groundFloor;
 	int wallRows = 0;
 };
@@ -90,6 +93,8 @@ Cache &GetCache()
 		for (auto &piece : cache.pieces)
 			piece.reset();
 		cache.fallbackFace.clear();
+		cache.fallbackPair.clear();
+		cache.fallbackPairReady = false;
 		cache.wallRows = 0;
 		cache.groundFloor.clear();
 	}
@@ -213,6 +218,8 @@ std::vector<int16_t> ExtractFace(const std::vector<int16_t> &column, int height,
 			}
 	return face;
 }
+
+bool RecessesOn = true;
 
 /**
  * @brief Finds the recess of a wall face: the inside of a blind arch is painted in shadow, a run of dark texels
@@ -564,5 +571,68 @@ void DumpSolidPieces(const char *path, int perRow, int rows)
 	}
 }
 #endif
+
+const std::vector<int16_t> &GetFallbackFace(int parity)
+{
+	Cache &cache = GetCache();
+	if (!cache.fallbackPairReady) {
+		cache.fallbackPairReady = true;
+		// The commonest pair of neighbouring wall tiles in a straight run: arches spanning tile edges come out whole
+		// when filler walls alternate between the two.
+		std::unordered_map<uint32_t, int> counts;
+		for (int y = 0; y + 1 < MAXDUNY; y++) {
+			for (int x = 0; x + 1 < MAXDUNX; x++) {
+				if (!IsTileSolid({ x, y }))
+					continue;
+				const PieceTextures &a = GetPieceTextures(dPiece[x][y]);
+				if (a.faceYUsable && IsTileSolid({ x + 1, y }) && GetPieceTextures(dPiece[x + 1][y]).faceYUsable && (x & 1) == 0)
+					counts[(static_cast<uint32_t>(dPiece[x][y]) << 16 | dPiece[x + 1][y]) << 1 | 0]++;
+				if (a.faceXUsable && IsTileSolid({ x, y + 1 }) && GetPieceTextures(dPiece[x][y + 1]).faceXUsable && (y & 1) == 0)
+					counts[(static_cast<uint32_t>(dPiece[x][y]) << 16 | dPiece[x][y + 1]) << 1 | 1]++;
+			}
+		}
+		uint32_t best = 0;
+		int bestCount = 0;
+		for (const auto &[key, count] : counts) {
+			const PieceTextures &a = GetPieceTextures(static_cast<uint16_t>(key >> 17));
+			const PieceTextures &b = GetPieceTextures(static_cast<uint16_t>((key >> 1) & 0xFFFF));
+			const bool useX = (key & 1) != 0;
+			const std::vector<int16_t> &fa = useX ? a.faceX : a.faceY;
+			const std::vector<int16_t> &fb = useX ? b.faceX : b.faceY;
+			// Mostly opaque over the wall's own rows (the face texture is taller than the wall).
+			const auto full = [](const std::vector<int16_t> &f) {
+				const size_t start = f.size() - static_cast<size_t>(LevelWallRows()) * FaceTextureWidth;
+				return std::count(f.begin() + static_cast<std::ptrdiff_t>(start), f.end(), NoPixel) * 10 < static_cast<std::ptrdiff_t>(f.size() - start);
+			};
+			if (count > bestCount && full(fa) && full(fb)) {
+				best = key;
+				bestCount = count;
+			}
+		}
+		LogInfo("fp: filler wall pair: pieces {} and {} ({} runs)", best >> 17, (best >> 1) & 0xFFFF, bestCount);
+		if (bestCount >= 3) {
+			const bool useX = (best & 1) != 0;
+			const PieceTextures &a = GetPieceTextures(static_cast<uint16_t>(best >> 17));
+			const PieceTextures &b = GetPieceTextures(static_cast<uint16_t>((best >> 1) & 0xFFFF));
+			cache.fallbackFace = useX ? a.faceX : a.faceY;
+			cache.fallbackPair = useX ? b.faceX : b.faceY;
+			std::replace(cache.fallbackFace.begin(), cache.fallbackFace.end(), NoPixel, int16_t { 0 });
+			std::replace(cache.fallbackPair.begin(), cache.fallbackPair.end(), NoPixel, int16_t { 0 });
+		}
+	}
+	if (cache.fallbackPair.empty())
+		return GetFallbackFace();
+	return (parity & 1) == 0 ? cache.fallbackFace : cache.fallbackPair;
+}
+
+bool WallRecessesEnabled()
+{
+	return RecessesOn;
+}
+
+void SetWallRecessesEnabled(bool enabled)
+{
+	RecessesOn = enabled;
+}
 
 } // namespace devilution::fp

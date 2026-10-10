@@ -348,6 +348,12 @@ std::string DebugCmdFpDumpFaces(int x0, int y0, int x1, int y1, std::string path
 	return StrCat("Faces dumped (", cols, " tiles).");
 }
 
+std::string DebugCmdFpRecesses(bool enabled)
+{
+	fp::SetWallRecessesEnabled(enabled);
+	return enabled ? "Wall recesses on." : "Wall recesses off.";
+}
+
 } // namespace
 
 sol::table LuaDevFirstPersonModule(sol::state_view &lua)
@@ -369,6 +375,7 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "tilemap", "(x0: number, y0: number, x1: number, y1: number)", "ASCII map of solid (#, s), tall-art (a) and building (B) tiles.", &DebugCmdFpTileMap);
 	LuaSetDocFn(table, "features", "()", "List stairs triggers, free-standing column pieces and objects (with sprite size and bottom padding).", &DebugCmdFpFeatures);
 	LuaSetDocFn(table, "dumpfaces", "(x0: number, y0: number, x1: number, y1: number, path: string)", "Dump the wall face textures (x face, y face) of the tiles in a rectangle; openings red (PPM).", &DebugCmdFpDumpFaces);
+	LuaSetDocFn(table, "recesses", "(enabled: boolean)", "Carve blind arches and niches into the walls (default) or draw them flat.", &DebugCmdFpRecesses);
 	LuaSetDocFn(table, "on", "(enabled: boolean)", "Switch between first-person and the original view.", &DebugCmdFpOn);
 	LuaSetDocFn(table, "buildings", "(enabled: boolean)", "Draw town houses as reconstructed 3D models (default) or flat billboards.", &DebugCmdFpBuildings);
 	return table;

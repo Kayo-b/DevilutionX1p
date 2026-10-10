@@ -108,6 +108,7 @@ struct WorldTriangle {
 	float normalX;      // horizontal outward normal, unit length, or 0 for a horizontal surface
 	float normalY;
 	bool mirrored;
+	bool faceX;         // MeshWallFace: the x face texture (else the y face)
 	uint8_t fallback;   // colour where the art has no pixel
 };
 
@@ -118,6 +119,7 @@ enum : uint8_t {
 	MeshRoof, // a roof slope: u along it, v up it
 	MeshProjective, // the structure's own iso art, projected (mirrored on the far side)
 	MeshPit,        // below the floor, where the art shows nothing: the structure's wall art repeated, darkening with depth
+	MeshWallFace,   // a wall face texture of the tile at (mirrorX, mirrorY) (faceX picks which), open where it has no art
 	MeshFloorArt,   // the floor art under the point (what the art paints on the floor, raised into 3D: the stairs' fan)
 };
 
@@ -1942,7 +1944,11 @@ struct ColumnSlice {
  * per tile of half side, round shafts 45 px per tile of radius; parts much wider than a stout shaft are taken as
  * square. Empty if the art is not one symmetric upright piece (the arcade pillars carry half a wall).
  */
-std::vector<ColumnSlice> ColumnProfile(const PieceTextures &textures, int &axisTwice)
+/**
+ * @param shaftTop if given, only the symmetric lower part is read (the shaft under an arch end), and the height
+ * where it ends is returned here
+ */
+std::vector<ColumnSlice> ColumnProfile(const PieceTextures &textures, int &axisTwice, float *shaftTop = nullptr)
 {
 	const int rows = static_cast<int>(textures.column.size() / ColumnWidth);
 	const int centerRow = rows - 1 - 16; // the middle of the tile's floor diamond
@@ -1987,15 +1993,29 @@ std::vector<ColumnSlice> ColumnProfile(const PieceTextures &textures, int &axisT
 	std::vector<int> middles;
 	for (const RowSpan &span : spans)
 		middles.push_back(span.first + span.last + 1);
+	if (shaftTop != nullptr)
+		middles.resize(std::max<size_t>(1, middles.size() * 2 / 5)); // the shaft's rows, at the bottom
 	std::nth_element(middles.begin(), middles.begin() + static_cast<ptrdiff_t>(middles.size() / 2), middles.end());
 	axisTwice = middles[middles.size() / 2];
+	int asymmetricRun = 0;
 	for (const RowSpan &span : spans) {
 		const int leftHalf = axisTwice - 2 * span.first;   // twice the half widths
 		const int rightHalf = 2 * (span.last + 1) - axisTwice;
-		if (std::abs(leftHalf - rightHalf) > 12)
+		const bool lopsided = std::abs(leftHalf - rightHalf) > 12;
+		if (lopsided)
 			asymmetric++;
+		if (shaftTop != nullptr) {
+			asymmetricRun = lopsided ? asymmetricRun + 1 : 0;
+			if (asymmetricRun >= 3) {
+				widths.resize(widths.size() >= 2 ? widths.size() - 2 : 0);
+				asymmetric = 0;
+				break;
+			}
+		}
 		widths.emplace_back(span.z, static_cast<float>(std::max(leftHalf, rightHalf)) / 2.0F);
 	}
+	if (shaftTop != nullptr)
+		*shaftTop = widths.empty() ? 0.0F : widths.back().first;
 #ifdef _DEBUG
 	if (std::getenv("FP_DUMP_PROFILES") != nullptr) {
 		std::string line;
@@ -2141,6 +2161,64 @@ bool BuildColumn(Structure &st, Point tile)
 		else
 			AddStructureCone(st.art, c, slice.size0, slice.size1, slice.z0, slice.z1, top);
 	}
+	return true;
+}
+
+/**
+ * @brief A pillar carrying arch ends (an arcade): its shaft as a round column read off the symmetric lower art,
+ * and above the spring of the arches a block wearing the wall face art, the arch openings cut out of it.
+ */
+bool BuildArcadePillar(Structure &st, Point tile)
+{
+	const PieceTextures &textures = GetPieceTextures(dPiece[tile.x][tile.y]);
+	int axisTwice = ColumnWidth;
+	float spring = 0;
+	const std::vector<ColumnSlice> slices = ColumnProfile(textures, axisTwice, &spring);
+	if (slices.empty() || spring < 0.4F)
+		return false;
+	BuildCanvas(st.art, { tile }, {});
+	const float offset = static_cast<float>(axisTwice - ColumnWidth) / 2.0F / 64.0F;
+	const Vec2 c { static_cast<float>(tile.x) + 0.5F + offset, static_cast<float>(tile.y) + 0.5F - offset };
+	for (const ColumnSlice &slice : slices) {
+		if (slice.square)
+			AddStructureFrustum(st.art, c, slice.size0, slice.size1, slice.z0, slice.z1, false);
+		else
+			AddStructureCone(st.art, c, slice.size0, slice.size1, slice.z0, slice.z1, false);
+	}
+	// The block from a little under the spring (the shaft runs into it) to the wall top.
+	const float x0 = static_cast<float>(tile.x);
+	const float y0 = static_cast<float>(tile.y);
+	const float z0 = std::max(0.0F, spring - 0.15F);
+	const float z1 = WallHeight();
+	const Vec2 mid { x0 + 0.5F, y0 + 0.5F };
+	auto face = [&](std::initializer_list<V3> corners, V3 normal, bool useX) {
+		const size_t first = st.art.mesh.size();
+		AddStructureFace(st.art, corners, normal, mid, MeshWallFace);
+		for (size_t t = first; t < st.art.mesh.size(); t++) {
+			st.art.mesh[t].mirrorX = x0;
+			st.art.mesh[t].mirrorY = y0;
+			st.art.mesh[t].faceX = useX;
+		}
+	};
+	auto hasArt = [&](bool useX) {
+		const std::vector<int16_t> &f = useX ? textures.faceX : textures.faceY;
+		int opaque = 0;
+		for (const int16_t t : f)
+			opaque += t > 0 ? 1 : 0;
+		return opaque > 200;
+	};
+	const bool artX = hasArt(true);
+	const bool artY = hasArt(false);
+	// The faces along x (x = const) carry the x face art; where a face has none, the arcade runs on through it.
+	if (artX) {
+		face({ { x0 + 1, y0, z0 }, { x0 + 1, y0 + 1, z0 }, { x0 + 1, y0 + 1, z1 }, { x0 + 1, y0, z1 } }, { 1, 0, 0 }, true);
+		face({ { x0, y0, z0 }, { x0, y0 + 1, z0 }, { x0, y0 + 1, z1 }, { x0, y0, z1 } }, { -1, 0, 0 }, true);
+	}
+	if (artY) {
+		face({ { x0, y0 + 1, z0 }, { x0 + 1, y0 + 1, z0 }, { x0 + 1, y0 + 1, z1 }, { x0, y0 + 1, z1 } }, { 0, 1, 0 }, false);
+		face({ { x0, y0, z0 }, { x0 + 1, y0, z0 }, { x0 + 1, y0, z1 }, { x0, y0, z1 } }, { 0, -1, 0 }, false);
+	}
+	AddStructureFace(st.art, { { x0, y0, z1 }, { x0 + 1, y0, z1 }, { x0 + 1, y0 + 1, z1 }, { x0, y0 + 1, z1 } }, { 0, 0, 1 }, mid, MeshProjective);
 	return true;
 }
 
@@ -2436,9 +2514,12 @@ void BuildStructures()
 				continue;
 			Structure st;
 			if (!BuildColumn(st, { x, y })) {
-				// A pillar carrying the end of an arch (lopsided art): drawn as a wall whose empty art is open.
-				StructureTiles[static_cast<size_t>(y) * MAXDUNX + x] = 3;
-				continue;
+				st = Structure {};
+				if (!BuildArcadePillar(st, { x, y })) {
+					// Drawn as a wall whose empty art is open.
+					StructureTiles[static_cast<size_t>(y) * MAXDUNX + x] = 3;
+					continue;
+				}
 			}
 			SetStructureFallbacks(st);
 			StructureTiles[static_cast<size_t>(y) * MAXDUNX + x] = 1;
@@ -2536,6 +2617,23 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 	if (!ScreenBounds(st.art, proj, left, top, right, bottom))
 		return;
 	RasterizeTriangles(out, proj, depthBuffer, st.art.mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
+		if (tri.mapping == MeshWallFace) {
+			const PieceTextures &textures = GetPieceTextures(dPiece[static_cast<int>(tri.mirrorX)][static_cast<int>(tri.mirrorY)]);
+			const std::vector<int16_t> &face = tri.faceX ? textures.faceX : textures.faceY;
+			// Along the face in world-axis order, unmirrored on the far side, as the raycaster does.
+			const float along = tri.faceX ? wy - tri.mirrorY : wx - tri.mirrorX;
+			const int faceHeight = FaceTextureHeight();
+			const int u = std::clamp(static_cast<int>(along * FaceTextureWidth), 0, FaceTextureWidth - 1);
+			const int v = faceHeight - 1 - static_cast<int>(wz * SpritePixelsPerTileY);
+			if (v < 0 || v >= faceHeight)
+				return -1;
+			const int16_t texel = face[static_cast<size_t>(v) * FaceTextureWidth + u];
+			if (texel <= 0)
+				return -1;
+			const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
+			const uint8_t level = InDungeonBounds(lit) ? LightAt(lit) : LightsMax;
+			return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(PatchColor(texel), tri.darkness)]);
+		}
 		const uint8_t color = StructureColor(st, tri, wx, wy, wz);
 		uint8_t darkness = tri.darkness;
 		if (wz < -0.02F)
