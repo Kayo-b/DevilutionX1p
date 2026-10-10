@@ -166,7 +166,7 @@ void CollectObjects(std::vector<Entity> &entities)
 			continue; // doors are part of the walls
 		if (LightAt(object.position) >= LightsMax)
 			continue;
-		Entity entity = MakeSpriteEntity(EntityKind::Object, id, object.position, TileCenter(object.position), object.currentSprite());
+		Entity entity = MakeSpriteEntity(EntityKind::Object, id, object.position, TileCenter(object.position), object.currentSprite(), 1.0F, true);
 		entity.lit = object.applyLighting;
 		entities.push_back(entity);
 	}

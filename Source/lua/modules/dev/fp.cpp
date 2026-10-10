@@ -218,6 +218,26 @@ std::string DebugCmdFpDumpPiece(int x, int y, std::string path)
 	return "Dumped.";
 }
 
+std::string DebugCmdFpLowWalls()
+{
+	int count = 0;
+	std::string first;
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			if (!IsTileSolid({ x, y }))
+				continue;
+			const fp::PieceTextures &t = fp::GetPieceTextures(dPiece[x][y]);
+			const int rows = std::max(t.faceXUsable ? t.faceXRows : 0, t.faceYUsable ? t.faceYRows : 0);
+			if (rows > 0 && rows < 80) {
+				if (count < 6)
+					StrAppend(first, " ", x, ",", y, "(", rows, ")");
+				count++;
+			}
+		}
+	}
+	return StrCat("low wall tiles: ", count, first);
+}
+
 std::string DebugCmdFpOn(bool enabled)
 {
 	if (fp::IsFirstPersonActive() != enabled)
@@ -244,6 +264,7 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "killmonsters", "()", "Kill every active monster (to look at corpses).", &DebugCmdFpKillMonsters);
 	LuaSetDocFn(table, "monsterstate", "()", "Describe monsters near the player and count corpse tiles.", &DebugCmdFpMonsterState);
 	LuaSetDocFn(table, "dumppiece", "(x: number, y: number, path: string)", "Dump the iso column art of the piece at a tile (PPM).", &DebugCmdFpDumpPiece);
+	LuaSetDocFn(table, "lowwalls", "()", "Count solid tiles whose wall art is lower than a full wall.", &DebugCmdFpLowWalls);
 	LuaSetDocFn(table, "on", "(enabled: boolean)", "Switch between first-person and the original view.", &DebugCmdFpOn);
 	LuaSetDocFn(table, "buildings", "(enabled: boolean)", "Draw town houses as reconstructed 3D models (default) or flat billboards.", &DebugCmdFpBuildings);
 	return table;

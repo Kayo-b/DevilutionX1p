@@ -419,7 +419,7 @@ void DumpSolidPieces(const char *path, int perRow, int rows)
 	std::unordered_map<uint16_t, int> counts;
 	for (int y = 0; y < MAXDUNY; y++)
 		for (int x = 0; x < MAXDUNX; x++)
-			if (IsTileSolid({ x, y }))
+			if (IsTileSolid({ x, y }) || GetPieceTextures(dPiece[x][y]).hasTallArt)
 				counts[dPiece[x][y]]++;
 	std::vector<std::pair<int, uint16_t>> ranked;
 	for (const auto &[piece, count] : counts)

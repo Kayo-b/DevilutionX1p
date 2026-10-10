@@ -99,6 +99,7 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj)
 struct FaceArt {
 	const std::vector<int16_t> *face;
 	const std::vector<uint8_t> *holes; // null if the face has no openings to look through
+	int rows;                          // height of the wall this art shows, in face rows (0: the level's wall height)
 };
 
 /** @brief The face art for a wall hit: the piece's own art for that face, else the other face, else the level's plain wall. */
@@ -107,15 +108,15 @@ FaceArt FaceForHit(const RayHit &hit)
 	if (!InDungeonBounds(hit.tile)) {
 		// The edge of the map is a plain black wall.
 		static const std::vector<int16_t> Black(static_cast<size_t>(FaceTextureWidth) * ColumnPixelHeight, 0);
-		return { &Black, nullptr };
+		return { &Black, nullptr, 0 };
 	}
 	const PieceTextures &textures = GetPieceTextures(dPiece[hit.tile.x][hit.tile.y]);
 	const bool wantX = hit.xSide;
 	if (wantX ? textures.faceXUsable : textures.faceYUsable)
-		return wantX ? FaceArt { &textures.faceX, &textures.holesX } : FaceArt { &textures.faceY, &textures.holesY };
+		return wantX ? FaceArt { &textures.faceX, &textures.holesX, textures.faceXRows } : FaceArt { &textures.faceY, &textures.holesY, textures.faceYRows };
 	if (wantX ? textures.faceYUsable : textures.faceXUsable)
-		return wantX ? FaceArt { &textures.faceY, &textures.holesY } : FaceArt { &textures.faceX, &textures.holesX };
-	return { &GetFallbackFace(), nullptr };
+		return wantX ? FaceArt { &textures.faceY, &textures.holesY, textures.faceYRows } : FaceArt { &textures.faceX, &textures.holesX, textures.faceXRows };
+	return { &GetFallbackFace(), nullptr, 0 };
 }
 
 /**
@@ -142,8 +143,13 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 			if (layer == 0)
 				zBuffer[x] = hit.distance;
 
+			const FaceArt art = FaceForHit(hit);
+			// Each wall is as tall as its art: low walls (balustrades, tomb boxes) stay low, and the walls behind them show above.
+			const int hitRows = art.rows > 0 ? std::clamp(art.rows, 1, faceHeight) : wallRows;
+			const float hitHeight = static_cast<float>(hitRows) / SpritePixelsPerTileY;
+			const bool lowWall = hitHeight < wallHeight - 0.2F;
 			const float scale = proj.focal / std::max(hit.distance, 0.01F);
-			const float topF = static_cast<float>(proj.horizon) - (wallHeight - EyeHeight) * scale;
+			const float topF = static_cast<float>(proj.horizon) - (hitHeight - EyeHeight) * scale;
 			const float bottomF = static_cast<float>(proj.horizon) + EyeHeight * scale;
 			const int top = std::max(0, static_cast<int>(topF));
 			const int bottom = std::min(proj.height - 1, static_cast<int>(bottomF));
@@ -154,15 +160,14 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 				along = 1.0F - along;
 			const int u = std::clamp(static_cast<int>(along * FaceTextureWidth), 0, FaceTextureWidth - 1);
 
-			const FaceArt art = FaceForHit(hit);
 			const uint8_t *light = LightTables[LightAt(hit.previous)].data();
-			// The wall covers the bottom `wallRows` rows of the face texture.
-			const float rowsPerPixel = static_cast<float>(wallRows) / (bottomF - topF);
-			bool sawOpening = false;
+			// The wall covers the bottom `hitRows` rows of the face texture.
+			const float rowsPerPixel = static_cast<float>(hitRows) / (bottomF - topF);
+			bool sawOpening = lowWall;
 			for (int y = top; y <= bottom; y++) {
 				if (filled[y] != 0)
 					continue;
-				const int row = std::clamp(faceHeight - wallRows + static_cast<int>((static_cast<float>(y) - topF) * rowsPerPixel), 0, faceHeight - 1);
+				const int row = std::clamp(faceHeight - hitRows + static_cast<int>((static_cast<float>(y) - topF) * rowsPerPixel), 0, faceHeight - 1);
 				const size_t at = static_cast<size_t>(row) * FaceTextureWidth + u;
 				int16_t texel = (*art.face)[at];
 				if (texel == NoPixel) {
