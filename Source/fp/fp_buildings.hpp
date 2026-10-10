@@ -55,6 +55,9 @@ std::string TileMap(int x0, int y0, int x1, int y1);
  * face art, the parts without art left open to look through.
  */
 [[nodiscard]] bool IsArchPillarTile(Point tile);
+/** @brief The per-tile structure kinds (MAXDUNX * MAXDUNY, index y * MAXDUNX + x; 0 none, 3 arch pillar, else a mesh), null in town. For per-pixel loops. */
+[[nodiscard]] const uint8_t *StructureTileMap();
+[[nodiscard]] bool HasFloorHoles();
 /** @brief Whether the floor is open at a point (the pit of the stairs down), so the floor is not drawn there. */
 [[nodiscard]] bool IsFloorHole(float x, float y);
 /** @brief Whether an object is drawn as a 3D box of its own sprite (a sarcophagus) rather than a billboard. */

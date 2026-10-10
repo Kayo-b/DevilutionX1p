@@ -2782,6 +2782,19 @@ bool IsStructureTile(Point tile)
 	return kind != 0 && kind != 3;
 }
 
+const uint8_t *StructureTileMap()
+{
+	if (leveltype == DTYPE_TOWN)
+		return nullptr;
+	EnsureStructures();
+	return StructureTiles.data();
+}
+
+bool HasFloorHoles()
+{
+	return !FloorHoles.empty();
+}
+
 bool IsArchPillarTile(Point tile)
 {
 	if (leveltype == DTYPE_TOWN || !InDungeonBounds(tile))

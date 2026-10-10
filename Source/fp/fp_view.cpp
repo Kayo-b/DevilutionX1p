@@ -10,6 +10,9 @@
 #include "fp/fp_view.hpp"
 
 #include <algorithm>
+#include <cstdlib>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -21,6 +24,7 @@
 #include "engine/render/text_render.hpp"
 #include "fp/fp_controls.hpp"
 #include "fp/fp_buildings.hpp"
+#include "utils/log.hpp"
 #include "fp/fp_raycast.hpp"
 #include "fp/fp_textures.hpp"
 #include "fp/fp_world.hpp"
@@ -60,6 +64,9 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 	const bool isTown = leveltype == DTYPE_TOWN;
 	const bool hasCeiling = !isTown;
 
+	const uint8_t *structures = StructureTileMap();
+	const bool holes = HasFloorHoles();
+	const std::vector<int16_t> &ground = GetGroundFloor();
 	for (int y = 0; y < proj.height; y++) {
 		const bool isFloor = y > proj.horizon;
 		uint8_t *dst = out.at(0, y);
@@ -79,6 +86,11 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 		const float stepY = rowDistance * (rayRight.y - rayLeft.y) / static_cast<float>(proj.width);
 		float wx = proj.pos.x + rowDistance * rayLeft.x;
 		float wy = proj.pos.y + rowDistance * rayLeft.y;
+		// The tile changes every few pixels at most: look its art and light up once per tile.
+		Point cachedTile { -1, -1 };
+		const std::vector<int16_t> *floorArt = nullptr;
+		const std::vector<int16_t> *floorFill = nullptr;
+		uint8_t tileLight = 0;
 
 		for (int x = 0; x < proj.width; x++, wx += stepX, wy += stepY) {
 			const float fx = std::floor(wx);
@@ -88,21 +100,26 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 				dst[x] = 0;
 				continue;
 			}
-			if (isFloor && IsFloorHole(wx, wy)) {
+			if (holes && isFloor && IsFloorHole(wx, wy)) {
 				dst[x] = 0; // open: whatever is down there is drawn into it
 				continue;
 			}
-			const std::vector<int16_t> &floor = GetPieceTextures(dPiece[tile.x][tile.y]).floor;
+			if (tile != cachedTile) {
+				cachedTile = tile;
+				const uint8_t structure = structures != nullptr ? structures[static_cast<size_t>(tile.y) * MAXDUNX + tile.x] : 0;
+				// Under a structure the piece's own art is the structure, drawn as a mesh: plain ground instead.
+				floorArt = structure != 0 && structure != 3 ? &ground : &GetPieceTextures(dPiece[tile.x][tile.y]).floor;
+				floorFill = isTown ? &ground : nullptr; // baked shadows and holes in town ground
+				tileLight = LightAt(tile);
+				if (!isFloor)
+					tileLight = std::min<uint8_t>(tileLight + CeilingExtraDarkness, LightsMax);
+			}
 			const int u = std::min(static_cast<int>((wx - fx) * FloorTextureSize), FloorTextureSize - 1);
 			const int v = std::min(static_cast<int>((wy - fy) * FloorTextureSize), FloorTextureSize - 1);
-			int16_t texel = floor[v * FloorTextureSize + u];
-			if (IsStructureTile(tile))
-				texel = GetGroundFloor()[v * FloorTextureSize + u]; // the piece's own art is the structure, drawn as a mesh
-			else if (isTown && texel <= 0)
-				texel = GetGroundFloor()[v * FloorTextureSize + u]; // baked shadows and holes in town ground
-			uint8_t light = LightAt(tile);
-			if (!isFloor)
-				light = std::min<uint8_t>(light + CeilingExtraDarkness, LightsMax);
+			int16_t texel = (*floorArt)[v * FloorTextureSize + u];
+			if (floorFill != nullptr && texel <= 0)
+				texel = (*floorFill)[v * FloorTextureSize + u];
+			const uint8_t light = tileLight;
 			dst[x] = texel == NoPixel ? 0 : Shade(static_cast<uint8_t>(texel), light);
 			if (isFloor)
 				depthBuffer[static_cast<size_t>(y) * proj.width + x] = rowDistance * FloorDepthBias;
@@ -436,14 +453,39 @@ void DrawFirstPersonView(const Surface &out)
 	const Projection proj = GetProjection();
 	zBuffer.resize(static_cast<size_t>(proj.width));
 
+	// Debug: FP_PHASE_TIMES logs the average time of each drawing phase every 120 frames.
+	static const bool timePhases = std::getenv("FP_PHASE_TIMES") != nullptr;
+	static std::array<double, 5> phaseTotals {};
+	static int timedFrames = 0;
+	auto clock = [] { return std::chrono::steady_clock::now(); };
+	auto t0 = clock();
+	std::array<double, 5> phase {};
+	auto lap = [&](int i) {
+		const auto t = clock();
+		phase[i] = std::chrono::duration<double, std::milli>(t - t0).count();
+		t0 = t;
+	};
 	depthBuffer.assign(static_cast<size_t>(proj.width) * proj.height, std::numeric_limits<float>::infinity());
 	DrawFloorAndCeiling(out, proj, depthBuffer);
+	lap(0);
 	DrawWalls(out, proj, zBuffer, depthBuffer);
+	lap(1);
 	if (leveltype == DTYPE_TOWN && BuildingsEnabled())
 		DrawBuildings(out, proj, zBuffer, depthBuffer);
 	else
 		DrawStructures(out, proj, depthBuffer);
+	lap(2);
 	DrawEntities(out, proj, zBuffer, &depthBuffer);
+	lap(3);
+	if (timePhases) {
+		for (size_t i = 0; i < phase.size(); i++)
+			phaseTotals[i] += phase[i];
+		if (++timedFrames == 120) {
+			LogInfo("fp phases (ms): floor {:.2f}, walls {:.2f}, meshes {:.2f}, sprites {:.2f}", phaseTotals[0] / 120, phaseTotals[1] / 120, phaseTotals[2] / 120, phaseTotals[3] / 120);
+			phaseTotals = {};
+			timedFrames = 0;
+		}
+	}
 	if (IsMouseLookActive())
 		DrawCrosshair(out);
 	DrawDebugInfo(out, proj);
