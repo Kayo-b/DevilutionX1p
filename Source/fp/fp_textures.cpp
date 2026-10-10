@@ -407,6 +407,22 @@ std::unique_ptr<PieceTextures> BuildPieceTextures(uint16_t pieceId)
 		}
 		textures->isFreeStanding = shaft > 0 && shaft <= FreeStandingMaxShaft;
 	}
+	if (leveltype != DTYPE_TOWN && !textures->hasTallArt && HasAnyOf(SOLData[pieceId], TileProperties::Solid)) {
+		// Lava and water: their ground is bright art; the inside of thick walls is black or empty.
+		const std::vector<int16_t> ground(column.end() - static_cast<ptrdiff_t>(FloorHeight) * ColumnWidth, column.end());
+		const std::vector<int16_t> floor = ExtractFloor(ground);
+		int lit = 0;
+		for (const int16_t t : floor) {
+			if (t <= 0)
+				continue;
+			const SDL_Color c = logical_palette[static_cast<uint8_t>(t)];
+			lit += c.r + c.g + c.b > 60 ? 1 : 0;
+		}
+		if (lit * 2 > static_cast<int>(floor.size())) {
+			textures->isFlatSolid = true;
+			textures->floor = floor;
+		}
+	}
 	// Only floor pieces have floor triangles; other pieces' bottom micros must not be decoded as triangles.
 	// In town, solid pieces without tall art (water, the void outside the map) are flat ground as well.
 	if ((leveltype == DTYPE_TOWN && textures->hasTallArt) || textures->isFreeStanding) {
@@ -415,7 +431,7 @@ std::unique_ptr<PieceTextures> BuildPieceTextures(uint16_t pieceId)
 		textures->floor = ExtractFloor(ground);
 	} else if (!HasAnyOf(SOLData[pieceId], TileProperties::Solid | TileProperties::BlockMissile) || leveltype == DTYPE_TOWN)
 		textures->floor = ExtractFloor(RenderColumnWithAlpha(pieceId, FloorHeight, true));
-	else
+	else if (!textures->isFlatSolid)
 		textures->floor.assign(static_cast<size_t>(FloorTextureSize) * FloorTextureSize, NoPixel);
 	return textures;
 }
@@ -647,6 +663,12 @@ const std::vector<int16_t> &GetFallbackFace(int parity)
 	if (cache.fallbackPair.empty())
 		return GetFallbackFace();
 	return (parity & 1) == 0 ? cache.fallbackFace : cache.fallbackPair;
+}
+
+bool HasPlainWall()
+{
+	GetFallbackFace(0);
+	return !GetCache().fallbackPair.empty();
 }
 
 bool WallRecessesEnabled()

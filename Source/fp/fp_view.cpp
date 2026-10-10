@@ -62,7 +62,8 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 	const Vec2 rayRight { proj.dir.x + proj.plane.x, proj.dir.y + proj.plane.y };
 	const float wallHeight = WallHeight();
 	const bool isTown = leveltype == DTYPE_TOWN;
-	const bool hasCeiling = !isTown;
+	// Hell's walls are low bone and spine work with the dark above them, as in the original.
+	const bool hasCeiling = !isTown && leveltype != DTYPE_HELL;
 
 	const uint8_t *structures = StructureTileMap();
 	const bool holes = HasFloorHoles();
@@ -71,7 +72,7 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 		const bool isFloor = y > proj.horizon;
 		uint8_t *dst = out.at(0, y);
 		if (!isFloor && !hasCeiling) {
-			std::fill_n(dst, proj.width, TownSkyColor);
+			std::fill_n(dst, proj.width, isTown ? TownSkyColor : uint8_t { 0 });
 			continue;
 		}
 		const int rowsFromHorizon = isFloor ? y - proj.horizon : proj.horizon - y;
@@ -108,7 +109,9 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 				cachedTile = tile;
 				const uint8_t structure = structures != nullptr ? structures[static_cast<size_t>(tile.y) * MAXDUNX + tile.x] : 0;
 				// Under a structure the piece's own art is the structure, drawn as a mesh: plain ground instead.
-				floorArt = structure != 0 && structure != 3 ? &ground : &GetPieceTextures(dPiece[tile.x][tile.y]).floor;
+				const PieceTextures &piece = GetPieceTextures(dPiece[tile.x][tile.y]);
+				// The ceiling is the plain ground: mirroring each tile's floor would hang lava, water and blood overhead.
+				floorArt = (structure != 0 && structure != 3) || !isFloor ? &ground : &piece.floor;
 				floorFill = isTown ? &ground : nullptr; // baked shadows and holes in town ground
 				tileLight = LightAt(tile);
 				if (!isFloor)
@@ -168,7 +171,14 @@ FaceArt FaceForHit(const RayHit &hit)
 		return withRecess(!wantX);
 	// A wall whose face the iso camera never saw: the level's plain wall, alternating along the wall so its arches
 	// come out whole.
-	return { &GetFallbackFace(wantX ? hit.tile.y : hit.tile.x), nullptr, 0 };
+	if (HasPlainWall())
+		return { &GetFallbackFace(wantX ? hit.tile.y : hit.tile.x), nullptr, 0 };
+	// No plain wall on the level (hell's bone walls): the piece's own sparse art, open between the bones.
+	auto artCount = [](const std::vector<int16_t> &face) { return std::count_if(face.begin(), face.end(), [](int16_t t) { return t > 0; }); };
+	const bool useX = artCount(textures.faceX) >= artCount(textures.faceY);
+	FaceArt art = useX ? FaceArt { &textures.faceX, &textures.holesX, 0 } : FaceArt { &textures.faceY, &textures.holesY, 0 };
+	art.emptyIsOpen = true;
+	return art;
 }
 
 /**

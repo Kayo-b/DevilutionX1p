@@ -59,6 +59,8 @@ struct PieceTextures {
 	 * faces, so it is drawn as an upright billboard of its own art instead of as a wall cube.
 	 */
 	bool isFreeStanding;
+	/** A solid piece that is only floor art (lava, water): blocks walking but is seen as floor, not as a wall. */
+	bool isFlatSolid = false;
 };
 
 /** @brief Whether wall recesses (blind arches, niches) are carved into the walls (debug toggle, on by default). */
@@ -75,6 +77,8 @@ void SetWallRecessesEnabled(bool enabled);
 [[nodiscard]] const std::vector<int16_t> &GetFallbackFace();
 /** @brief Filler wall face for a tile in a run: two neighbouring faces of the level's commonest straight wall, alternating with the parity of the tile's position along the wall. */
 [[nodiscard]] const std::vector<int16_t> &GetFallbackFace(int parity);
+/** @brief Whether the level has a plain straight wall to use as filler (hell's bone walls do not). */
+[[nodiscard]] bool HasPlainWall();
 
 /**
  * @brief Height in face rows (pixels) of the level's walls, taken from the art of its wall pieces.

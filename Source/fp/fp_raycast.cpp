@@ -49,6 +49,8 @@ bool IsOpaque(Point tile)
 	// Free-standing columns and the stairs down are drawn as meshes (or billboards), so rays pass them.
 	if (IsArchPillarTile(tile))
 		return true;
+	if (GetPieceTextures(dPiece[tile.x][tile.y]).isFlatSolid)
+		return false; // lava, water: seen as floor
 	return !GetPieceTextures(dPiece[tile.x][tile.y]).isFreeStanding && !IsStructureTile(tile);
 }
 
