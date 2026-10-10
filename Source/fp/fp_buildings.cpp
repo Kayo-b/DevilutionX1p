@@ -70,6 +70,24 @@ struct Params {
 	float overhang; // how far the roof sticks out over the eaves
 };
 
+/** Side limits of the texture patches cut from a house's art, in art pixels. */
+constexpr int MinPatchSize = 8;
+constexpr int MaxPatchSize = 48;
+/** Patches with a side shorter than this repeat too visibly; the house borrows another's instead. */
+constexpr int BorrowPatchBelow = 16;
+/** Art darker than this (outlines, window and door openings) is kept out of the patches. */
+constexpr int MinPatchBrightness = 20;
+/** Share of the fitted eave that the wall patch is taken from, counted from the ground. */
+constexpr float WallPatchHeight = 0.75F;
+
+/** @brief A picture of a house surface taken from the iso art; palette index 0 marks a missing texel. */
+struct SurfaceTexture {
+	int width = 0;
+	int height = 0;
+	std::vector<uint8_t> pixels;
+	bool valid = false;
+};
+
 struct Building {
 	float x0;
 	float y0;
@@ -91,6 +109,8 @@ struct Building {
 	bool longAlongX = true;        // the model's long axis runs along world x
 	std::vector<uint8_t> wallRamp; // palette indices of the house's own wall art, sorted dark to light
 	std::vector<uint8_t> roofRamp; // the same for its thatch
+	SurfaceTexture wallPatch; // clean rectangle of the house's own wall art, tiled over the model's walls
+	SurfaceTexture roofPatch; // the same for its thatch
 };
 
 struct LevelKey {
@@ -387,6 +407,7 @@ struct HouseModel {
 std::vector<HouseModel> HouseModels;
 bool HouseModelsLoaded = false;
 bool HouseModelsOn = true;
+bool TexturedHouses = true;
 
 void LoadHouseModels()
 {
@@ -471,6 +492,253 @@ void BuildRamps(Building &b)
 	toRamp(roof, b.roofRamp);
 }
 
+/** @brief Fills texels missed by rounding: unknown ones between two known neighbours in a row or column. */
+void CloseGaps(SurfaceTexture &tex)
+{
+	std::vector<uint8_t> closed = tex.pixels;
+	for (int y = 0; y < tex.height; y++) {
+		for (int x = 0; x < tex.width; x++) {
+			const size_t at = static_cast<size_t>(y) * tex.width + x;
+			if (tex.pixels[at] != 0)
+				continue;
+			if (x > 0 && x + 1 < tex.width && tex.pixels[at - 1] != 0 && tex.pixels[at + 1] != 0)
+				closed[at] = tex.pixels[at - 1];
+			else if (y > 0 && y + 1 < tex.height && tex.pixels[at - tex.width] != 0 && tex.pixels[at + tex.width] != 0)
+				closed[at] = tex.pixels[at - tex.width];
+		}
+	}
+	tex.pixels.swap(closed);
+}
+
+/** @brief The largest rectangle of the picture that is all known texels (palette index != 0), sides capped. */
+SurfaceTexture LargestCleanRectangle(SurfaceTexture tex)
+{
+	SurfaceTexture patch;
+	if (tex.width == 0)
+		return patch;
+	CloseGaps(tex);
+	std::vector<int> run(tex.width, 0); // known texels in each column ending at the current row
+	int bestArea = 0;
+	int bestX = 0;
+	int bestY = 0;
+	int bestWidth = 0;
+	int bestHeight = 0;
+	for (int y = 0; y < tex.height; y++) {
+		for (int x = 0; x < tex.width; x++)
+			run[x] = tex.pixels[static_cast<size_t>(y) * tex.width + x] != 0 ? std::min(run[x] + 1, MaxPatchSize) : 0;
+		for (int x = 0; x < tex.width; x++) {
+			int height = MaxPatchSize;
+			for (int right = x; right < tex.width && right - x < MaxPatchSize; right++) {
+				height = std::min(height, run[right]);
+				if (height < MinPatchSize)
+					break;
+				const int width = right - x + 1;
+				if (width >= MinPatchSize && width * height > bestArea) {
+					bestArea = width * height;
+					bestX = x;
+					bestY = y - height + 1;
+					bestWidth = width;
+					bestHeight = height;
+				}
+			}
+		}
+	}
+	if (bestArea == 0)
+		return patch;
+	patch.width = bestWidth;
+	patch.height = bestHeight;
+	patch.pixels.resize(static_cast<size_t>(bestWidth) * bestHeight);
+	for (int y = 0; y < bestHeight; y++)
+		for (int x = 0; x < bestWidth; x++)
+			patch.pixels[static_cast<size_t>(y) * bestWidth + x] = tex.pixels[static_cast<size_t>(bestY + y) * tex.width + bestX + x];
+	patch.valid = true;
+	return patch;
+}
+
+/** @brief Texel of a patch tiled over a surface; mirrored every other repeat so no seams show. Coordinates in art pixels. */
+uint8_t TiledTexel(const SurfaceTexture &patch, float u, float v)
+{
+	auto wrap = [](float t, int size) {
+		const int period = 2 * size;
+		int i = static_cast<int>(std::floor(t)) % period;
+		if (i < 0)
+			i += period;
+		return i < size ? i : period - 1 - i;
+	};
+	return patch.pixels[static_cast<size_t>(wrap(-v, patch.height)) * patch.width + wrap(u, patch.width)];
+}
+
+/**
+ * @brief Cuts a clean patch of wall and of thatch out of the house's own iso art. Which surface a pixel shows is
+ * told by casting it back onto the fitted model. Wall art is unskewed into surface space that way; the thatch faces
+ * the iso camera nearly head on, so its patch is cut straight from the picture. Near-black outlines, windows,
+ * doors and (for the walls) warm thatch colours are left out; the voxel model has its own openings.
+ */
+void BuildTextures(Building &b)
+{
+	const float eave = b.params.eave;
+	const int wallHeight = std::max(4, static_cast<int>(std::ceil(eave * HeightPixels)));
+	std::array<SurfaceTexture, 2> walls; // the +x and +y faces, the two the iso camera sees
+	for (int face = 0; face < 2; face++) {
+		walls[face].width = std::max(8, static_cast<int>(std::ceil((face == 0 ? b.y1 - b.y0 : b.x1 - b.x0) * 32.0F)));
+		walls[face].height = wallHeight;
+		walls[face].pixels.assign(static_cast<size_t>(walls[face].width) * wallHeight, 0);
+	}
+	SurfaceTexture roof;
+	roof.width = b.canvasWidth;
+	roof.height = b.canvasHeight;
+	roof.pixels.assign(b.canvas.size(), 0);
+
+	constexpr V3 IsoRay { -1.0F, -1.0F, -32.0F / HeightPixels };
+	for (int y = 0; y < b.canvasHeight; y++) {
+		for (int x = 0; x < b.canvasWidth; x++) {
+			const size_t at = static_cast<size_t>(y) * b.canvasWidth + x;
+			const int16_t art = b.canvas[at];
+			if (art <= 0 || PaletteBrightness(art) < MinPatchBrightness)
+				continue;
+			const SDL_Color c = logical_palette[art];
+			if (c.r > 2 * c.g + 20)
+				continue; // red doors, signs and lamps
+			const float sum = static_cast<float>(y + b.originY) / 16.0F;
+			const float diff = static_cast<float>(x + b.originX) / 32.0F;
+			const V3 origin { (sum + diff) / 2.0F, (sum - diff) / 2.0F, 0.0F };
+			float wallIn;
+			float roofIn;
+			float tOut;
+			int wallFace;
+			int roofFace;
+			const bool onWall = RayBody(b.walls, origin, IsoRay, wallIn, tOut, wallFace);
+			const bool onRoof = RayBody(b.roof, origin, IsoRay, roofIn, tOut, roofFace);
+			// The iso ray runs away from the camera, so the smaller entry is the surface the camera sees.
+			if (onRoof && (!onWall || roofIn < wallIn)) {
+				if (roofFace == 3 || roofFace == 4)
+					roof.pixels[at] = static_cast<uint8_t>(art);
+				continue;
+			}
+			if (!onWall || (wallFace != 0 && wallFace != 2))
+				continue;
+			const V3 hit { origin.x + IsoRay.x * wallIn, origin.y + IsoRay.y * wallIn, origin.z + IsoRay.z * wallIn };
+			// Only the lower part of the wall: where the fitted eave is too high, thatch shows above it.
+			if (hit.z > WallPatchHeight * eave)
+				continue;
+			// Wall stone and timber are grey to blue; warm pixels on a wall are thatch hanging low, or doors.
+			if (c.r > c.b + 10)
+				continue;
+			SurfaceTexture &tex = walls[wallFace == 0 ? 0 : 1];
+			const float u = wallFace == 0 ? (hit.y - b.y0) / (b.y1 - b.y0) : (hit.x - b.x0) / (b.x1 - b.x0);
+			const int tx = std::clamp(static_cast<int>(u * static_cast<float>(tex.width)), 0, tex.width - 1);
+			const int ty = std::clamp(tex.height - 1 - static_cast<int>(hit.z * HeightPixels), 0, tex.height - 1);
+			tex.pixels[static_cast<size_t>(ty) * tex.width + tx] = static_cast<uint8_t>(art);
+		}
+	}
+	b.wallPatch = LargestCleanRectangle(walls[0]);
+	const SurfaceTexture other = LargestCleanRectangle(walls[1]);
+	if (other.width * other.height > b.wallPatch.width * b.wallPatch.height)
+		b.wallPatch = other;
+	b.roofPatch = LargestCleanRectangle(roof);
+#ifdef _DEBUG
+	if (const char *dumpDir = std::getenv("FP_DUMP_BUILDINGS")) {
+		for (const auto &[patch, kind] : { std::pair { &b.wallPatch, "wall" }, std::pair { &b.roofPatch, "roof" } }) {
+			if (!patch->valid)
+				continue;
+			if (FILE *f = std::fopen(StrCat(dumpDir, "/p_", kind, "_", static_cast<int>(b.x0), "_", static_cast<int>(b.y0), ".ppm").c_str(), "wb")) {
+				std::fprintf(f, "P6\n%d %d\n255\n", patch->width, patch->height);
+				for (const uint8_t pixel : patch->pixels) {
+					const SDL_Color c = logical_palette[pixel];
+					std::fputc(c.r, f);
+					std::fputc(c.g, f);
+					std::fputc(c.b, f);
+				}
+				std::fclose(f);
+			}
+		}
+	}
+#endif
+	LogInfo("fp: house {}..{} x {}..{} art patches: wall {}x{}, thatch {}x{}", static_cast<int>(b.x0), static_cast<int>(b.x1) - 1, static_cast<int>(b.y0), static_cast<int>(b.y1) - 1,
+	    b.wallPatch.width, b.wallPatch.height, b.roofPatch.width, b.roofPatch.height);
+}
+
+/** @brief Palette colour of the house's own art at a model point; 0 if the art gives no patch for that surface. */
+uint8_t ArtColor(const Building &b, bool roof, float wx, float wy, float wz)
+{
+	if (roof) {
+		if (!b.roofPatch.valid)
+			return 0;
+		// Thatch: along the model's ridge and down the slope, at the art's 32 pixels per tile.
+		const bool ridgeAlongX = b.longAlongX;
+		const float halfSpan = (ridgeAlongX ? b.y1 - b.y0 : b.x1 - b.x0) / 2.0F + b.params.overhang;
+		const float slopeScale = std::sqrt(halfSpan * halfSpan + b.params.rise * b.params.rise) / halfSpan;
+		const float along = ridgeAlongX ? wx : wy;
+		const float across = ridgeAlongX ? wy - (b.y0 + b.y1) / 2.0F : wx - (b.x0 + b.x1) / 2.0F;
+		return TiledTexel(b.roofPatch, along * 32.0F, (halfSpan - std::abs(across)) * slopeScale * 32.0F);
+	}
+	if (!b.wallPatch.valid)
+		return 0;
+	// Stone: along the nearest face and up, at the art's density (32 pixels per tile across, HeightPixels up).
+	const float fx = std::clamp((wx - b.x0) / (b.x1 - b.x0), 0.0F, 1.0F);
+	const float fy = std::clamp((wy - b.y0) / (b.y1 - b.y0), 0.0F, 1.0F);
+	const bool onXFace = std::min(fx, 1.0F - fx) * (b.x1 - b.x0) < std::min(fy, 1.0F - fy) * (b.y1 - b.y0);
+	return TiledTexel(b.wallPatch, (onXFace ? wy : wx) * 32.0F, wz * HeightPixels);
+}
+
+/** @brief World size of one voxel of the house's model once stretched over its footprint. */
+float VoxelSize(const Building &b)
+{
+	const HouseModel &model = HouseModels[b.model];
+	const float shortSide = std::min(b.x1 - b.x0, b.y1 - b.y0);
+	const float longSide = std::max(b.x1 - b.x0, b.y1 - b.y0);
+	const float overhang = 0.12F * shortSide;
+	return std::max((longSide + 2.0F * overhang) / static_cast<float>(model.nx), (shortSide + 2.0F * overhang) / static_cast<float>(model.ny));
+}
+
+/**
+ * @brief Blurs a patch over the size one voxel covers, so a voxel shows the average of the art under it instead of
+ * one point of it (which beats into stripes against fine thatch strands). Results stay in the patch's own colours.
+ */
+void FilterPatch(SurfaceTexture &patch, int sizeX, int sizeY)
+{
+	if (!patch.valid || (sizeX <= 1 && sizeY <= 1))
+		return;
+	std::vector<uint8_t> colors;
+	std::array<bool, 256> used {};
+	for (const uint8_t p : patch.pixels) {
+		if (!used[p])
+			colors.push_back(p);
+		used[p] = true;
+	}
+	std::vector<uint8_t> filtered(patch.pixels.size());
+	for (int y = 0; y < patch.height; y++) {
+		for (int x = 0; x < patch.width; x++) {
+			int r = 0;
+			int g = 0;
+			int bl = 0;
+			int n = 0;
+			for (int dy = -sizeY / 2; dy < sizeY - sizeY / 2; dy++) {
+				for (int dx = -sizeX / 2; dx < sizeX - sizeX / 2; dx++) {
+					const SDL_Color c = logical_palette[TiledTexel(patch, static_cast<float>(x + dx), -static_cast<float>(y + dy))];
+					r += c.r;
+					g += c.g;
+					bl += c.b;
+					n++;
+				}
+			}
+			r /= n;
+			g /= n;
+			bl /= n;
+			int best = std::numeric_limits<int>::max();
+			for (const uint8_t index : colors) {
+				const SDL_Color c = logical_palette[index];
+				const int distance = (c.r - r) * (c.r - r) * 3 + (c.g - g) * (c.g - g) * 6 + (c.b - bl) * (c.b - bl);
+				if (distance < best) {
+					best = distance;
+					filtered[static_cast<size_t>(y) * patch.width + x] = index;
+				}
+			}
+		}
+	}
+	patch.pixels.swap(filtered);
+}
+
 /** @brief Picks the voxel model whose proportions best match the footprint of the building. */
 void ChooseModel(Building &b)
 {
@@ -478,6 +746,7 @@ void ChooseModel(Building &b)
 	if (HouseModels.empty())
 		return;
 	BuildRamps(b);
+	BuildTextures(b);
 	if (b.wallRamp.size() < 20 || b.roofRamp.size() < 20)
 		return; // not enough art to take colours from
 	const float width = b.x1 - b.x0;
@@ -700,6 +969,27 @@ void BuildAll()
 			Buildings.push_back(std::move(chosen->building));
 		}
 	}
+	// A house whose art shows too little wall or thatch borrows the biggest patch of another house.
+	auto biggest = [](SurfaceTexture Building::*patch) {
+		const SurfaceTexture *best = nullptr;
+		for (const Building &b : Buildings)
+			if ((b.*patch).valid && (best == nullptr || (b.*patch).pixels.size() > best->pixels.size()))
+				best = &(b.*patch);
+		return best != nullptr ? *best : SurfaceTexture {};
+	};
+	const SurfaceTexture wall = biggest(&Building::wallPatch);
+	const SurfaceTexture roof = biggest(&Building::roofPatch);
+	for (Building &b : Buildings) {
+		if (b.model < 0)
+			continue;
+		if (!b.wallPatch.valid || b.wallPatch.width < BorrowPatchBelow || b.wallPatch.height < BorrowPatchBelow)
+			b.wallPatch = wall;
+		if (!b.roofPatch.valid || b.roofPatch.width < BorrowPatchBelow || b.roofPatch.height < BorrowPatchBelow)
+			b.roofPatch = roof;
+		const float voxel = VoxelSize(b);
+		FilterPatch(b.wallPatch, static_cast<int>(std::lround(voxel * 32.0F)), static_cast<int>(std::lround(voxel * HeightPixels)));
+		FilterPatch(b.roofPatch, static_cast<int>(std::lround(voxel * 32.0F)), static_cast<int>(std::lround(voxel * 32.0F)));
+	}
 }
 
 void EnsureBuilt()
@@ -790,12 +1080,15 @@ void DrawHouseModel(const Surface &out, const Projection &proj, std::vector<floa
 		if (x0 + size <= 0 || y0 + size <= 0 || x0 >= proj.width || y0 >= proj.height)
 			continue;
 
-		const std::vector<uint8_t> &ramp = v[3] == 0 ? b.wallRamp : b.roofRamp;
-		// Walls use the lighter 70% of their art (the darkest pixels are mortar and shadow), thatch the darker 80%.
-		const float low = v[3] == 0 ? 0.30F : 0.0F;
-		const float high = v[3] == 0 ? 1.0F : 0.80F;
-		const float percentile = low + (high - low) * static_cast<float>(v[4]) / 255.0F;
-		const uint8_t color = ramp[static_cast<size_t>(percentile * static_cast<float>(ramp.size() - 1))];
+		uint8_t color = TexturedHouses ? ArtColor(b, v[3] != 0, wx, wy, wz) : 0;
+		if (color == 0) {
+			const std::vector<uint8_t> &ramp = v[3] == 0 ? b.wallRamp : b.roofRamp;
+			// Walls use the lighter 70% of their art (the darkest pixels are mortar and shadow), thatch the darker 80%.
+			const float low = v[3] == 0 ? 0.30F : 0.0F;
+			const float high = v[3] == 0 ? 1.0F : 0.80F;
+			const float percentile = low + (high - low) * static_cast<float>(v[4]) / 255.0F;
+			color = ramp[static_cast<size_t>(percentile * static_cast<float>(ramp.size() - 1))];
+		}
 		const Point tile { std::clamp(static_cast<int>(std::floor(wx)), static_cast<int>(b.x0), static_cast<int>(b.x1) - 1),
 			std::clamp(static_cast<int>(std::floor(wy)), static_cast<int>(b.y0), static_cast<int>(b.y1) - 1) };
 		const uint8_t shaded = LightTables[LightAt(tile)][color];
@@ -918,6 +1211,11 @@ bool HouseModelsEnabled()
 void SetHouseModelsEnabled(bool enabled)
 {
 	HouseModelsOn = enabled;
+}
+
+void SetHouseTexturesEnabled(bool enabled)
+{
+	TexturedHouses = enabled;
 }
 
 bool IsBuildingTile(Point tile)

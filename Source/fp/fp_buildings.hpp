@@ -25,6 +25,8 @@ void SetBuildingsEnabled(bool enabled);
 /** @brief Whether reconstructed houses use the voxel models from the Tristram plaza reference (on by default if the data is present). */
 [[nodiscard]] bool HouseModelsEnabled();
 void SetHouseModelsEnabled(bool enabled);
+/** @brief Voxel houses wear the walls and thatch cut out of their own iso art (default) or brightness-ranked palette colours. */
+void SetHouseTexturesEnabled(bool enabled);
 
 /** @brief Whether the tile belongs to a reconstructed building (and so is not drawn as a billboard). */
 [[nodiscard]] bool IsBuildingTile(Point tile);
