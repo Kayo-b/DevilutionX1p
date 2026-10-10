@@ -263,6 +263,12 @@ std::string DebugCmdFpHouseTextures(bool enabled)
 	return enabled ? "House textures from the iso art on." : "House textures off (ranked palette colours).";
 }
 
+std::string DebugCmdFpHouseMeshes(bool enabled)
+{
+	fp::SetHouseMeshesEnabled(enabled);
+	return enabled ? "House meshes on." : "House meshes off (voxels).";
+}
+
 } // namespace
 
 sol::table LuaDevFirstPersonModule(sol::state_view &lua)
@@ -279,6 +285,7 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "lowwalls", "()", "Count solid tiles whose wall art is lower than a full wall.", &DebugCmdFpLowWalls);
 	LuaSetDocFn(table, "housemodels", "(enabled: boolean)", "Draw town houses with the voxel models from the Tristram plaza reference (default) or as fitted boxes.", &DebugCmdFpHouseModels);
 	LuaSetDocFn(table, "housetextures", "(enabled: boolean)", "Texture the voxel houses with walls and thatch cut out of their own iso art (default) or ranked palette colours.", &DebugCmdFpHouseTextures);
+	LuaSetDocFn(table, "housemeshes", "(enabled: boolean)", "Draw the house models as textured triangle meshes (default) or as voxels.", &DebugCmdFpHouseMeshes);
 	LuaSetDocFn(table, "on", "(enabled: boolean)", "Switch between first-person and the original view.", &DebugCmdFpOn);
 	LuaSetDocFn(table, "buildings", "(enabled: boolean)", "Draw town houses as reconstructed 3D models (default) or flat billboards.", &DebugCmdFpBuildings);
 	return table;

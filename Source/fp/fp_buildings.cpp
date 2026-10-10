@@ -72,7 +72,7 @@ struct Params {
 
 /** Side limits of the texture patches cut from a house's art, in art pixels. */
 constexpr int MinPatchSize = 8;
-constexpr int MaxPatchSize = 48;
+constexpr int MaxPatchSize = 96;
 /** Patches with a side shorter than this repeat too visibly; the house borrows another's instead. */
 constexpr int BorrowPatchBelow = 16;
 /** Art darker than this (outlines, window and door openings) is kept out of the patches. */
@@ -86,6 +86,21 @@ struct SurfaceTexture {
 	int height = 0;
 	std::vector<uint8_t> pixels;
 	bool valid = false;
+};
+
+/** @brief A triangle of a house mesh in world space, with how its texture is laid on. */
+struct WorldTriangle {
+	std::array<V3, 3> p;
+	uint8_t mapping;    // MeshWallAlongX / MeshWallAlongY / MeshFlat / MeshRoof
+	uint8_t darkness;   // SurfaceShade step for surfaces turned away from the light
+	float slopeScale;   // roof: length down the slope per unit of horizontal distance
+};
+
+enum : uint8_t {
+	MeshWallAlongX, // a wall running along x: u follows world x
+	MeshWallAlongY,
+	MeshFlat, // horizontal: u, v follow world x, y
+	MeshRoof,
 };
 
 struct Building {
@@ -111,6 +126,10 @@ struct Building {
 	std::vector<uint8_t> roofRamp; // the same for its thatch
 	SurfaceTexture wallPatch; // clean rectangle of the house's own wall art, tiled over the model's walls
 	SurfaceTexture roofPatch; // the same for its thatch
+	SurfaceTexture wallPatchVoxel; // the patches blurred to the size of one voxel, for the voxel model
+	SurfaceTexture roofPatchVoxel;
+	std::vector<WorldTriangle> mesh; // the model's surface in world space, when the model has a mesh
+	float boundsOverhang = 0;        // how far the model reaches past the footprint, for screen culling
 };
 
 struct LevelKey {
@@ -182,6 +201,75 @@ bool RayBody(const Body &body, V3 o, V3 d, float &tIn, float &tOut, int &face)
 		}
 	}
 	return face >= 0 && tIn <= tOut;
+}
+
+/**
+ * @brief The art colour to store in a texture patch. Palette entries 112 - 127 are a block of near-black shades
+ * that the light tables do not darken like the ordinary ramps (they come out red), so they are swapped for the
+ * nearest ordinary colour.
+ */
+uint8_t PatchColor(int16_t art)
+{
+	static std::array<uint8_t, 256> safe {};
+	static bool ready = false;
+	if (!ready) {
+		for (int i = 0; i < 256; i++) {
+			safe[i] = static_cast<uint8_t>(i);
+			if (i < 112 || i > 127)
+				continue;
+			const SDL_Color c = logical_palette[i];
+			int best = std::numeric_limits<int>::max();
+			for (int j = 1; j < 256; j++) {
+				if (j >= 112 && j <= 127)
+					continue;
+				const SDL_Color o = logical_palette[j];
+				const int distance = (o.r - c.r) * (o.r - c.r) + (o.g - c.g) * (o.g - c.g) + (o.b - c.b) * (o.b - c.b);
+				if (distance < best) {
+					best = distance;
+					safe[i] = static_cast<uint8_t>(j);
+				}
+			}
+		}
+		ready = true;
+	}
+	return safe[static_cast<uint8_t>(art)];
+}
+
+/** Brightness kept by each step of a mesh surface's darkness (see WorldTriangle::darkness). */
+constexpr std::array<float, 4> SurfaceShade { 1.0F, 0.85F, 0.7F, 0.55F };
+
+/**
+ * @brief The palette colour closest to a colour dimmed by one of the SurfaceShade steps. The light tables are not
+ * used for this: stepping some of the town's thatch colours along them ends in reds.
+ */
+uint8_t ShadeColor(uint8_t color, int darkness)
+{
+	static std::array<std::array<uint8_t, 256>, SurfaceShade.size()> table {};
+	static bool ready = false;
+	if (!ready) {
+		for (size_t level = 0; level < SurfaceShade.size(); level++) {
+			for (int i = 0; i < 256; i++) {
+				const SDL_Color c = logical_palette[i];
+				const float r = static_cast<float>(c.r) * SurfaceShade[level];
+				const float g = static_cast<float>(c.g) * SurfaceShade[level];
+				const float bl = static_cast<float>(c.b) * SurfaceShade[level];
+				float best = std::numeric_limits<float>::max();
+				table[level][i] = static_cast<uint8_t>(i);
+				for (int j = 1; j < 256; j++) {
+					if (j >= 112 && j <= 127)
+						continue; // see PatchColor
+					const SDL_Color o = logical_palette[j];
+					const float distance = (o.r - r) * (o.r - r) * 3 + (o.g - g) * (o.g - g) * 6 + (o.b - bl) * (o.b - bl);
+					if (distance < best) {
+						best = distance;
+						table[level][i] = static_cast<uint8_t>(j);
+					}
+				}
+			}
+		}
+		ready = true;
+	}
+	return table[std::min<size_t>(darkness, SurfaceShade.size() - 1)][color];
 }
 
 /** @brief Iso art pixel at the screen position of a world point, searching a few pixels around for opaque art. */
@@ -402,29 +490,80 @@ struct HouseModel {
 	int ny = 0;
 	int nz = 0;
 	std::vector<uint8_t> voxels; // 5 bytes each: i, j, k, class (0 wall, 1 roof), shade
+	std::vector<std::array<float, 9>> triangles; // the reference mesh in the same voxel frame (see export_meshes.py)
+	std::vector<uint8_t> triangleClasses;        // 0 wall, 1 roof, 2 door
 };
 
 std::vector<HouseModel> HouseModels;
 bool HouseModelsLoaded = false;
 bool HouseModelsOn = true;
 bool TexturedHouses = true;
+bool HouseMeshesOn = true;
+
+FILE *OpenHouseAsset(const char *envName, const char *fileName)
+{
+	std::vector<std::string> candidates;
+	if (const char *env = std::getenv(envName))
+		candidates.emplace_back(env);
+	candidates.push_back(StrCat(paths::AssetsPath(), "fp/", fileName));
+	candidates.push_back(StrCat(paths::BasePath(), "assets/fp/", fileName));
+	for (const std::string &path : candidates)
+		if (FILE *f = std::fopen(path.c_str(), "rb"))
+			return f;
+	return nullptr;
+}
+
+/** @brief Adds the triangle meshes of housemesh.bin to the loaded voxel models, matched by name. */
+void LoadHouseMeshes()
+{
+	FILE *f = OpenHouseAsset("FP_HOUSEMESH", "housemesh.bin");
+	if (f == nullptr) {
+		LogInfo("fp: house meshes not found (housemesh.bin); drawing voxels");
+		return;
+	}
+	auto readAll = [&](void *dst, size_t size) { return std::fread(dst, 1, size, f) == size; };
+	char magic[4];
+	uint32_t count = 0;
+	if (!readAll(magic, 4) || std::memcmp(magic, "FPM1", 4) != 0 || !readAll(&count, 4)) {
+		std::fclose(f);
+		return;
+	}
+	int loaded = 0;
+	for (uint32_t m = 0; m < count; m++) {
+		uint8_t nameLength = 0;
+		std::string name;
+		uint32_t triangleCount = 0;
+		if (!readAll(&nameLength, 1))
+			break;
+		name.resize(nameLength);
+		if (!readAll(name.data(), nameLength) || !readAll(&triangleCount, 4))
+			break;
+		std::vector<std::array<float, 9>> triangles(triangleCount);
+		std::vector<uint8_t> classes(triangleCount);
+		bool ok = true;
+		for (uint32_t t = 0; t < triangleCount && ok; t++)
+			ok = readAll(triangles[t].data(), sizeof(float) * 9) && readAll(&classes[t], 1);
+		if (!ok)
+			break;
+		for (HouseModel &model : HouseModels) {
+			if (model.name == name) {
+				model.triangles = std::move(triangles);
+				model.triangleClasses = std::move(classes);
+				loaded++;
+				break;
+			}
+		}
+	}
+	std::fclose(f);
+	LogInfo("fp: loaded {} house meshes", loaded);
+}
 
 void LoadHouseModels()
 {
 	if (HouseModelsLoaded)
 		return;
 	HouseModelsLoaded = true;
-	std::vector<std::string> candidates;
-	if (const char *env = std::getenv("FP_HOUSES"))
-		candidates.emplace_back(env);
-	candidates.push_back(paths::AssetsPath() + "fp/houses.bin");
-	candidates.push_back(paths::BasePath() + "assets/fp/houses.bin");
-	FILE *f = nullptr;
-	for (const std::string &path : candidates) {
-		f = std::fopen(path.c_str(), "rb");
-		if (f != nullptr)
-			break;
-	}
+	FILE *f = OpenHouseAsset("FP_HOUSES", "houses.bin");
 	if (f == nullptr) {
 		LogInfo("fp: house models not found (houses.bin); using fitted boxes");
 		return;
@@ -460,6 +599,7 @@ void LoadHouseModels()
 	}
 	std::fclose(f);
 	LogInfo("fp: loaded {} house models", HouseModels.size());
+	LoadHouseMeshes();
 }
 
 int PaletteBrightness(int index)
@@ -555,10 +695,14 @@ SurfaceTexture LargestCleanRectangle(SurfaceTexture tex)
 	return patch;
 }
 
-/** @brief Texel of a patch tiled over a surface; mirrored every other repeat so no seams show. Coordinates in art pixels. */
-uint8_t TiledTexel(const SurfaceTexture &patch, float u, float v)
+/** @brief Texel of a patch tiled over a surface, optionally mirrored every other repeat so no seams show. Coordinates in art pixels. */
+uint8_t TiledTexel(const SurfaceTexture &patch, float u, float v, bool mirror = true)
 {
-	auto wrap = [](float t, int size) {
+	auto wrap = [mirror](float t, int size) {
+		if (!mirror) {
+			const int i = static_cast<int>(std::floor(t)) % size;
+			return i < 0 ? i + size : i;
+		}
 		const int period = 2 * size;
 		int i = static_cast<int>(std::floor(t)) % period;
 		if (i < 0)
@@ -612,7 +756,7 @@ void BuildTextures(Building &b)
 			// The iso ray runs away from the camera, so the smaller entry is the surface the camera sees.
 			if (onRoof && (!onWall || roofIn < wallIn)) {
 				if (roofFace == 3 || roofFace == 4)
-					roof.pixels[at] = static_cast<uint8_t>(art);
+					roof.pixels[at] = PatchColor(art);
 				continue;
 			}
 			if (!onWall || (wallFace != 0 && wallFace != 2))
@@ -628,7 +772,7 @@ void BuildTextures(Building &b)
 			const float u = wallFace == 0 ? (hit.y - b.y0) / (b.y1 - b.y0) : (hit.x - b.x0) / (b.x1 - b.x0);
 			const int tx = std::clamp(static_cast<int>(u * static_cast<float>(tex.width)), 0, tex.width - 1);
 			const int ty = std::clamp(tex.height - 1 - static_cast<int>(hit.z * HeightPixels), 0, tex.height - 1);
-			tex.pixels[static_cast<size_t>(ty) * tex.width + tx] = static_cast<uint8_t>(art);
+			tex.pixels[static_cast<size_t>(ty) * tex.width + tx] = PatchColor(art);
 		}
 	}
 	b.wallPatch = LargestCleanRectangle(walls[0]);
@@ -662,7 +806,7 @@ void BuildTextures(Building &b)
 uint8_t ArtColor(const Building &b, bool roof, float wx, float wy, float wz)
 {
 	if (roof) {
-		if (!b.roofPatch.valid)
+		if (!b.roofPatchVoxel.valid)
 			return 0;
 		// Thatch: along the model's ridge and down the slope, at the art's 32 pixels per tile.
 		const bool ridgeAlongX = b.longAlongX;
@@ -670,15 +814,15 @@ uint8_t ArtColor(const Building &b, bool roof, float wx, float wy, float wz)
 		const float slopeScale = std::sqrt(halfSpan * halfSpan + b.params.rise * b.params.rise) / halfSpan;
 		const float along = ridgeAlongX ? wx : wy;
 		const float across = ridgeAlongX ? wy - (b.y0 + b.y1) / 2.0F : wx - (b.x0 + b.x1) / 2.0F;
-		return TiledTexel(b.roofPatch, along * 32.0F, (halfSpan - std::abs(across)) * slopeScale * 32.0F);
+		return TiledTexel(b.roofPatchVoxel, along * 32.0F, (halfSpan - std::abs(across)) * slopeScale * 32.0F);
 	}
-	if (!b.wallPatch.valid)
+	if (!b.wallPatchVoxel.valid)
 		return 0;
 	// Stone: along the nearest face and up, at the art's density (32 pixels per tile across, HeightPixels up).
 	const float fx = std::clamp((wx - b.x0) / (b.x1 - b.x0), 0.0F, 1.0F);
 	const float fy = std::clamp((wy - b.y0) / (b.y1 - b.y0), 0.0F, 1.0F);
 	const bool onXFace = std::min(fx, 1.0F - fx) * (b.x1 - b.x0) < std::min(fy, 1.0F - fy) * (b.y1 - b.y0);
-	return TiledTexel(b.wallPatch, (onXFace ? wy : wx) * 32.0F, wz * HeightPixels);
+	return TiledTexel(b.wallPatchVoxel, (onXFace ? wy : wx) * 32.0F, wz * HeightPixels);
 }
 
 /** @brief World size of one voxel of the house's model once stretched over its footprint. */
@@ -737,6 +881,71 @@ void FilterPatch(SurfaceTexture &patch, int sizeX, int sizeY)
 		}
 	}
 	patch.pixels.swap(filtered);
+}
+
+/** @brief Places the model's mesh over the footprint, the same way DrawHouseModel places its voxels. */
+void BuildMesh(Building &b)
+{
+	b.mesh.clear();
+	const HouseModel &model = HouseModels[b.model];
+	if (model.triangles.empty())
+		return;
+	const float width = b.x1 - b.x0;
+	const float depth = b.y1 - b.y0;
+	const float cx = (b.x0 + b.x1) / 2.0F;
+	const float cy = (b.y0 + b.y1) / 2.0F;
+	const float shortSide = std::min(width, depth);
+	const float longSide = std::max(width, depth);
+	const float overhang = 0.12F * shortSide;
+	const float spanLong = longSide + 2.0F * overhang;
+	const float spanShort = shortSide + 2.0F * overhang;
+	const float stepLong = spanLong / static_cast<float>(model.nx);
+	const float stepShort = spanShort / static_cast<float>(model.ny);
+	const float stepUp = stepShort;
+	b.boundsOverhang = std::max(b.params.overhang, overhang);
+	b.highestZ = std::max(b.highestZ, static_cast<float>(model.nz) * stepUp);
+	auto toWorld = [&](const float *q) {
+		const float along = q[0] * stepLong - spanLong / 2.0F;
+		const float across = q[1] * stepShort - spanShort / 2.0F;
+		return V3 { cx + (b.longAlongX ? along : across), cy + (b.longAlongX ? across : along), q[2] * stepUp };
+	};
+	for (size_t t = 0; t < model.triangles.size(); t++) {
+		WorldTriangle tri;
+		for (int k = 0; k < 3; k++)
+			tri.p[k] = toWorld(&model.triangles[t][static_cast<size_t>(k) * 3]);
+		const V3 e1 { tri.p[1].x - tri.p[0].x, tri.p[1].y - tri.p[0].y, tri.p[1].z - tri.p[0].z };
+		const V3 e2 { tri.p[2].x - tri.p[0].x, tri.p[2].y - tri.p[0].y, tri.p[2].z - tri.p[0].z };
+		V3 n { e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x };
+		const float length = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+		if (length < 1e-9F)
+			continue;
+		n = { n.x / length, n.y / length, n.z / length };
+		// The mesh's winding is not reliable: orient the normal away from the middle of the house.
+		const V3 centroid { (tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F, (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F, (tri.p[0].z + tri.p[1].z + tri.p[2].z) / 3.0F };
+		if (n.x * (centroid.x - cx) + n.y * (centroid.y - cy) + n.z * (centroid.z - b.highestZ * 0.3F) < 0)
+			n = { -n.x, -n.y, -n.z };
+		const bool roof = model.triangleClasses[t] == 1;
+		tri.slopeScale = 1.0F;
+		if (roof) {
+			tri.mapping = MeshRoof;
+			const float acrossNormal = std::abs(b.longAlongX ? n.y : n.x);
+			const float g = std::min(acrossNormal / std::max(std::abs(n.z), 0.2F), 5.0F);
+			tri.slopeScale = std::sqrt(1.0F + g * g);
+		} else if (std::abs(n.z) > 0.7F) {
+			tri.mapping = MeshFlat;
+		} else {
+			tri.mapping = std::abs(n.x) > std::abs(n.y) ? MeshWallAlongY : MeshWallAlongX;
+		}
+		// The iso art is lit from the camera side (+x, +y); surfaces facing away and undersides are darker.
+		tri.darkness = 0;
+		if (n.z < -0.3F)
+			tri.darkness = 3;
+		else if (n.x + n.y < -0.5F)
+			tri.darkness = 2;
+		else if (n.x + n.y < 0.0F)
+			tri.darkness = 1;
+		b.mesh.push_back(tri);
+	}
 }
 
 /** @brief Picks the voxel model whose proportions best match the footprint of the building. */
@@ -987,8 +1196,11 @@ void BuildAll()
 		if (!b.roofPatch.valid || b.roofPatch.width < BorrowPatchBelow || b.roofPatch.height < BorrowPatchBelow)
 			b.roofPatch = roof;
 		const float voxel = VoxelSize(b);
-		FilterPatch(b.wallPatch, static_cast<int>(std::lround(voxel * 32.0F)), static_cast<int>(std::lround(voxel * HeightPixels)));
-		FilterPatch(b.roofPatch, static_cast<int>(std::lround(voxel * 32.0F)), static_cast<int>(std::lround(voxel * 32.0F)));
+		b.wallPatchVoxel = b.wallPatch;
+		b.roofPatchVoxel = b.roofPatch;
+		FilterPatch(b.wallPatchVoxel, static_cast<int>(std::lround(voxel * 32.0F)), static_cast<int>(std::lround(voxel * HeightPixels)));
+		FilterPatch(b.roofPatchVoxel, static_cast<int>(std::lround(voxel * 32.0F)), static_cast<int>(std::lround(voxel * 32.0F)));
+		BuildMesh(b);
 	}
 }
 
@@ -1009,7 +1221,7 @@ bool ScreenBounds(const Building &b, const Projection &proj, int &left, int &top
 	float minY = 1e30F;
 	float maxY = -1e30F;
 	bool allBehind = true;
-	const float ov = b.params.overhang;
+	const float ov = std::max(b.params.overhang, b.boundsOverhang);
 	for (const float wx : { b.x0 - ov, b.x1 + ov }) {
 		for (const float wy : { b.y0 - ov, b.y1 + ov }) {
 			for (const float wz : { b.lowestZ, b.highestZ }) {
@@ -1099,6 +1311,128 @@ void DrawHouseModel(const Surface &out, const Projection &proj, std::vector<floa
 					continue;
 				stored = distance;
 				*out.at(x, y) = shaded;
+			}
+		}
+	}
+}
+
+/** @brief Palette colour of a mesh surface point: the house's own art patches tiled at the art's pixel density. */
+uint8_t MeshColor(const Building &b, const WorldTriangle &tri, float wx, float wy, float wz)
+{
+	switch (tri.mapping) {
+	case MeshRoof: {
+		const float along = b.longAlongX ? wx : wy;
+		const float across = b.longAlongX ? wy - (b.y0 + b.y1) / 2.0F : wx - (b.x0 + b.x1) / 2.0F;
+		return TiledTexel(b.roofPatch, along * 32.0F, -std::abs(across) * tri.slopeScale * 32.0F, false);
+	}
+	case MeshFlat:
+		return TiledTexel(b.wallPatch, wx * 32.0F, wy * 32.0F, false);
+	case MeshWallAlongX:
+		return TiledTexel(b.wallPatch, wx * 32.0F, wz * HeightPixels, false);
+	default:
+		return TiledTexel(b.wallPatch, wy * 32.0F, wz * HeightPixels, false);
+	}
+}
+
+/** @brief A mesh vertex in camera space: depth along the view, screen position, and the world point. */
+struct CameraVertex {
+	float depth;
+	float lateral; // screen x offset at depth 1
+	float height;  // world height above the eye
+	V3 world;
+};
+
+/**
+ * @brief Draws the house as its triangle mesh: each triangle is clipped at the near plane and filled with
+ * perspective-correct texturing from the house's art patches, sharing the depth buffer with the rest of the scene.
+ */
+void DrawHouseMesh(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer, const Building &b)
+{
+	constexpr float Near = 0.05F;
+	const float halfWidth = static_cast<float>(proj.width) / 2.0F;
+	const Point lightMin { static_cast<int>(b.x0), static_cast<int>(b.y0) };
+	const Point lightMax { static_cast<int>(b.x1) - 1, static_cast<int>(b.y1) - 1 };
+	auto toCamera = [&](const V3 &w) {
+		const float rx = w.x - proj.pos.x;
+		const float ry = w.y - proj.pos.y;
+		return CameraVertex { rx * proj.dir.x + ry * proj.dir.y, (rx * proj.plane.x + ry * proj.plane.y) / (PlaneLength * PlaneLength), w.z - EyeHeight, w };
+	};
+	auto lerp = [](const CameraVertex &a, const CameraVertex &c, float t) {
+		return CameraVertex { a.depth + (c.depth - a.depth) * t, a.lateral + (c.lateral - a.lateral) * t, a.height + (c.height - a.height) * t,
+			{ a.world.x + (c.world.x - a.world.x) * t, a.world.y + (c.world.y - a.world.y) * t, a.world.z + (c.world.z - a.world.z) * t } };
+	};
+	// Light per tile, looked up once per frame for the footprint.
+	const int lightWidth = lightMax.x - lightMin.x + 1;
+	std::vector<uint8_t> light(static_cast<size_t>(lightWidth) * (lightMax.y - lightMin.y + 1));
+	for (int y = lightMin.y; y <= lightMax.y; y++)
+		for (int x = lightMin.x; x <= lightMax.x; x++)
+			light[static_cast<size_t>(y - lightMin.y) * lightWidth + x - lightMin.x] = LightAt({ x, y });
+
+	for (const WorldTriangle &tri : b.mesh) {
+		std::array<CameraVertex, 3> in { toCamera(tri.p[0]), toCamera(tri.p[1]), toCamera(tri.p[2]) };
+		if (in[0].depth < Near && in[1].depth < Near && in[2].depth < Near)
+			continue;
+		// Clip at the near plane: up to four vertices remain.
+		std::array<CameraVertex, 4> poly;
+		int count = 0;
+		for (int i = 0; i < 3; i++) {
+			const CameraVertex &a = in[i];
+			const CameraVertex &c = in[(i + 1) % 3];
+			if (a.depth >= Near)
+				poly[count++] = a;
+			if ((a.depth >= Near) != (c.depth >= Near))
+				poly[count++] = lerp(a, c, (Near - a.depth) / (c.depth - a.depth));
+		}
+		struct ScreenVertex {
+			float x;
+			float y;
+			float invDepth;
+			V3 worldOverDepth;
+		};
+		std::array<ScreenVertex, 4> sv;
+		for (int i = 0; i < count; i++) {
+			const float inv = 1.0F / poly[i].depth;
+			sv[i] = { (poly[i].lateral * inv + 1.0F) * halfWidth, static_cast<float>(proj.horizon) - poly[i].height * inv * proj.focal, inv,
+				{ poly[i].world.x * inv, poly[i].world.y * inv, poly[i].world.z * inv } };
+		}
+		for (int f = 1; f + 1 < count; f++) {
+			const ScreenVertex &v0 = sv[0];
+			const ScreenVertex &v1 = sv[f];
+			const ScreenVertex &v2 = sv[f + 1];
+			const float area = (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x);
+			if (std::abs(area) < 1e-6F)
+				continue;
+			const int left = std::max(0, static_cast<int>(std::floor(std::min({ v0.x, v1.x, v2.x }))));
+			const int right = std::min(proj.width - 1, static_cast<int>(std::ceil(std::max({ v0.x, v1.x, v2.x }))));
+			const int top = std::max(0, static_cast<int>(std::floor(std::min({ v0.y, v1.y, v2.y }))));
+			const int bottom = std::min(proj.height - 1, static_cast<int>(std::ceil(std::max({ v0.y, v1.y, v2.y }))));
+			if (left > right || top > bottom)
+				continue;
+			const float invArea = 1.0F / area;
+			for (int y = top; y <= bottom; y++) {
+				const float py = static_cast<float>(y) + 0.5F;
+				for (int x = left; x <= right; x++) {
+					const float px = static_cast<float>(x) + 0.5F;
+					const float w0 = ((v1.x - px) * (v2.y - py) - (v1.y - py) * (v2.x - px)) * invArea;
+					const float w1 = ((v2.x - px) * (v0.y - py) - (v2.y - py) * (v0.x - px)) * invArea;
+					const float w2 = 1.0F - w0 - w1;
+					if (w0 < 0.0F || w1 < 0.0F || w2 < 0.0F)
+						continue;
+					const float inv = w0 * v0.invDepth + w1 * v1.invDepth + w2 * v2.invDepth;
+					const float distance = 1.0F / inv;
+					float &stored = depthBuffer[static_cast<size_t>(y) * proj.width + x];
+					if (distance >= stored)
+						continue;
+					const float wx = (w0 * v0.worldOverDepth.x + w1 * v1.worldOverDepth.x + w2 * v2.worldOverDepth.x) * distance;
+					const float wy = (w0 * v0.worldOverDepth.y + w1 * v1.worldOverDepth.y + w2 * v2.worldOverDepth.y) * distance;
+					const float wz = (w0 * v0.worldOverDepth.z + w1 * v1.worldOverDepth.z + w2 * v2.worldOverDepth.z) * distance;
+					const uint8_t color = MeshColor(b, tri, wx, wy, wz);
+					const int tx = std::clamp(static_cast<int>(std::floor(wx)), lightMin.x, lightMax.x);
+					const int ty = std::clamp(static_cast<int>(std::floor(wy)), lightMin.y, lightMax.y);
+					const uint8_t level = light[static_cast<size_t>(ty - lightMin.y) * lightWidth + tx - lightMin.x];
+					stored = distance;
+					*out.at(x, y) = LightTables[level][ShadeColor(color, tri.darkness)];
+				}
 			}
 		}
 	}
@@ -1218,6 +1552,11 @@ void SetHouseTexturesEnabled(bool enabled)
 	TexturedHouses = enabled;
 }
 
+void SetHouseMeshesEnabled(bool enabled)
+{
+	HouseMeshesOn = enabled;
+}
+
 bool IsBuildingTile(Point tile)
 {
 	EnsureBuilt();
@@ -1234,7 +1573,9 @@ void DrawBuildings(const Surface &out, const Projection &proj, const std::vector
 		int bottom;
 		if (!ScreenBounds(building, proj, left, top, right, bottom))
 			continue;
-		if (HouseModelsOn && building.model >= 0)
+		if (HouseModelsOn && building.model >= 0 && HouseMeshesOn && !building.mesh.empty() && building.wallPatch.valid && building.roofPatch.valid)
+			DrawHouseMesh(out, proj, depthBuffer, building);
+		else if (HouseModelsOn && building.model >= 0)
 			DrawHouseModel(out, proj, depthBuffer, building);
 		else
 			DrawBuilding(out, proj, zBuffer, depthBuffer, building);

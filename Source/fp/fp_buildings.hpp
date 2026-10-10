@@ -27,6 +27,8 @@ void SetBuildingsEnabled(bool enabled);
 void SetHouseModelsEnabled(bool enabled);
 /** @brief Voxel houses wear the walls and thatch cut out of their own iso art (default) or brightness-ranked palette colours. */
 void SetHouseTexturesEnabled(bool enabled);
+/** @brief Voxel-model houses are drawn as the reference triangle mesh with full-resolution art textures (default) or as voxels. */
+void SetHouseMeshesEnabled(bool enabled);
 
 /** @brief Whether the tile belongs to a reconstructed building (and so is not drawn as a billboard). */
 [[nodiscard]] bool IsBuildingTile(Point tile);

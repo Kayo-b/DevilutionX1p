@@ -44,6 +44,7 @@ if (Gettext_FOUND)
 endif()
 
 set(devilutionx_assets
+  fp/housemesh.bin
   fp/houses.bin
   ASSETS_VERSION
   arena/church.dun
