@@ -251,6 +251,12 @@ std::string DebugCmdFpBuildings(bool enabled)
 	return enabled ? "Reconstructed buildings on." : "Reconstructed buildings off (flat billboards).";
 }
 
+std::string DebugCmdFpHouseModels(bool enabled)
+{
+	fp::SetHouseModelsEnabled(enabled);
+	return enabled ? "Voxel house models on." : "Voxel house models off (fitted boxes).";
+}
+
 } // namespace
 
 sol::table LuaDevFirstPersonModule(sol::state_view &lua)
@@ -265,6 +271,7 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "monsterstate", "()", "Describe monsters near the player and count corpse tiles.", &DebugCmdFpMonsterState);
 	LuaSetDocFn(table, "dumppiece", "(x: number, y: number, path: string)", "Dump the iso column art of the piece at a tile (PPM).", &DebugCmdFpDumpPiece);
 	LuaSetDocFn(table, "lowwalls", "()", "Count solid tiles whose wall art is lower than a full wall.", &DebugCmdFpLowWalls);
+	LuaSetDocFn(table, "housemodels", "(enabled: boolean)", "Draw town houses with the voxel models from the Tristram plaza reference (default) or as fitted boxes.", &DebugCmdFpHouseModels);
 	LuaSetDocFn(table, "on", "(enabled: boolean)", "Switch between first-person and the original view.", &DebugCmdFpOn);
 	LuaSetDocFn(table, "buildings", "(enabled: boolean)", "Draw town houses as reconstructed 3D models (default) or flat billboards.", &DebugCmdFpBuildings);
 	return table;

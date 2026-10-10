@@ -9,6 +9,8 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -21,6 +23,7 @@
 #include "levels/gendung.h"
 #include "levels/tile_properties.hpp"
 #include "utils/log.hpp"
+#include "utils/paths.h"
 #include "utils/str_cat.hpp"
 
 namespace devilution::fp {
@@ -84,6 +87,10 @@ struct Building {
 	Body roof;
 	float lowestZ; // for screen culling
 	float highestZ;
+	int model = -1;                // index into the house models, -1 to draw the fitted box
+	bool longAlongX = true;        // the model's long axis runs along world x
+	std::vector<uint8_t> wallRamp; // palette indices of the house's own wall art, sorted dark to light
+	std::vector<uint8_t> roofRamp; // the same for its thatch
 };
 
 struct LevelKey {
@@ -364,6 +371,131 @@ void DumpBuilding(const Building &b, const std::string &path)
 }
 #endif
 
+
+/** @brief A house voxel model exported from the Tristram plaza reference (see research/tristram_plaza/export_houses.py). */
+struct HouseModel {
+	std::string name;
+	float shortUnits = 0;
+	float longUnits = 0;
+	float voxelSize = 0;
+	int nx = 0;
+	int ny = 0;
+	int nz = 0;
+	std::vector<uint8_t> voxels; // 5 bytes each: i, j, k, class (0 wall, 1 roof), shade
+};
+
+std::vector<HouseModel> HouseModels;
+bool HouseModelsLoaded = false;
+bool HouseModelsOn = true;
+
+void LoadHouseModels()
+{
+	if (HouseModelsLoaded)
+		return;
+	HouseModelsLoaded = true;
+	std::vector<std::string> candidates;
+	if (const char *env = std::getenv("FP_HOUSES"))
+		candidates.emplace_back(env);
+	candidates.push_back(paths::AssetsPath() + "fp/houses.bin");
+	candidates.push_back(paths::BasePath() + "assets/fp/houses.bin");
+	FILE *f = nullptr;
+	for (const std::string &path : candidates) {
+		f = std::fopen(path.c_str(), "rb");
+		if (f != nullptr)
+			break;
+	}
+	if (f == nullptr) {
+		LogInfo("fp: house models not found (houses.bin); using fitted boxes");
+		return;
+	}
+	auto readAll = [&](void *dst, size_t size) { return std::fread(dst, 1, size, f) == size; };
+	char magic[4];
+	uint32_t count = 0;
+	if (!readAll(magic, 4) || std::memcmp(magic, "FPH1", 4) != 0 || !readAll(&count, 4)) {
+		std::fclose(f);
+		return;
+	}
+	for (uint32_t m = 0; m < count; m++) {
+		HouseModel model;
+		uint8_t nameLength = 0;
+		if (!readAll(&nameLength, 1))
+			break;
+		model.name.resize(nameLength);
+		float sizes[3];
+		uint16_t dims[3];
+		uint32_t voxelCount = 0;
+		if (!readAll(model.name.data(), nameLength) || !readAll(sizes, sizeof(sizes)) || !readAll(dims, sizeof(dims)) || !readAll(&voxelCount, 4))
+			break;
+		model.shortUnits = sizes[0];
+		model.longUnits = sizes[1];
+		model.voxelSize = sizes[2];
+		model.nx = dims[0];
+		model.ny = dims[1];
+		model.nz = dims[2];
+		model.voxels.resize(static_cast<size_t>(voxelCount) * 5);
+		if (!readAll(model.voxels.data(), model.voxels.size()))
+			break;
+		HouseModels.push_back(std::move(model));
+	}
+	std::fclose(f);
+	LogInfo("fp: loaded {} house models", HouseModels.size());
+}
+
+int PaletteBrightness(int index)
+{
+	const SDL_Color c = logical_palette[index];
+	return c.r * 3 + c.g * 6 + c.b;
+}
+
+/** @brief Palette indices of the house's wall and thatch art, one entry per art pixel, sorted by brightness. */
+void BuildRamps(Building &b)
+{
+	std::vector<std::pair<int, uint8_t>> wall;
+	std::vector<std::pair<int, uint8_t>> roof;
+	for (const int16_t pixel : b.canvas) {
+		if (pixel <= 0)
+			continue;
+		const SDL_Color c = logical_palette[pixel];
+		const int brightness = PaletteBrightness(pixel);
+		if (brightness < 60)
+			continue; // black outlines and windows
+		(c.r > c.b + 10 ? roof : wall).emplace_back(brightness, static_cast<uint8_t>(pixel));
+	}
+	auto toRamp = [](std::vector<std::pair<int, uint8_t>> &pixels, std::vector<uint8_t> &ramp) {
+		std::sort(pixels.begin(), pixels.end());
+		ramp.clear();
+		for (const auto &p : pixels)
+			ramp.push_back(p.second);
+	};
+	toRamp(wall, b.wallRamp);
+	toRamp(roof, b.roofRamp);
+}
+
+/** @brief Picks the voxel model whose proportions best match the footprint of the building. */
+void ChooseModel(Building &b)
+{
+	LoadHouseModels();
+	if (HouseModels.empty())
+		return;
+	BuildRamps(b);
+	if (b.wallRamp.size() < 20 || b.roofRamp.size() < 20)
+		return; // not enough art to take colours from
+	const float width = b.x1 - b.x0;
+	const float depth = b.y1 - b.y0;
+	const float ratio = std::max(width, depth) / std::min(width, depth);
+	float best = 1e9F;
+	for (size_t i = 0; i < HouseModels.size(); i++) {
+		const float modelRatio = HouseModels[i].longUnits / HouseModels[i].shortUnits;
+		const float score = std::abs(std::log(ratio / modelRatio));
+		if (score < best) {
+			best = score;
+			b.model = static_cast<int>(i);
+		}
+	}
+	// Long axis of the model along the longer footprint side; for a near-square one, along the fitted ridge.
+	b.longAlongX = ratio < 1.15F ? b.params.ridgeAlongX : width >= depth;
+}
+
 /** @brief A footprint candidate with its fitted model. */
 struct Candidate {
 	Building building;
@@ -564,6 +696,7 @@ void BuildAll()
 				blockUsed[index(p.x, p.y)] = 1;
 			for (const Point t : chosen->artTiles)
 				BuildingTiles[index(t.x, t.y)] = 1;
+			ChooseModel(chosen->building);
 			Buildings.push_back(std::move(chosen->building));
 		}
 	}
@@ -613,6 +746,69 @@ bool ScreenBounds(const Building &b, const Projection &proj, int &left, int &top
 	top = std::max(0, static_cast<int>(std::floor(std::max(minY, -1.0F))));
 	bottom = std::min(proj.height - 1, static_cast<int>(std::ceil(std::min(maxY, static_cast<float>(proj.height)))));
 	return left <= right && top <= bottom;
+}
+
+/** @brief Draws the house as its voxel model: each voxel is projected and splatted as a small square with a per-pixel depth test. */
+void DrawHouseModel(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer, const Building &b)
+{
+	const HouseModel &model = HouseModels[b.model];
+	const float width = b.x1 - b.x0;
+	const float depth = b.y1 - b.y0;
+	const float cx = (b.x0 + b.x1) / 2.0F;
+	const float cy = (b.y0 + b.y1) / 2.0F;
+	const float shortSide = std::min(width, depth);
+	const float longSide = std::max(width, depth);
+	const float overhang = 0.12F * shortSide;
+	const float spanLong = longSide + 2.0F * overhang;
+	const float spanShort = shortSide + 2.0F * overhang;
+	const float stepLong = spanLong / static_cast<float>(model.nx);
+	const float stepShort = spanShort / static_cast<float>(model.ny);
+	const float stepUp = stepShort; // the same scale as across the house keeps the roof pitch of the reference
+	const float voxelWorld = std::max({ stepLong, stepShort, stepUp });
+	const float baseHeight = 0.0F;
+
+	const size_t count = model.voxels.size() / 5;
+	for (size_t n = 0; n < count; n++) {
+		const uint8_t *v = &model.voxels[n * 5];
+		const float along = (static_cast<float>(v[0]) + 0.5F) * stepLong - spanLong / 2.0F;
+		const float across = (static_cast<float>(v[1]) + 0.5F) * stepShort - spanShort / 2.0F;
+		const float wx = cx + (b.longAlongX ? along : across);
+		const float wy = cy + (b.longAlongX ? across : along);
+		const float wz = baseHeight + (static_cast<float>(v[2]) + 0.5F) * stepUp;
+
+		const float rx = wx - proj.pos.x;
+		const float ry = wy - proj.pos.y;
+		const float distance = rx * proj.dir.x + ry * proj.dir.y;
+		if (distance < 0.15F)
+			continue;
+		const float lateral = (rx * proj.plane.x + ry * proj.plane.y) / (PlaneLength * PlaneLength);
+		const float sx = (lateral / distance + 1.0F) * static_cast<float>(proj.width) / 2.0F;
+		const float sy = static_cast<float>(proj.horizon) - (wz - EyeHeight) / distance * proj.focal;
+		const int size = std::max(1, static_cast<int>(std::ceil(voxelWorld * proj.focal / distance)));
+		const int x0 = static_cast<int>(std::floor(sx - static_cast<float>(size) / 2.0F));
+		const int y0 = static_cast<int>(std::floor(sy - static_cast<float>(size) / 2.0F));
+		if (x0 + size <= 0 || y0 + size <= 0 || x0 >= proj.width || y0 >= proj.height)
+			continue;
+
+		const std::vector<uint8_t> &ramp = v[3] == 0 ? b.wallRamp : b.roofRamp;
+		// Walls use the lighter 70% of their art (the darkest pixels are mortar and shadow), thatch the darker 80%.
+		const float low = v[3] == 0 ? 0.30F : 0.0F;
+		const float high = v[3] == 0 ? 1.0F : 0.80F;
+		const float percentile = low + (high - low) * static_cast<float>(v[4]) / 255.0F;
+		const uint8_t color = ramp[static_cast<size_t>(percentile * static_cast<float>(ramp.size() - 1))];
+		const Point tile { std::clamp(static_cast<int>(std::floor(wx)), static_cast<int>(b.x0), static_cast<int>(b.x1) - 1),
+			std::clamp(static_cast<int>(std::floor(wy)), static_cast<int>(b.y0), static_cast<int>(b.y1) - 1) };
+		const uint8_t shaded = LightTables[LightAt(tile)][color];
+		for (int y = std::max(0, y0); y < std::min(proj.height, y0 + size); y++) {
+			for (int x = std::max(0, x0); x < std::min(proj.width, x0 + size); x++) {
+				float &stored = depthBuffer[static_cast<size_t>(y) * proj.width + x];
+				if (distance >= stored)
+					continue;
+				stored = distance;
+				*out.at(x, y) = shaded;
+			}
+		}
+	}
 }
 
 void DrawBuilding(const Surface &out, const Projection &proj, const std::vector<float> &zBuffer, std::vector<float> &depthBuffer, const Building &b)
@@ -714,6 +910,16 @@ void SetBuildingsEnabled(bool enabled)
 	Enabled = enabled;
 }
 
+bool HouseModelsEnabled()
+{
+	return HouseModelsOn;
+}
+
+void SetHouseModelsEnabled(bool enabled)
+{
+	HouseModelsOn = enabled;
+}
+
 bool IsBuildingTile(Point tile)
 {
 	EnsureBuilt();
@@ -723,8 +929,18 @@ bool IsBuildingTile(Point tile)
 void DrawBuildings(const Surface &out, const Projection &proj, const std::vector<float> &zBuffer, std::vector<float> &depthBuffer)
 {
 	EnsureBuilt();
-	for (const Building &building : Buildings)
-		DrawBuilding(out, proj, zBuffer, depthBuffer, building);
+	for (const Building &building : Buildings) {
+		int left;
+		int top;
+		int right;
+		int bottom;
+		if (!ScreenBounds(building, proj, left, top, right, bottom))
+			continue;
+		if (HouseModelsOn && building.model >= 0)
+			DrawHouseModel(out, proj, depthBuffer, building);
+		else
+			DrawBuilding(out, proj, zBuffer, depthBuffer, building);
+	}
 }
 
 int BuildingCount()
