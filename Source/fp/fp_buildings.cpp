@@ -1864,7 +1864,7 @@ struct Structure {
 };
 
 std::vector<Structure> Structures;
-std::vector<uint8_t> StructureTiles; // 1: drawn by a structure (no wall cube, no billboard); 2: also has a floor hole
+std::vector<uint8_t> StructureTiles; // 1: drawn by a structure (no wall cube, no billboard); 2: also has a floor hole; 3: an arch pillar drawn as an open wall
 std::vector<std::array<float, 4>> FloorHoles; // x0, y0, x1, y1
 LevelKey StructuresFor { nullptr, -1, -1, false };
 
@@ -2436,22 +2436,9 @@ void BuildStructures()
 				continue;
 			Structure st;
 			if (!BuildColumn(st, { x, y })) {
-				// A pillar carrying the end of a wall (lopsided art): a solid block of the tile, as tall as its art,
-				// wearing the art projected on, so the wall reads as continuous instead of a cut-out billboard.
-				const PieceTextures &textures = GetPieceTextures(dPiece[x][y]);
-				const int rows = static_cast<int>(textures.column.size() / ColumnWidth);
-				int topRow = rows;
-				for (int r = 0; r < rows && topRow == rows; r++)
-					for (int cx = 0; cx < ColumnWidth; cx++)
-						if (textures.column[static_cast<size_t>(r) * ColumnWidth + cx] > 0) {
-							topRow = r;
-							break;
-						}
-				const float height = static_cast<float>(rows - 1 - 16 - topRow) / SpritePixelsPerTileY;
-				if (height < 0.5F)
-					continue;
-				BuildCanvas(st.art, { { x, y } }, {});
-				AddStructureBox(st.art, static_cast<float>(x), static_cast<float>(y), 0.0F, static_cast<float>(x + 1), static_cast<float>(y + 1), std::min(height, WallHeight()));
+				// A pillar carrying the end of an arch (lopsided art): drawn as a wall whose empty art is open.
+				StructureTiles[static_cast<size_t>(y) * MAXDUNX + x] = 3;
+				continue;
 			}
 			SetStructureFallbacks(st);
 			StructureTiles[static_cast<size_t>(y) * MAXDUNX + x] = 1;
@@ -2693,7 +2680,16 @@ bool IsStructureTile(Point tile)
 	if (leveltype == DTYPE_TOWN || !InDungeonBounds(tile))
 		return false;
 	EnsureStructures();
-	return StructureTiles[static_cast<size_t>(tile.y) * MAXDUNX + tile.x] != 0;
+	const uint8_t kind = StructureTiles[static_cast<size_t>(tile.y) * MAXDUNX + tile.x];
+	return kind != 0 && kind != 3;
+}
+
+bool IsArchPillarTile(Point tile)
+{
+	if (leveltype == DTYPE_TOWN || !InDungeonBounds(tile))
+		return false;
+	EnsureStructures();
+	return StructureTiles[static_cast<size_t>(tile.y) * MAXDUNX + tile.x] == 3;
 }
 
 bool IsFloorHole(float x, float y)

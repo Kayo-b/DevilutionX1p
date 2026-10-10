@@ -115,6 +115,9 @@ struct FaceArt {
 	const std::vector<int16_t> *face;
 	const std::vector<uint8_t> *holes; // null if the face has no openings to look through
 	int rows;                          // height of the wall this art shows, in face rows (0: the level's wall height)
+	bool emptyIsOpen = false;          // every texel without art is an opening (arch pillars)
+	const std::vector<int> *recess = nullptr; // first recessed row per face column (see PieceTextures::recessX)
+	float recessDepth = 0;
 };
 
 /** @brief The face art for a wall hit: the piece's own art for that face, else the other face, else the level's plain wall. */
@@ -127,10 +130,25 @@ FaceArt FaceForHit(const RayHit &hit)
 	}
 	const PieceTextures &textures = GetPieceTextures(dPiece[hit.tile.x][hit.tile.y]);
 	const bool wantX = hit.xSide;
+	if (IsArchPillarTile(hit.tile)) {
+		// The pillar and its half arch stand on the faces the art draws them on; the rest is open.
+		FaceArt art = wantX ? FaceArt { &textures.faceX, &textures.holesX, 0 } : FaceArt { &textures.faceY, &textures.holesY, 0 };
+		art.emptyIsOpen = true;
+		return art;
+	}
+	auto withRecess = [&](bool useX) {
+		FaceArt art = useX ? FaceArt { &textures.faceX, &textures.holesX, textures.faceXRows } : FaceArt { &textures.faceY, &textures.holesY, textures.faceYRows };
+		const std::vector<int> &recess = useX ? textures.recessX : textures.recessY;
+		if (!recess.empty()) {
+			art.recess = &recess;
+			art.recessDepth = useX ? textures.recessDepthX : textures.recessDepthY;
+		}
+		return art;
+	};
 	if (wantX ? textures.faceXUsable : textures.faceYUsable)
-		return wantX ? FaceArt { &textures.faceX, &textures.holesX, textures.faceXRows } : FaceArt { &textures.faceY, &textures.holesY, textures.faceYRows };
+		return withRecess(wantX);
 	if (wantX ? textures.faceYUsable : textures.faceXUsable)
-		return wantX ? FaceArt { &textures.faceY, &textures.holesY, textures.faceYRows } : FaceArt { &textures.faceX, &textures.holesX, textures.faceXRows };
+		return withRecess(!wantX);
 	return { &GetFallbackFace(), nullptr, 0 };
 }
 
@@ -175,7 +193,22 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 				along = 1.0F - along;
 			const int u = std::clamp(static_cast<int>(along * FaceTextureWidth), 0, FaceTextureWidth - 1);
 
-			const uint8_t *light = LightTables[LightAt(hit.previous)].data();
+			const uint8_t lightLevel = LightAt(hit.previous);
+			const uint8_t *light = LightTables[lightLevel].data();
+			// A recess (blind arch, niche) is a second plane behind the face; the rays carry on to it.
+			const float rayAcross = std::abs(hit.xSide ? ray.x : ray.y);
+			const float recessDistance = art.recess != nullptr && rayAcross > 1e-4F ? hit.distance + art.recessDepth / rayAcross : 0.0F;
+			int recessU = -1;
+			if (recessDistance > 0) {
+				const Vec2 p { proj.pos.x + ray.x * recessDistance, proj.pos.y + ray.y * recessDistance };
+				float along2 = hit.xSide ? p.y - static_cast<float>(hit.tile.y) : p.x - static_cast<float>(hit.tile.x);
+				if (hit.backFace)
+					along2 = 1.0F - along2;
+				if (along2 >= 0.0F && along2 < 1.0F)
+					recessU = std::clamp(static_cast<int>(along2 * FaceTextureWidth), 0, FaceTextureWidth - 1);
+			}
+			const uint8_t *recessLight = LightTables[std::min<int>(lightLevel + 2, LightsMax)].data();
+			const uint8_t *revealLight = LightTables[std::min<int>(lightLevel + 5, LightsMax)].data();
 			// The wall covers the bottom `hitRows` rows of the face texture.
 			const float rowsPerPixel = static_cast<float>(hitRows) / (bottomF - topF);
 			bool sawOpening = lowWall;
@@ -184,9 +217,28 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 					continue;
 				const int row = std::clamp(faceHeight - hitRows + static_cast<int>((static_cast<float>(y) - topF) * rowsPerPixel), 0, faceHeight - 1);
 				const size_t at = static_cast<size_t>(row) * FaceTextureWidth + u;
+				if (art.recess != nullptr && row >= (*art.recess)[u] && (*art.face)[at] != NoPixel) {
+					// Inside the recess outline: the back of the recess if the ray reaches it inside the outline,
+					// else the recess's side (its reveal).
+					const float height = EyeHeight + static_cast<float>(proj.horizon - y) * recessDistance / proj.focal;
+					const int row2 = std::clamp(faceHeight - static_cast<int>(height * SpritePixelsPerTileY), 0, faceHeight - 1);
+					uint8_t color;
+					float depth = hit.distance;
+					const int16_t back = recessU >= 0 ? (*art.face)[static_cast<size_t>(row2) * FaceTextureWidth + recessU] : NoPixel;
+					if (recessU >= 0 && row2 >= (*art.recess)[recessU] && back != NoPixel) {
+						color = recessLight[back];
+						depth = recessDistance;
+					} else {
+						color = revealLight[(*art.face)[at]];
+					}
+					*out.at(x, y) = color;
+					filled[y] = 1;
+					depthBuffer[static_cast<size_t>(y) * proj.width + x] = depth;
+					continue;
+				}
 				int16_t texel = (*art.face)[at];
 				if (texel == NoPixel) {
-					if (art.holes != nullptr && (*art.holes)[at] != 0) {
+					if (art.emptyIsOpen || (art.holes != nullptr && (*art.holes)[at] != 0)) {
 						sawOpening = true; // look through to the next wall
 						continue;
 					}

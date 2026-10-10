@@ -214,6 +214,94 @@ std::vector<int16_t> ExtractFace(const std::vector<int16_t> &column, int height,
 	return face;
 }
 
+/**
+ * @brief Finds the recess of a wall face: the inside of a blind arch is painted in shadow, a run of dark texels
+ * up from the floor between the bright pillars. Per column, the recess starts at the top of that run; columns
+ * whose run is short, and recesses narrower than a few columns, are none. Very dark recesses (deep niches with a
+ * figure or a pillar inside) go deeper.
+ */
+void FindRecess(const std::vector<int16_t> &face, int rows, std::vector<int> &recess, float &depth)
+{
+	constexpr float BlindArchDepth = 0.12F;
+	constexpr float NicheDepth = 0.35F;
+	recess.clear();
+	depth = 0;
+	const int faceHeight = FaceTextureHeight();
+	if (rows < 40)
+		return;
+	auto brightness = [](int16_t texel) {
+		const SDL_Color c = logical_palette[static_cast<uint8_t>(texel)];
+		return c.r * 3 + c.g * 6 + c.b;
+	};
+	std::vector<int> values;
+	for (int row = faceHeight - rows; row < faceHeight; row++)
+		for (int u = 0; u < FaceTextureWidth; u++) {
+			const int16_t t = face[static_cast<size_t>(row) * FaceTextureWidth + u];
+			if (t > 0)
+				values.push_back(brightness(t));
+		}
+	if (values.size() < static_cast<size_t>(FaceTextureWidth * rows / 2))
+		return;
+	std::nth_element(values.begin(), values.begin() + static_cast<ptrdiff_t>(values.size() / 2), values.end());
+	const int median = values[values.size() / 2];
+	const int dark = median * 7 / 10;
+	std::vector<int> top(FaceTextureWidth, faceHeight);
+	const int minRun = rows * 3 / 10;
+	const int skip = 6; // the plinth line at the foot of the wall
+	for (int u = 0; u < FaceTextureWidth; u++) {
+		int run = 0;
+		int bright = 0;
+		int last = faceHeight;
+		for (int row = faceHeight - 1 - skip; row >= faceHeight - rows; row--) {
+			const int16_t t = face[static_cast<size_t>(row) * FaceTextureWidth + u];
+			if (t <= 0 || brightness(t) > dark) {
+				if (++bright > 3)
+					break;
+				continue;
+			}
+			bright = 0;
+			last = row;
+			run = faceHeight - skip - row;
+		}
+		if (run >= minRun)
+			top[u] = last;
+	}
+	// Median of three across columns, then drop spans narrower than a quarter of the face.
+	std::vector<int> smooth(top);
+	for (int u = 1; u + 1 < FaceTextureWidth; u++) {
+		std::array<int, 3> n { top[u - 1], top[u], top[u + 1] };
+		std::sort(n.begin(), n.end());
+		smooth[u] = n[1];
+	}
+	for (int u = 0; u < FaceTextureWidth;) {
+		if (smooth[u] >= faceHeight) {
+			u++;
+			continue;
+		}
+		int end = u;
+		while (end < FaceTextureWidth && smooth[end] < faceHeight)
+			end++;
+		if (end - u < FaceTextureWidth / 4)
+			for (int k = u; k < end; k++)
+				smooth[k] = faceHeight;
+		u = end;
+	}
+	int64_t sum = 0;
+	int count = 0;
+	for (int u = 0; u < FaceTextureWidth; u++)
+		for (int row = smooth[u]; row < faceHeight - skip; row++) {
+			const int16_t t = face[static_cast<size_t>(row) * FaceTextureWidth + u];
+			if (t > 0) {
+				sum += brightness(t);
+				count++;
+			}
+		}
+	if (count == 0)
+		return;
+	recess = std::move(smooth);
+	depth = sum / count < median * 35 / 100 ? NicheDepth : BlindArchDepth;
+}
+
 /** @brief Un-rotates the floor diamond into a square: texel (u, v) is world (u, v) / FloorTextureSize. */
 std::vector<int16_t> ExtractFloor(const std::vector<int16_t> &column)
 {
@@ -238,6 +326,12 @@ std::unique_ptr<PieceTextures> BuildPieceTextures(uint16_t pieceId)
 	const std::vector<int16_t> column = RenderColumnWithAlpha(pieceId, height, false);
 	textures->faceX = ExtractFace(column, height, true, textures->faceXUsable, textures->faceXRows, textures->holesX);
 	textures->faceY = ExtractFace(column, height, false, textures->faceYUsable, textures->faceYRows, textures->holesY);
+	if (leveltype != DTYPE_TOWN) {
+		if (textures->faceXUsable)
+			FindRecess(textures->faceX, textures->faceXRows, textures->recessX, textures->recessDepthX);
+		if (textures->faceYUsable)
+			FindRecess(textures->faceY, textures->faceYRows, textures->recessY, textures->recessDepthY);
+	}
 	textures->hasTallArt = false;
 	textures->isStructure = false;
 	textures->isPillar = false;

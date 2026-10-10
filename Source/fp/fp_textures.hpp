@@ -35,6 +35,14 @@ struct PieceTextures {
 	std::vector<int16_t> floor;
 	bool faceXUsable;
 	bool faceYUsable;
+	/**
+	 * Recessed part of each face (the inside of a blind arch or niche), read off the art: per face texture column,
+	 * the first row that is recessed (the face height if none). Empty if the face has no recess.
+	 */
+	std::vector<int> recessX;
+	std::vector<int> recessY;
+	float recessDepthX = 0; // how deep the recess goes, in tiles
+	float recessDepthY = 0;
 	/** Rows from the base of the face to its highest opaque pixel (the wall height the art shows), 0 if empty. */
 	int faceXRows;
 	int faceYRows;

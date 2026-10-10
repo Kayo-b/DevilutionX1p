@@ -50,6 +50,11 @@ std::string TileMap(int x0, int y0, int x1, int y1);
 
 /** @brief Whether a dungeon tile is drawn as part of a mesh structure (a free-standing column, the stairs down) instead of a wall cube or billboard. */
 [[nodiscard]] bool IsStructureTile(Point tile);
+/**
+ * @brief Whether a dungeon tile is a pillar carrying the end of an arch: drawn as a wall from its own (partial)
+ * face art, the parts without art left open to look through.
+ */
+[[nodiscard]] bool IsArchPillarTile(Point tile);
 /** @brief Whether the floor is open at a point (the pit of the stairs down), so the floor is not drawn there. */
 [[nodiscard]] bool IsFloorHole(float x, float y);
 /** @brief Whether an object is drawn as a 3D box of its own sprite (a sarcophagus) rather than a billboard. */

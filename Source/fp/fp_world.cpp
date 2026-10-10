@@ -285,8 +285,8 @@ void CollectProps(Vec2 viewerPos, std::vector<Entity> &entities)
 			const PieceTextures &textures = GetPieceTextures(dPiece[x][y]);
 			if (!textures.hasTallArt || (!town && !textures.isFreeStanding))
 				continue;
-			if (!town && IsStructureTile(tile))
-				continue; // drawn as a mesh
+			if (!town && (IsStructureTile(tile) || IsArchPillarTile(tile)))
+				continue; // drawn as a mesh, or as an open wall
 			if (town && BuildingsEnabled() && IsBuildingTile(tile))
 				continue; // drawn as part of a reconstructed building
 			Entity entity {};
