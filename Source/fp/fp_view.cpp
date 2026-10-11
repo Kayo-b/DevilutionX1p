@@ -92,6 +92,53 @@ const std::array<std::array<uint8_t, 256>, FogSteps + 1> &FogTables()
 	return tables;
 }
 
+/**
+ * @brief Palette colours nearest to RGB colours (5 bits a channel), looked up as they are asked for and forgotten
+ * when the palette changes. Colours 1-31 are left out: the caves and hell cycle them (lava), which would make
+ * blended sprites flicker.
+ */
+class NearestColors {
+public:
+	void Prepare()
+	{
+		if (ready_ && readyFor_ == PaletteVersion())
+			return;
+		ready_ = true;
+		readyFor_ = PaletteVersion();
+		cache_.fill(Unknown);
+	}
+
+	uint8_t operator()(int r, int g, int b)
+	{
+		const size_t key = static_cast<size_t>((r >> 3) << 10 | (g >> 3) << 5 | (b >> 3));
+		uint16_t &entry = cache_[key];
+		if (entry == Unknown) {
+			const int cr = (r & ~7) + 4;
+			const int cg = (g & ~7) + 4;
+			const int cb = (b & ~7) + 4;
+			int best = std::numeric_limits<int>::max();
+			entry = 0;
+			for (int j = 32; j < 256; j++) {
+				const SDL_Color o = logical_palette[j];
+				const int d = (o.r - cr) * (o.r - cr) * 3 + (o.g - cg) * (o.g - cg) * 6 + (o.b - cb) * (o.b - cb);
+				if (d < best) {
+					best = d;
+					entry = static_cast<uint16_t>(j);
+				}
+			}
+		}
+		return static_cast<uint8_t>(entry);
+	}
+
+private:
+	static constexpr uint16_t Unknown = 0xFFFF;
+	std::array<uint16_t, 32768> cache_ {};
+	bool ready_ = false;
+	uint32_t readyFor_ = 0;
+};
+
+NearestColors NearestColor;
+
 /** @returns the fog step (0: clear) at a camera depth; 0 outside town. */
 int FogStep(float depth)
 {
@@ -465,6 +512,100 @@ void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::
 	const int y1 = std::min(proj.height, rect.bottom);
 	const int fogStep = FogStep(rect.depth);
 	const uint8_t *fog = fogStep > 0 ? FogTables()[fogStep].data() : nullptr;
+	auto shade = [&](int16_t pixel) {
+		uint8_t color = static_cast<uint8_t>(pixel);
+		if (entity.trn != nullptr)
+			color = entity.trn[color];
+		else if (light != nullptr)
+			color = light[color];
+		return color;
+	};
+
+	if (screenHeight >= spriteHeight * 3 / 2) {
+		// Blown up (near): sampled bilinearly, so outlines come out smooth instead of in big steps. The outline is
+		// where the sprite's coverage crosses one half; colours blend between the opaque neighbours and go back to
+		// the palette through NearestColor.
+		NearestColor.Prepare();
+		// Each colour's lit RGB, once per sprite; the sample positions of each column, once per sprite.
+		std::array<uint8_t, 256> lit;
+		std::array<SDL_Color, 256> rgb;
+		for (int i = 0; i < 256; i++) {
+			lit[i] = shade(static_cast<int16_t>(i));
+			rgb[i] = logical_palette[lit[i]];
+		}
+		static std::vector<int> columnU;
+		static std::vector<int> columnT;
+		columnU.resize(static_cast<size_t>(std::max(0, x1 - x0)));
+		columnT.resize(columnU.size());
+		const float stepU = static_cast<float>(spriteWidth) / static_cast<float>(screenWidth);
+		const float stepV = static_cast<float>(spriteHeight) / static_cast<float>(screenHeight);
+		for (int x = x0; x < x1; x++) {
+			const float fu = (static_cast<float>(x - rect.left) + 0.5F) * stepU - 0.5F;
+			const int u = static_cast<int>(std::floor(fu));
+			columnU[x - x0] = u;
+			columnT[x - x0] = static_cast<int>((fu - static_cast<float>(u)) * 256.0F);
+		}
+		// The sprite with a clear border, so the four samples need no bounds checks; shadow (0) counts as clear.
+		static std::vector<uint8_t> padded;
+		const int paddedWidth = spriteWidth + 2;
+		padded.assign(static_cast<size_t>(paddedWidth) * (spriteHeight + 2), 0);
+		for (int v = 0; v < spriteHeight; v++)
+			for (int u = 0; u < spriteWidth; u++)
+				padded[static_cast<size_t>(v + 1) * paddedWidth + u + 1] = static_cast<uint8_t>(std::max<int16_t>(pixels[static_cast<size_t>(v) * spriteWidth + u], 0));
+		for (int y = y0; y < y1; y++) {
+			const float fv = (static_cast<float>(y - rect.top) + 0.5F) * stepV - 0.5F;
+			const int v0 = static_cast<int>(std::floor(fv));
+			const int tv = static_cast<int>((fv - static_cast<float>(v0)) * 256.0F);
+			if (v0 < -1 || v0 >= spriteHeight)
+				continue;
+			const uint8_t *row0 = &padded[static_cast<size_t>(v0 + 1) * paddedWidth + 1];
+			const uint8_t *row1 = row0 + paddedWidth;
+			const float *depthRow = depthBuffer != nullptr ? &(*depthBuffer)[static_cast<size_t>(y) * proj.width] : nullptr;
+			uint8_t *dst = out.at(0, y);
+			for (int x = x0; x < x1; x++) {
+				if (depthRow != nullptr ? rect.depth > depthRow[x] : zBuffer[x] < rect.depth)
+					continue; // behind a wall or building
+				const int u0 = columnU[x - x0];
+				if (u0 < -1 || u0 >= spriteWidth)
+					continue;
+				const int s00 = row0[u0];
+				const int s10 = row0[u0 + 1];
+				const int s01 = row1[u0];
+				const int s11 = row1[u0 + 1];
+				uint8_t color;
+				if (s00 == s10 && s00 == s01 && s00 == s11) {
+					if (s00 == 0)
+						continue;
+					color = lit[s00];
+				} else {
+					const int tu = columnT[x - x0];
+					const std::array<int, 4> samples { s00, s10, s01, s11 };
+					const std::array<int, 4> weights { (256 - tu) * (256 - tv), tu * (256 - tv), (256 - tu) * tv, tu * tv };
+					int coverage = 0;
+					int r = 0;
+					int g = 0;
+					int b = 0;
+					for (size_t k = 0; k < 4; k++) {
+						if (samples[k] == 0)
+							continue;
+						const SDL_Color c = rgb[samples[k]];
+						coverage += weights[k];
+						r += weights[k] * c.r;
+						g += weights[k] * c.g;
+						b += weights[k] * c.b;
+					}
+					if (coverage < 256 * 256 / 2)
+						continue;
+					color = NearestColor(r / coverage, g / coverage, b / coverage);
+				}
+				if (fog != nullptr)
+					color = fog[color];
+				dst[x] = color;
+			}
+		}
+		return;
+	}
+
 	for (int x = x0; x < x1; x++) {
 		if (depthBuffer == nullptr && zBuffer[x] < rect.depth)
 			continue;
@@ -477,11 +618,7 @@ void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::
 				continue;
 			if (depthBuffer != nullptr && rect.depth > (*depthBuffer)[static_cast<size_t>(y) * proj.width + x])
 				continue; // behind a wall or building
-			uint8_t color = static_cast<uint8_t>(pixel);
-			if (entity.trn != nullptr)
-				color = entity.trn[color];
-			else if (light != nullptr)
-				color = light[color];
+			uint8_t color = shade(pixel);
 			if (fog != nullptr)
 				color = fog[color];
 			*out.at(x, y) = color;

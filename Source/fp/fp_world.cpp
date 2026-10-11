@@ -387,6 +387,9 @@ bool IsSelectableKind(EntityKind kind)
 	return IsNoneOf(kind, EntityKind::Missile, EntityKind::Corpse, EntityKind::Prop);
 }
 
+/** How much farther off monsters and townsfolk look up close (tiles); see ProjectBillboard. */
+constexpr float CreatureNearDepth = 1.3F;
+
 BillboardRect ProjectBillboard(const Projection &projection, const Entity &entity)
 {
 	const Vec2 rel { entity.pos.x - projection.pos.x, entity.pos.y - projection.pos.y };
@@ -394,7 +397,11 @@ BillboardRect ProjectBillboard(const Projection &projection, const Entity &entit
 	if (depth < 0.1F)
 		return { false, depth, 0, 0, 0, 0 };
 	const float lateral = (rel.x * projection.plane.x + rel.y * projection.plane.y) / (PlaneLength * PlaneLength);
-	const float scale = projection.focal / depth;
+	// Monsters and townsfolk are sized as if a little farther off than they are (sqrt(d^2 + near^2)): one right in
+	// front no longer fills the screen, while far ones hardly change. Walls still hide them by their real depth.
+	const bool creature = IsAnyOf(entity.kind, EntityKind::Monster, EntityKind::Towner);
+	const float sizedAt = creature ? std::sqrt(depth * depth + CreatureNearDepth * CreatureNearDepth) : depth;
+	const float scale = projection.focal / sizedAt;
 	const float centerX = (lateral / depth + 1.0F) * static_cast<float>(projection.width) / 2.0F;
 	const float halfWidth = entity.width * scale / 2.0F;
 
