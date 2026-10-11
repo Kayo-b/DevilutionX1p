@@ -117,8 +117,9 @@ Open the console with the backtick key, then run `dev = require('devilutionx.dev
 | `dev.fp.dumppiece(x,y,path)` / `dev.fp.dumpfaces(...)` | one tile's iso column, or its extracted wall faces (openings in red) |
 | `dev.fp.buildings / housemodels / housemeshes / housetextures / recesses (bool)` | switch individual features off to compare |
 | `dev.fp.walkto(x,y)`, `dev.fp.where()` | test click-walks; print the camera position |
-| `dev.fp.modkit(bool)` | (branch `fp-modkit`) cathedral in the 3D mod's stone and models, or its original art |
+| `dev.fp.modkit(bool)` | global kit walls, floors, ceilings, columns, and arcade pillars (default off); kit doors, entrance stairs, and sarcophagus remain on |
 | `dev.fp.modeltextures(bool)` | town buildings with the 3D models' own textures (default) or their projected iso art |
+| `dev.fp.sarcophagus(bool)` | use the 3D mod-kit sarcophagus model independently of `dev.fp.modkit` (default on) |
 | `dev.level.warp.dungeon(0)` | go to town (any `n` for dungeon level `n`) |
 
 Debug environment variables:
@@ -192,7 +193,7 @@ Known test spots:
 - **Recesses:** blind arches and niches are found from the dark run in the art (`FindRecess`). They are drawn as a
   second plane behind the wall, with lit side reveals (in `DrawWalls`). Deep niches use `NicheDepth` and plain blind
   arches `BlindArchDepth`.
-- **Doors:** in the mod-kit dungeon closed doors are the kit's door model (`BuildDoorModel`, drawn by `DrawDoorModels`; the wall pass leaves the panel open). Otherwise closed door tiles (`IsClosedDoorTile`) get a shallow recess and a brightened panel. Tune them with
+- **Doors:** closed doors use the kit's door model by default, independently of the global kit surfaces (`BuildDoorModel`, drawn by `DrawDoorModels`; the wall pass leaves the panel open). Otherwise closed door tiles (`IsClosedDoorTile`) get a shallow recess and a brightened panel. Tune them with
   `DoorDepth` and `DoorBrightening` in `fp_view.cpp`; the colour boost (`* 1.7F`) is in `DoorColor`.
 - **Mod-kit walls (experiment, too heavy: off by default):** within `KitWallModelRange` the wall pass skips each face and `KitWallModel` registers the kit's `wall_concave` (or `wall_door` for faces with openings) in its place; Off by default: `FP_KITWALLS=1` turns it on. About +35 ms per frame in a room.
 - **Mod-kit ceiling:** `BuildCeilingVaults` lays the kit's groin vault (the `vault` model, a 6x6 resample of `ceiling_big_master` made by `export_kit.py`) over each open tile at the wall tops, flat-shaded (`MeshSolid`), drawn only within `VaultDrawRange`. Off by default (flat ceiling): `FP_VAULT=1` turns it on.
@@ -272,9 +273,9 @@ All in `fp_buildings.cpp`, built per level in `BuildStructures`:
 |---|---|---|
 | **Free-standing columns / torch stands** | shape read off the art row by row (the widest pixels give the size at each height; square or round) and turned into a lathe mesh with the art projected onto it, clamped at the ceiling | `ColumnProfile`, `BuildColumn` |
 | **Arcade pillars** | a shaft from the symmetric lower art; neighbouring pillars joined by **arch walls** wearing the filler wall pair, with the painted arch cut open and an underside added | `BuildArcadePillar`, `AddArcadeWall`, `MeshArcade` shader |
-| **Stairs down (cathedral)** | built by hand from measurements of the art; the floor is cut open over the pit | `BuildStairsDown`, `FloorHoles` |
-| **Stairs up / main entrance** | the kit's `stairs_01` mesh fitted over the stair tiles | `BuildStairsUp` |
-| **Sarcophagus** | a box measured from its sprite | `BuildObjectBox` |
+| **Stairs down (between levels)** | built by hand from measurements of the art; the floor is cut open over the pit (the exported kit currently has no down-stair mesh) | `BuildStairsDown`, `FloorHoles` |
+| **Stairs up / main entrance** | the kit's `stairs_01` mesh fitted over the stair tiles by default, independently of the global kit surfaces | `BuildStairsUp` |
+| **Sarcophagus** | a box measured from its sprite; the 3D mod-kit model can be toggled independently with `dev.fp.sarcophagus(bool)`, even while `dev.fp.modkit(false)` is active | `BuildObjectBox` |
 
 To add a new piece from `Dungeon Pieces-67266-.7z`:
 1. Add its group name to `PIECES` in `fp-tools/export/export_kit.py` and run it; it writes `assets/fp/dungeonkit.bin`.

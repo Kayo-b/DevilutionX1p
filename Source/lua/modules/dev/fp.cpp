@@ -380,7 +380,13 @@ std::string DebugCmdFpModelTextures(bool enabled)
 std::string DebugCmdFpModKit(bool enabled)
 {
 	fp::SetModKitEnabled(enabled);
-	return enabled ? "Mod-kit dungeon on." : "Mod-kit dungeon off (the original art).";
+	return enabled ? "Mod-kit dungeon surfaces on." : "Mod-kit dungeon surfaces off (kit doors, entrance stairs, and sarcophagus remain independent).";
+}
+
+std::string DebugCmdFpSarcophagus(bool enabled)
+{
+	fp::SetSarcophagusKitEnabled(enabled);
+	return enabled ? "Mod-kit sarcophagus model on." : "Mod-kit sarcophagus model off.";
 }
 
 } // namespace
@@ -408,7 +414,8 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "walkto", "(x: number, y: number)", "Walk to a tile the way a click does (path finding).", &DebugCmdFpWalkTo);
 	LuaSetDocFn(table, "where", "()", "Player tile and camera position (x100).", &DebugCmdFpWhere);
 	LuaSetDocFn(table, "modeltextures", "(enabled: boolean)", "Texture town buildings with the 3D models' own textures (default) or their projected iso art.", &DebugCmdFpModelTextures);
-	LuaSetDocFn(table, "modkit", "(enabled: boolean)", "Dungeon in the 3D mod's stone and models (default on this branch) or its original art.", &DebugCmdFpModKit);
+	LuaSetDocFn(table, "modkit", "(enabled: boolean)", "Dungeon kit walls, floors, ceilings, columns, and arcade pillars (default off); doors, entrance stairs, and sarcophagus are independent.", &DebugCmdFpModKit);
+	LuaSetDocFn(table, "sarcophagus", "(enabled: boolean)", "Use the dungeon kit's 3D sarcophagus model, independently of the rest of the mod kit.", &DebugCmdFpSarcophagus);
 	LuaSetDocFn(table, "on", "(enabled: boolean)", "Switch between first-person and the original view.", &DebugCmdFpOn);
 	LuaSetDocFn(table, "buildings", "(enabled: boolean)", "Draw town houses as reconstructed 3D models (default) or flat billboards.", &DebugCmdFpBuildings);
 	return table;

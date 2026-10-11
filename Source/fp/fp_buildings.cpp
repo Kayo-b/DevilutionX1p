@@ -848,7 +848,8 @@ const LandmarkMesh *KitMesh(std::string_view name)
 	return nullptr;
 }
 
-bool ModKitOn = true;
+bool ModKitOn = false;
+bool SarcophagusKitOn = true;
 /** Brightness the dungeon kit's textures are brought to (the dungeon's light tables darken them further). */
 constexpr float KitDim = 0.45F;
 /** How much of the original art's light and dark the kit's walls take (1: all of it, 0: none). */
@@ -882,12 +883,10 @@ float KitStepFactor(int i)
 void PrepareKitSurfaces()
 {
 	KitReady = false;
-	// The kit is the cathedral's (its stone blocks, marble and pavement): the other tilesets keep their art.
-	if (!ModKitOn || leveltype != DTYPE_CATHEDRAL)
+	// Kit models (doors and stairs) can be used with the original wall and floor art.
+	if (leveltype == DTYPE_TOWN)
 		return;
 	const LandmarkMesh *surfaces = KitMesh("surfaces");
-	if (surfaces == nullptr || surfaces->textures.size() < 3)
-		return;
 	// Tint the kit by the level's own wall colour (warm in the cathedral, cold in the catacombs, ...).
 	std::array<double, 3> artSum {};
 	int artCount = 0;
@@ -907,6 +906,9 @@ void PrepareKitSurfaces()
 			tint[i] = static_cast<float>(std::clamp(artSum[i] / std::max(grey, 1.0), 0.6, 1.5));
 	}
 	QuantizeMeshTextures(KitDim, false, tint);
+	// The kit's stone blocks, marble and pavement are only for the cathedral and only when the global kit is enabled.
+	if (!ModKitOn || leveltype != DTYPE_CATHEDRAL || surfaces == nullptr || surfaces->textures.size() < 3)
+		return;
 	auto texture = [&](int i) -> const MeshTexture * {
 		const int16_t t = surfaces->textures[i];
 		return t >= 0 && static_cast<size_t>(t) < MeshTextures.size() ? &MeshTextures[t] : nullptr;
@@ -3183,7 +3185,7 @@ bool BuildStairsUp(Structure &st, Point trigger)
 		const bool onFan = c.y > foot + 0.02F || (tread && c.y >= foot - 0.05F);
 		const size_t before = st.art.mesh.size();
 		AddStructureFace(st.art, { p0, p1, p2 }, n, mid, onFan ? MeshFloorArt : MeshProjective);
-		if (KitReady && st.art.mesh.size() > before && !kit->textures.empty()) {
+		if (st.art.mesh.size() > before && !kit->textures.empty()) {
 			WorldTriangle &tri = st.art.mesh.back();
 			const size_t index = static_cast<size_t>(&t - kit->triangles.data());
 			tri.texture = kit->textures[index];
@@ -3293,7 +3295,7 @@ bool BuildObjectBox(ObjectBox &box, const Object &object, ClxSprite sprite)
 	const float c = (static_cast<float>(b.originY + bottom) - sum * 8.0F) / 16.0F;                    // cx + cy
 	const float cx = (a + c) / 2.0F;
 	const float cy = (c - a) / 2.0F;
-	if (const LandmarkMesh *mesh = KitReady ? KitMesh("sarcophagus") : nullptr; mesh != nullptr) {
+	if (const LandmarkMesh *mesh = SarcophagusKitOn ? KitMesh("sarcophagus") : nullptr; mesh != nullptr) {
 		// The kit's sarcophagus (long along its x) over the box the sprite shows.
 		AddKitModel(b, *mesh, { cx, cy }, lx, ly, 0.0F, height, lx < ly, false); // with the sprite's own stone
 	} else {
@@ -3722,7 +3724,7 @@ void DrawKitWalls(const Surface &out, const Projection &proj, std::vector<float>
 
 void DrawDoorModels(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer)
 {
-	if (!KitReady)
+	if (!KitDoorsActive())
 		return;
 	for (int i = 0; i < ActiveObjectCount; i++) {
 		const int id = ActiveObjects[i];
@@ -3945,6 +3947,12 @@ void SetModKitEnabled(bool enabled)
 	StructuresFor = LevelKey { nullptr, -1, -1, false }; // rebuild
 }
 
+void SetSarcophagusKitEnabled(bool enabled)
+{
+	SarcophagusKitOn = enabled;
+	StructuresFor = LevelKey { nullptr, -1, -1, false }; // rebuild cached object boxes
+}
+
 bool KitWallModel(Point tile, Point previous, bool niche, float height)
 {
 	const LandmarkMesh *mesh = KitReady ? KitMesh(niche ? "wall_concave" : "wall_door") : nullptr;
@@ -3990,7 +3998,10 @@ bool KitWallModel(Point tile, Point previous, bool niche, float height)
 
 bool KitDoorsActive()
 {
-	return KitSurfacesActive() && KitMesh("door") != nullptr;
+	if (leveltype == DTYPE_TOWN)
+		return false;
+	EnsureStructures();
+	return KitMesh("door") != nullptr;
 }
 
 bool IsStructureTile(Point tile)
