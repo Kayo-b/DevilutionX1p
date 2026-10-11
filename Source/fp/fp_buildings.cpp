@@ -116,6 +116,9 @@ struct WorldTriangle {
 	uint16_t bakeN = 0;
 	uint8_t bakeAxis = 0;        // the axis dropped to solve for (u, v)
 	std::array<float, 4> bakeInv {}; // inverse of the 2 x 2 matrix of the edges in the other two axes
+	int16_t texture = -1;            // model texture (MeshTextures), sampled at uv when model textures are on
+	std::array<float, 6> uv {};
+	uint8_t textureDarkness = 0;     // shading of the textured surface by the sun
 	uint8_t fallback;   // colour where the art has no pixel
 };
 
@@ -645,7 +648,62 @@ struct LandmarkMesh {
 	std::string name;
 	std::vector<std::array<float, 9>> triangles; // u, w (0..1 over the plaza extent), z (plaza units) per vertex
 	std::vector<uint8_t> classes;                // 0 wall, 1 roof, 2 door
+	std::vector<std::array<float, 6>> uvs;       // texture coordinates per vertex (FPL2 files)
+	std::vector<int16_t> textures;               // index into MeshTextures, -1 for none
 };
+
+/** @brief A model texture (RGB, rows top to bottom) and its palette version for the current palette. */
+struct MeshTexture {
+	int width = 0;
+	int height = 0;
+	std::vector<uint8_t> rgb;
+	std::vector<uint8_t> indexed;
+};
+std::vector<MeshTexture> MeshTextures;
+bool ModelTexturesOn = true;
+/** Brightness the model textures are brought down to, to match the town art. */
+constexpr float TextureDim = 0.42F;
+
+/**
+ * @brief Converts the model textures to the current palette: nearest colour by eye weights, leaving out colour 0 and
+ * the near-blacks 112 - 127 (the light tables turn them red, see PatchColor).
+ */
+void QuantizeMeshTextures()
+{
+	std::vector<int16_t> lut(32768, -1);
+	for (MeshTexture &tex : MeshTextures) {
+		tex.indexed.resize(static_cast<size_t>(tex.width) * tex.height);
+		for (size_t i = 0; i < tex.indexed.size(); i++) {
+			// The textures are daylight photographs; Tristram is drawn at dusk, dim and cool. Darken and pull the
+			// colours a little towards grey-blue so the buildings sit with the original art.
+			const float r0 = tex.rgb[i * 3];
+			const float g0 = tex.rgb[i * 3 + 1];
+			const float b0 = tex.rgb[i * 3 + 2];
+			const float grey = (r0 + g0 + b0) / 3.0F;
+			const int r = std::clamp(static_cast<int>((r0 * 0.75F + grey * 0.25F) * TextureDim * 0.92F), 0, 255);
+			const int g = std::clamp(static_cast<int>((g0 * 0.75F + grey * 0.25F) * TextureDim * 0.95F), 0, 255);
+			const int bl = std::clamp(static_cast<int>((b0 * 0.75F + grey * 0.25F) * TextureDim * 1.08F), 0, 255);
+			const int key = (r >> 3) << 10 | (g >> 3) << 5 | (bl >> 3);
+			if (lut[key] < 0) {
+				const int qr = (r & ~7) + 4;
+				const int qg = (g & ~7) + 4;
+				const int qb = (bl & ~7) + 4;
+				int best = std::numeric_limits<int>::max();
+				for (int j = 1; j < 256; j++) {
+					if (j >= 112 && j <= 127)
+						continue;
+					const SDL_Color c = logical_palette[j];
+					const int d = (c.r - qr) * (c.r - qr) * 3 + (c.g - qg) * (c.g - qg) * 6 + (c.b - qb) * (c.b - qb);
+					if (d < best) {
+						best = d;
+						lut[key] = static_cast<int16_t>(j);
+					}
+				}
+			}
+			tex.indexed[i] = static_cast<uint8_t>(lut[key]);
+		}
+	}
+}
 
 /**
  * @brief Where a landmark's plaza mesh goes in town. These buildings are too complex for the footprint detection
@@ -666,6 +724,7 @@ struct LandmarkPlacement {
 	bool flipW;     // the plaza's y axis runs the other way round to the town's
 	std::array<Vec2, 2> posts; // thin wooden posts holding up an open roof; { 0, 0 } for none
 	bool projective = false;   // textured by projecting its own iso art (its model was fitted to it), not with patches
+	bool modelTextures = true; // may wear the model's own textures (dev.fp.modeltextures); else always its art
 };
 
 const std::array<LandmarkPlacement, 10> Landmarks { {
@@ -683,7 +742,8 @@ const std::array<LandmarkPlacement, 10> Landmarks { {
 	// Griswold's smithy: the long hall, and over the forge where he stands an open porch roof on two posts. The plaza
 	// porch eaves are low; they are lifted to the hall's wall height, high enough to stand under.
 	{ "smithy", { 60, 56 }, { 70, 64 }, 60.17F, 70.87F, 56.78F, 64.08F, 1.59F, 1.0F, 0.60F, true, { Vec2 { 61.69F, 63.85F }, Vec2 { 64.44F, 63.85F } }, true }, // 0.59
-	{ "fountain", { 59, 69 }, { 61, 71 }, 59.65F, 61.46F, 69.75F, 71.53F, 0.643F, 100.0F, 0.643F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },     // 0.52
+	// The fountain's model texture is a coarse rock that reads as a blob at its size: it keeps its art.
+	{ "fountain", { 59, 69 }, { 61, 71 }, 59.65F, 61.46F, 69.75F, 71.53F, 0.643F, 100.0F, 0.643F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true, false }, // 0.52
 	// Tristram's church (research/church): tower, nave and round apse, fitted to the iso art by silhouette overlap.
 	{ "church", { 19, 14 }, { 31, 29 }, 19.78F, 32.22F, 14.31F, 30.19F, 0.85F, 100.0F, 0.85F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },
 } };
@@ -702,9 +762,30 @@ void LoadMeshFile(const char *envName, const char *fileName, std::vector<Landmar
 	auto readAll = [&](void *dst, size_t size) { return std::fread(dst, 1, size, f) == size; };
 	char magic[4];
 	uint32_t count = 0;
-	if (!readAll(magic, 4) || std::memcmp(magic, "FPL1", 4) != 0 || !readAll(&count, 4)) {
+	if (!readAll(magic, 4) || (std::memcmp(magic, "FPL1", 4) != 0 && std::memcmp(magic, "FPL2", 4) != 0) || !readAll(&count, 4)) {
 		std::fclose(f);
 		return;
+	}
+	const bool textured = magic[3] == '2';
+	int textureBase = static_cast<int>(MeshTextures.size());
+	if (textured) {
+		// The texture table comes first; then the model count.
+		for (uint32_t i = 0; i < count; i++) {
+			uint16_t size[2];
+			MeshTexture tex;
+			if (!readAll(size, sizeof(size)))
+				break;
+			tex.width = size[0];
+			tex.height = size[1];
+			tex.rgb.resize(static_cast<size_t>(tex.width) * tex.height * 3);
+			if (!readAll(tex.rgb.data(), tex.rgb.size()))
+				break;
+			MeshTextures.push_back(std::move(tex));
+		}
+		if (!readAll(&count, 4)) {
+			std::fclose(f);
+			return;
+		}
 	}
 	for (uint32_t m = 0; m < count; m++) {
 		LandmarkMesh mesh;
@@ -718,9 +799,21 @@ void LoadMeshFile(const char *envName, const char *fileName, std::vector<Landmar
 			break;
 		mesh.triangles.resize(triangleCount);
 		mesh.classes.resize(triangleCount);
+		if (textured) {
+			mesh.uvs.resize(triangleCount);
+			mesh.textures.resize(triangleCount);
+		}
 		bool ok = true;
-		for (uint32_t t = 0; t < triangleCount && ok; t++)
-			ok = readAll(mesh.triangles[t].data(), sizeof(float) * 9) && readAll(&mesh.classes[t], 1);
+		for (uint32_t t = 0; t < triangleCount && ok; t++) {
+			ok = readAll(mesh.triangles[t].data(), sizeof(float) * 9);
+			if (ok && textured) {
+				int16_t texture;
+				ok = readAll(mesh.uvs[t].data(), sizeof(float) * 6) && readAll(&mesh.classes[t], 1) && readAll(&texture, 2);
+				mesh.textures[t] = texture < 0 ? int16_t { -1 } : static_cast<int16_t>(texture + textureBase);
+			} else if (ok) {
+				ok = readAll(&mesh.classes[t], 1);
+			}
+		}
 		if (!ok)
 			break;
 		meshes.push_back(std::move(mesh));
@@ -1160,9 +1253,16 @@ void MakeProjective(Building &b, bool mirroredPlacement)
 		const V3 e1 { tri.p[1].x - tri.p[0].x, tri.p[1].y - tri.p[0].y, tri.p[1].z - tri.p[0].z };
 		const V3 e2 { tri.p[2].x - tri.p[0].x, tri.p[2].y - tri.p[0].y, tri.p[2].z - tri.p[0].z };
 		const V3 wound { e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x };
-		// Placing the model with one axis flipped turns its winding inside out.
-		tri.cull = true;
+		// Placing the model with one axis flipped turns its winding inside out. One-sided by the model's own winding:
+		// inner surfaces (the church's inner roof and walls) face inwards and are skipped from outside.
 		tri.normal = mirroredPlacement ? V3 { -wound.x, -wound.y, -wound.z } : wound;
+		tri.cull = std::getenv("FP_TWO_SIDED") == nullptr;
+		{
+			// Sun from high up on the iso camera's side, like the art's light.
+			const float length = std::sqrt(tri.normal.x * tri.normal.x + tri.normal.y * tri.normal.y + tri.normal.z * tri.normal.z);
+			const float lit = length > 0 ? (0.35F * tri.normal.x + 0.45F * tri.normal.y + 0.82F * tri.normal.z) / length : 0.0F;
+			tri.textureDarkness = static_cast<uint8_t>(std::clamp(static_cast<int>(std::lround((0.85F - lit) * 2.0F)), 0, 2));
+		}
 		const float horizontal = std::hypot(tri.normal.x, tri.normal.y);
 		tri.normalX = horizontal > 0.25F ? tri.normal.x / horizontal : 0.0F;
 		tri.normalY = horizontal > 0.25F ? tri.normal.y / horizontal : 0.0F;
@@ -1241,7 +1341,7 @@ void ClaimProjectiveTiles(const Building &b, const std::vector<Point> &artTiles)
 	for (size_t i = 0; i < under.size(); i++)
 		if (under[i] != 0)
 			BuildingTiles[i] = 2;
-	// Art tiles outside it: hidden when most of their upright art lies on the model's iso silhouette.
+	// Art tiles outside it: hidden when a good part (35%) of their upright art lies on the model's iso silhouette.
 	const int w = (b.canvasWidth + 1) / 2;
 	for (const Point t : artTiles) {
 		const size_t at = static_cast<size_t>(t.y) * MAXDUNX + t.x;
@@ -1264,7 +1364,17 @@ void ClaimProjectiveTiles(const Building &b, const std::vector<Point> &artTiles)
 					inside++;
 			}
 		}
-		if (total > 0 && inside * 10 >= total * 6)
+		// Right next to the footprint, art is the building's own edge (an apse roof drawn on the tile in front)
+		// unless very little of it is on the model.
+		bool besideFootprint = false;
+		for (int dy = -1; dy <= 1 && !besideFootprint; dy++)
+			for (int dx = -1; dx <= 1 && !besideFootprint; dx++)
+				besideFootprint = InDungeonBounds({ t.x + dx, t.y + dy }) && under[static_cast<size_t>(t.y + dy) * MAXDUNX + t.x + dx] != 0;
+#ifdef _DEBUG
+		if (std::getenv("FP_DUMP_PROFILES") != nullptr)
+			LogInfo("fp: claim {},{}: {} of {} art pixels on the model, beside {}", t.x, t.y, inside, total, besideFootprint);
+#endif
+		if (total > 0 && inside * 100 >= total * (besideFootprint ? 12 : 35))
 			BuildingTiles[at] = 1;
 	}
 }
@@ -1328,7 +1438,12 @@ void BuildLandmarkMesh(Building &b, const LandmarkPlacement &place, const Landma
 		std::array<V3, 3> p;
 		for (int k = 0; k < 3; k++)
 			p[k] = toWorld(&mesh.triangles[t][static_cast<size_t>(k) * 3]);
+		const size_t before = b.mesh.size();
 		AddMeshTriangle(b, p, mesh.classes[t] == 1, middle);
+		if (b.mesh.size() > before && !mesh.textures.empty() && place.modelTextures) {
+			b.mesh.back().texture = mesh.textures[t];
+			b.mesh.back().uv = mesh.uvs[t];
+		}
 	}
 	// Posts: square timbers from the ground to the roof above them, shaded a step darker than the thatch.
 	constexpr float PostHalfWidth = 0.07F;
@@ -1367,6 +1482,7 @@ void BuildLandmarkMesh(Building &b, const LandmarkPlacement &place, const Landma
 void AddLandmarks()
 {
 	LoadLandmarks();
+	QuantizeMeshTextures(); // the palette is the level's
 	for (size_t l = 0; l < Landmarks.size(); l++) {
 		const LandmarkPlacement &place = Landmarks[l];
 		const auto mesh = std::find_if(LandmarkMeshes.begin(), LandmarkMeshes.end(), [&](const LandmarkMesh &m) { return m.name == place.name; });
@@ -1394,11 +1510,14 @@ void AddLandmarks()
 		b.landmark = static_cast<int>(l);
 		std::vector<Point> artTiles;
 		std::vector<Point> groundTiles;
+		std::vector<Point> nearbyArt; // every upright art tile in the margin, for which ones the model replaces
 		for (int y = place.claimMin.y - 2; y <= place.claimMax.y + 2; y++) {
 			for (int x = place.claimMin.x - 2; x <= place.claimMax.x + 2; x++) {
 				if (!InDungeonBounds({ x, y }))
 					continue;
 				const bool inside = x >= place.claimMin.x && x <= place.claimMax.x && y >= place.claimMin.y && y <= place.claimMax.y;
+				if (GetPieceTextures(dPiece[x][y]).hasTallArt)
+					nearbyArt.push_back({ x, y });
 				if (GetPieceTextures(dPiece[x][y]).hasTallArt && (inside || IsTileSolid({ x, y })))
 					artTiles.push_back({ x, y });
 				else if (inside)
@@ -1413,7 +1532,7 @@ void AddLandmarks()
 		if (place.projective) {
 			MakeProjective(b, place.flipW);
 			BakeColors(b);
-			ClaimProjectiveTiles(b, artTiles);
+			ClaimProjectiveTiles(b, nearbyArt);
 		} else {
 			for (const Point t : artTiles)
 				BuildingTiles[static_cast<size_t>(t.y) * MAXDUNX + t.x] = 1;
@@ -1819,6 +1938,8 @@ inline std::pair<float, float> DropAxis(uint8_t axis, float x, float y, float z)
 /** @brief Bakes the colours of a projective landmark's triangles, at about the art's 32 pixels per tile. */
 void BakeColors(Building &b)
 {
+	const bool texturesWere = ModelTexturesOn;
+	ModelTexturesOn = false; // bake the art projection, for when model textures are switched off
 	b.baked.clear();
 	for (WorldTriangle &tri : b.mesh) {
 		const V3 &p0 = tri.p[0];
@@ -1854,10 +1975,23 @@ void BakeColors(Building &b)
 		}
 		tri.bakeN = n0;
 	}
+	ModelTexturesOn = texturesWere;
 }
 
 uint8_t MeshColor(const Building &b, const WorldTriangle &tri, float wx, float wy, float wz)
 {
+	if (ModelTexturesOn && tri.texture >= 0 && tri.bakeN > 0 && static_cast<size_t>(tri.texture) < MeshTextures.size()) {
+		const auto [da, db] = DropAxis(tri.bakeAxis, wx - tri.p[0].x, wy - tri.p[0].y, wz - tri.p[0].z);
+		const float w1 = tri.bakeInv[0] * da + tri.bakeInv[1] * db;
+		const float w2 = tri.bakeInv[2] * da + tri.bakeInv[3] * db;
+		const float w0 = 1.0F - w1 - w2;
+		const float u = w0 * tri.uv[0] + w1 * tri.uv[2] + w2 * tri.uv[4];
+		const float v = w0 * tri.uv[1] + w1 * tri.uv[3] + w2 * tri.uv[5];
+		const MeshTexture &tex = MeshTextures[tri.texture];
+		const int x = static_cast<int>(std::floor((u - std::floor(u)) * static_cast<float>(tex.width))) % tex.width;
+		const int y = static_cast<int>(std::floor((std::ceil(v) - v) * static_cast<float>(tex.height))) % tex.height;
+		return tex.indexed[static_cast<size_t>(y) * tex.width + x];
+	}
 	if (tri.bakeN > 0) {
 		const auto [da, db] = DropAxis(tri.bakeAxis, wx - tri.p[0].x, wy - tri.p[0].y, wz - tri.p[0].z);
 		const float u = tri.bakeInv[0] * da + tri.bakeInv[1] * db;
@@ -1921,8 +2055,12 @@ struct CameraVertex {
  * perspective-correct world positions, sharing the depth buffer with the rest of the scene.
  * @param shade palette colour (lit) of a surface point of a triangle, or -1 to leave the pixel alone
  */
+/** Debug counters: pixels inside triangles, pixels passing the depth test, triangles. */
+std::array<uint64_t, 3> RasterStats {};
+
 template <typename ShadeFn>
-void RasterizeTriangles(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer, const std::vector<WorldTriangle> &triangles, ShadeFn shade, float stretch = 1.0F)
+void RasterizeTriangles(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer, const std::vector<WorldTriangle> &triangles, ShadeFn shade, float stretch = 1.0F,
+    const std::vector<uint32_t> *order = nullptr)
 {
 	constexpr float Near = 0.05F;
 	const float halfWidth = static_cast<float>(proj.width) / 2.0F;
@@ -1938,7 +2076,10 @@ void RasterizeTriangles(const Surface &out, const Projection &proj, std::vector<
 	// Culling in drawn space: the eye stands lower relative to stretched geometry.
 	const V3 eye { proj.pos.x, proj.pos.y, EyeHeight / stretch };
 	static const bool NoCull = std::getenv("FP_NO_CULL") != nullptr; // debug
-	for (const WorldTriangle &tri : triangles) {
+	const size_t triangleCount = order != nullptr ? order->size() : triangles.size();
+	RasterStats[2] += triangleCount;
+	for (size_t n = 0; n < triangleCount; n++) {
+		const WorldTriangle &tri = triangles[order != nullptr ? (*order)[n] : n];
 		if (tri.cull && !NoCull && tri.normal.x * (tri.p[0].x - eye.x) + tri.normal.y * (tri.p[0].y - eye.y) + tri.normal.z * (tri.p[0].z - eye.z) > 0)
 			continue;
 		std::array<CameraVertex, 3> in { toCamera(tri.p[0]), toCamera(tri.p[1]), toCamera(tri.p[2]) };
@@ -2017,6 +2158,7 @@ void RasterizeTriangles(const Surface &out, const Projection &proj, std::vector<
 					const float w2 = 1.0F - w0 - w1;
 					if (w0 < 0.0F || w1 < 0.0F || w2 < 0.0F)
 						continue;
+					RasterStats[0]++;
 					const float inv = w0 * v0.invDepth + w1 * v1.invDepth + w2 * v2.invDepth;
 					const float distance = 1.0F / inv;
 					float &stored = depthBuffer[static_cast<size_t>(y) * proj.width + x];
@@ -2025,6 +2167,7 @@ void RasterizeTriangles(const Surface &out, const Projection &proj, std::vector<
 					const float wx = (w0 * v0.worldOverDepth.x + w1 * v1.worldOverDepth.x + w2 * v2.worldOverDepth.x) * distance;
 					const float wy = (w0 * v0.worldOverDepth.y + w1 * v1.worldOverDepth.y + w2 * v2.worldOverDepth.y) * distance;
 					const float wz = (w0 * v0.worldOverDepth.z + w1 * v1.worldOverDepth.z + w2 * v2.worldOverDepth.z) * distance;
+					RasterStats[1]++;
 					const int color = shade(tri, wx, wy, wz);
 					if (color < 0)
 						continue;
@@ -2048,30 +2191,31 @@ void DrawHouseMesh(const Surface &out, const Projection &proj, std::vector<float
 		for (int x = lightMin.x; x <= lightMax.x; x++)
 			light[static_cast<size_t>(y - lightMin.y) * lightWidth + x - lightMin.x] = LightAt({ x, y });
 	// Big models: front to back, so the depth test turns hidden pixels away before their colour is looked up.
-	const std::vector<WorldTriangle> *triangles = &b.mesh;
-	static std::vector<WorldTriangle> sorted;
+	static std::vector<uint32_t> sorted;
+	const std::vector<uint32_t> *order = nullptr;
 	if (b.mesh.size() > 2000) {
-		static std::vector<std::pair<float, uint32_t>> order;
-		order.clear();
+		static std::vector<std::pair<float, uint32_t>> byDistance;
+		byDistance.clear();
 		for (uint32_t i = 0; i < b.mesh.size(); i++) {
 			const WorldTriangle &tri = b.mesh[i];
 			const float dx = (tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F - proj.pos.x;
 			const float dy = (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F - proj.pos.y;
-			order.emplace_back(dx * dx + dy * dy, i);
+			byDistance.emplace_back(dx * dx + dy * dy, i);
 		}
-		std::sort(order.begin(), order.end());
+		std::sort(byDistance.begin(), byDistance.end());
 		sorted.clear();
-		for (const auto &[distance, i] : order)
-			sorted.push_back(b.mesh[i]);
-		triangles = &sorted;
+		for (const auto &[distance, i] : byDistance)
+			sorted.push_back(i);
+		order = &sorted;
 	}
-	RasterizeTriangles(out, proj, depthBuffer, *triangles, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
+	RasterizeTriangles(out, proj, depthBuffer, b.mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
 		const uint8_t color = MeshColor(b, tri, wx, wy, wz);
 		const int tx = std::clamp(static_cast<int>(std::floor(wx)), lightMin.x, lightMax.x);
 		const int ty = std::clamp(static_cast<int>(std::floor(wy)), lightMin.y, lightMax.y);
 		const uint8_t level = light[static_cast<size_t>(ty - lightMin.y) * lightWidth + tx - lightMin.x];
-		return static_cast<int>(LightTables[level][ShadeColor(color, tri.darkness)]);
-	});
+		const bool textured = ModelTexturesOn && tri.texture >= 0 && tri.bakeN > 0;
+		return static_cast<int>(LightTables[level][ShadeColor(color, textured ? tri.textureDarkness : tri.darkness)]);
+	}, 1.0F, order);
 }
 
 void DrawBuilding(const Surface &out, const Projection &proj, const std::vector<float> &zBuffer, std::vector<float> &depthBuffer, const Building &b)
@@ -3270,6 +3414,11 @@ void SetHouseTexturesEnabled(bool enabled)
 	TexturedHouses = enabled;
 }
 
+void SetModelTexturesEnabled(bool enabled)
+{
+	ModelTexturesOn = enabled;
+}
+
 void SetHouseMeshesEnabled(bool enabled)
 {
 	HouseMeshesOn = enabled;
@@ -3307,6 +3456,13 @@ void DrawBuildings(const Surface &out, const Projection &proj, const std::vector
 		else
 			DrawBuilding(out, proj, zBuffer, depthBuffer, building);
 	}
+}
+
+std::string TakeRasterStats(int frames)
+{
+	const std::string text = StrCat("per frame: ", RasterStats[0] / frames, " pixels in triangles, ", RasterStats[1] / frames, " pass depth, ", RasterStats[2] / frames, " triangles");
+	RasterStats = {};
+	return text;
 }
 
 bool IsStructureTile(Point tile)

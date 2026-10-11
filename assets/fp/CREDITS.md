@@ -23,9 +23,11 @@ built from it is under the same restriction.
 
 ## Textures
 
-None of the release's textures are used: in game the meshes are coloured from Diablo's own art. For completeness,
-the original author credits the textures in the release (some made seamless by the author, some made from
-reference photos) to their creators, who made them available free of charge:
+`landmarks.bin` also carries the release's diffuse textures for the town buildings, shrunk to 256 x 256 (converted
+to Diablo's palette and darkened in game): the plaza's stone wall, straw roof (outside and inside), timber, door
+and fountain stone, and the church's stone wall, slate roof, wooden ceiling, doors, pavement and stained glass.
+The original author credits the textures (some made seamless by the author, some made from reference photos) to
+their creators, who made them available free of charge:
 
 - Dmitriy Chugai, www.texturelib.com
 - http://www.lughertexture.com

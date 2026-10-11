@@ -30,6 +30,8 @@ void SetHouseModelsEnabled(bool enabled);
 void SetHouseTexturesEnabled(bool enabled);
 /** @brief Voxel-model houses are drawn as the reference triangle mesh with full-resolution art textures (default) or as voxels. */
 void SetHouseMeshesEnabled(bool enabled);
+/** @brief Town buildings wear the 3D models' own textures (default) or their projected iso art. */
+void SetModelTexturesEnabled(bool enabled);
 
 /** @brief Per-tile building marks in town (index y * MAXDUNX + x): 0 none, 1 art drawn by a building, 2 also under a model whose ground art must give way to plain ground. Null outside town. */
 [[nodiscard]] const uint8_t *BuildingTileMap();
@@ -66,6 +68,9 @@ std::string TileMap(int x0, int y0, int x1, int y1);
 [[nodiscard]] bool IsObjectDrawnAsMesh(int id);
 /** @brief Draws the dungeon's mesh structures, depth tested against everything drawn so far. */
 void DrawStructures(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer);
+
+/** @brief Debug: mesh rasterizer counters per frame since the last call, as text. */
+std::string TakeRasterStats(int frames);
 
 /** @brief Number of reconstructed buildings in the current level (debug). */
 [[nodiscard]] int BuildingCount();

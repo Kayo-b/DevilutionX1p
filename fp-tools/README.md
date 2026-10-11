@@ -117,6 +117,8 @@ Open the console with the backtick key, then run `dev = require('devilutionx.dev
 | `dev.fp.dumppiece(x,y,path)` / `dev.fp.dumpfaces(...)` | one tile's iso column, or its extracted wall faces (openings in red) |
 | `dev.fp.buildings / housemodels / housemeshes / housetextures / recesses (bool)` | switch individual features off to compare |
 | `dev.fp.walkto(x,y)`, `dev.fp.where()` | test click-walks; print the camera position |
+| `dev.fp.modeltextures(bool)` | town buildings with the 3D models' own textures (default) or their projected iso art |
+| `dev.level.warp.dungeon(0)` | go to town (any `n` for dungeon level `n`) |
 
 Debug environment variables:
 
@@ -254,7 +256,10 @@ add one, for example Adria's hut:
      closely, like the church). Otherwise it gets wall/thatch patches.
 7. Rebuild and look at it from 4–6 angles. Compare with `iso:`.
 
-Projective landmarks also bake their colours once at load (`BakeColors`). They hide the billboards of tiles under
+Landmarks wear the model's own textures by default (exported with texture coordinates in `landmarks.bin`, converted
+to the level palette and darkened by `TextureDim` in `QuantizeMeshTextures`, shaded by the sun in `MakeProjective`).
+`modelTextures = false` in a `Landmarks` entry keeps a building on its projected art (the fountain does).
+Projective landmarks also bake their art colours once at load (`BakeColors`), used when textures are off. They hide the billboards of tiles under
 them and of art tiles that are mostly the building (`ClaimProjectiveTiles`), and draw plain ground underneath.
 
 ### 5.6 Dungeon structures

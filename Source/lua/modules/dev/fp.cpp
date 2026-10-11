@@ -371,6 +371,12 @@ std::string DebugCmdFpWhere()
 	return StrCat("tile ", MyPlayer->position.tile.x, ",", MyPlayer->position.tile.y, " view ", static_cast<int>(view.x * 100), ",", static_cast<int>(view.y * 100));
 }
 
+std::string DebugCmdFpModelTextures(bool enabled)
+{
+	fp::SetModelTexturesEnabled(enabled);
+	return enabled ? "Model textures on." : "Model textures off (projected iso art).";
+}
+
 } // namespace
 
 sol::table LuaDevFirstPersonModule(sol::state_view &lua)
@@ -395,6 +401,7 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "recesses", "(enabled: boolean)", "Carve blind arches and niches into the walls (default) or draw them flat.", &DebugCmdFpRecesses);
 	LuaSetDocFn(table, "walkto", "(x: number, y: number)", "Walk to a tile the way a click does (path finding).", &DebugCmdFpWalkTo);
 	LuaSetDocFn(table, "where", "()", "Player tile and camera position (x100).", &DebugCmdFpWhere);
+	LuaSetDocFn(table, "modeltextures", "(enabled: boolean)", "Texture town buildings with the 3D models' own textures (default) or their projected iso art.", &DebugCmdFpModelTextures);
 	LuaSetDocFn(table, "on", "(enabled: boolean)", "Switch between first-person and the original view.", &DebugCmdFpOn);
 	LuaSetDocFn(table, "buildings", "(enabled: boolean)", "Draw town houses as reconstructed 3D models (default) or flat billboards.", &DebugCmdFpBuildings);
 	return table;

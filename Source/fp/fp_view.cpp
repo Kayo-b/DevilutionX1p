@@ -542,7 +542,7 @@ void DrawFirstPersonView(const Surface &out)
 		for (size_t i = 0; i < phase.size(); i++)
 			phaseTotals[i] += phase[i];
 		if (++timedFrames == 120) {
-			LogInfo("fp phases (ms): floor {:.2f}, walls {:.2f}, meshes {:.2f}, sprites {:.2f}", phaseTotals[0] / 120, phaseTotals[1] / 120, phaseTotals[2] / 120, phaseTotals[3] / 120);
+			LogInfo("fp phases (ms): floor {:.2f}, walls {:.2f}, meshes {:.2f}, sprites {:.2f}; {}", phaseTotals[0] / 120, phaseTotals[1] / 120, phaseTotals[2] / 120, phaseTotals[3] / 120, TakeRasterStats(120));
 			phaseTotals = {};
 			timedFrames = 0;
 		}
