@@ -10,6 +10,7 @@
 #include "fp/fp_controls.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 
@@ -58,7 +59,7 @@ constexpr float StickTurnSpeed = 3.0F;      // radians per second at full deflec
 constexpr float StickPitchSpeed = 1.5F;     // focal fractions per second at full deflection
 constexpr float KeyTurnSpeed = 2.5F;        // radians per second (arrow keys)
 constexpr float KeyPitchSpeed = 1.0F;       // focal fractions per second (arrow keys)
-constexpr float MaxPitch = 0.6F;
+constexpr float MaxPitch = 1.25F;        // tan of about 51 degrees up or down
 constexpr float StepSoundDistance = 0.9F; // tiles between footstep sounds
 constexpr float Pi = 3.14159265F;
 
@@ -287,6 +288,66 @@ void ApplyMovement(Player &player, float dt)
 	}
 }
 
+/**
+ * Walks the game starts itself (clicking an item or a monster) are taken over so they go at the first-person speed:
+ * each step's tile is taken at once, the camera glides to it at MoveSpeed, and the rest of the path and the action
+ * at its end are held back until it arrives.
+ */
+struct HeldWalk {
+	bool active = false;
+	std::array<int8_t, MaxPathLengthPlayer> path {};
+	action_id action = ACTION_NONE;
+	std::array<int, 4> params {};
+};
+HeldWalk Held;
+
+void TakeOverWalk(Player &player)
+{
+	const Point target = player.position.future;
+	const Direction dir = player._pdir;
+	std::copy(std::begin(player.walkpath), std::end(player.walkpath), Held.path.begin());
+	Held.action = player.destAction;
+	Held.params = { player.destParam1, player.destParam2, player.destParam3, player.destParam4 };
+	Held.active = true;
+	player.walkpath[0] = WALK_NONE;
+	player.destAction = ACTION_NONE;
+	StartStand(player, dir);
+	if (InDungeonBounds(target) && target != player.position.tile)
+		MovePlayerToTile(player, target);
+}
+
+/** @returns whether the camera is still on its way to the player's tile */
+bool GlideToHeldStep(Player &player, float dt)
+{
+	const Vec2 goal = TileCenter(player.position.tile);
+	const float dx = goal.x - View.x;
+	const float dy = goal.y - View.y;
+	const float distance = std::hypot(dx, dy);
+	const float step = MoveSpeed * dt;
+	if (distance > step) {
+		View.x += dx / distance * step;
+		View.y += dy / distance * step;
+		StepDistance += step;
+		if (StepDistance >= StepSoundDistance) {
+			StepDistance = 0;
+			if (*GetOptions().Audio.walkingSound)
+				PlaySfxLoc(SfxID::Walk, player.position.tile);
+		}
+		return true;
+	}
+	View.x = goal.x;
+	View.y = goal.y;
+	// Arrived: hand the rest of the path and the action back to the game.
+	std::copy(Held.path.begin(), Held.path.end(), std::begin(player.walkpath));
+	player.destAction = Held.action;
+	player.destParam1 = Held.params[0];
+	player.destParam2 = Held.params[1];
+	player.destParam3 = Held.params[2];
+	player.destParam4 = Held.params[3];
+	Held.active = false;
+	return false;
+}
+
 void ApplyFacing(Player &player)
 {
 	if (player._pmode != PM_STAND)
@@ -378,14 +439,22 @@ void ProcessFrame()
 	ApplyLook(dt);
 
 	Player &player = *MyPlayer;
-	if (player.isWalking()) {
-		// Movement started by the game itself (e.g. walking to an item): follow it.
-		const Vec2 center = TileCenter(player.position.tile);
-		const Vec2 walk = ScreenToWorld(GetOffsetForWalking(player.AnimInfo, player._pdir));
-		View.x = center.x + walk.x;
-		View.y = center.y + walk.y;
-		SyncedTile = player.position.tile;
-		return;
+	if (player.isWalking() && player._pmode != PM_DEATH) {
+		// Movement started by the game itself (walking to an item or a monster): at the first-person speed.
+		TakeOverWalk(player);
+	}
+	if (Held.active) {
+		const Vec2 input = ReadMoveInput();
+		if (input.x != 0 || input.y != 0) {
+			Held.active = false; // the player took over: drop the rest of the path
+		} else {
+			SyncedTile = player.position.tile;
+			if (GlideToHeldStep(player, dt)) {
+				ApplyFacing(player);
+				UpdateLightOffset(player);
+				return;
+			}
+		}
 	}
 	if (player.position.tile != SyncedTile) {
 		// Teleported, changed level, knocked back, ...

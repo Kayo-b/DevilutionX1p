@@ -59,9 +59,9 @@ Direction ViewRelativeDirection(Direction facing, Vec2 viewerPos, Vec2 actorPos)
 }
 
 /** Monsters are drawn a little larger than the iso scale so they read at distance (1.0 would be true to the walls). */
-constexpr float MonsterScale = 1.25F;
+constexpr float MonsterScale = 1.0F;
 /** Townspeople are ordinary humans, so they stay near the player's own height. */
-constexpr float TownerScale = 1.15F;
+constexpr float TownerScale = 0.92F;
 
 /** @brief Empty rows under the lowest visible pixel of a sprite (its feet), cached per frame of art. */
 int FootPadding(ClxSprite sprite)
