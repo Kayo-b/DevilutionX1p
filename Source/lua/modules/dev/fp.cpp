@@ -249,6 +249,15 @@ std::string DebugCmdFpOn(bool enabled)
 	return enabled ? "First person on." : "First person off.";
 }
 
+std::string DebugCmdFpOperate(int x, int y)
+{
+	Object *object = FindObjectAtPosition({ x, y });
+	if (object == nullptr)
+		return StrCat("No object at ", x, ",", y, ".");
+	OperateObject(*MyPlayer, *object);
+	return StrCat("Operated the object at ", x, ",", y, ".");
+}
+
 std::string DebugCmdFpWeapon(std::optional<int> file, std::optional<int> record, std::optional<int> frame)
 {
 	fp::PreviewFirstPersonWeapon(file.value_or(-1), record.value_or(0), frame.value_or(0));
@@ -425,6 +434,7 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "modeltextures", "(enabled: boolean)", "Texture town buildings with the 3D models' own textures (default) or their projected iso art.", &DebugCmdFpModelTextures);
 	LuaSetDocFn(table, "modkit", "(enabled: boolean)", "Dungeon kit walls, floors, ceilings, columns, and arcade pillars (default off); doors, entrance stairs, and sarcophagus are independent.", &DebugCmdFpModKit);
 	LuaSetDocFn(table, "sarcophagus", "(enabled: boolean)", "Use the dungeon kit's 3D sarcophagus model, independently of the rest of the mod kit.", &DebugCmdFpSarcophagus);
+	LuaSetDocFn(table, "operate", "(x: number, y: number)", "Operate the object at a tile, as a click on it does (open a sarcophagus, a door...).", &DebugCmdFpOperate);
 	LuaSetDocFn(table, "weapon", "(file: number = nil, record: number = 0, frame: number = 0)", "Show a Daggerfall weapon frame instead of the held one; no file to go back.", &DebugCmdFpWeapon);
 	LuaSetDocFn(table, "on","(enabled: boolean)", "Switch between first-person and the original view.", &DebugCmdFpOn);
 	LuaSetDocFn(table, "buildings", "(enabled: boolean)", "Draw town houses as reconstructed 3D models (default) or flat billboards.", &DebugCmdFpBuildings);

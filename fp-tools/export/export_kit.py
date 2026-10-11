@@ -19,11 +19,15 @@ FP_DUNGEON_PIECES_DIR = os.environ.get('FP_DUNGEON_PIECES_DIR', '/home/kxyx/proj
 ASSETS = os.path.join(HERE, '..', '..', 'assets', 'fp')
 TEXTURE_SIZE = 256
 
-# name, anchor group, margin (model units) for stacked parts (None: the group alone)
+# name, anchor group, margin (model units) for stacked parts (None: the group alone)[, the piece whose extent it is
+# placed in (default its own)[, groups left out]]: the sarcophagus's body (with its handles) and lid share the closed
+# sarcophagus's frame, so the game can lay them over the same box and move the lid
 PIECES = [
     ('stairs_01', 'stairs_01', None),
     ('column', 'Cylinder012', 0.08),
     ('sarcophagus', 'sarcofag', 0.15),
+    ('sarcophagus_body', 'sarcofag', 0.15, 'sarcophagus', {'capac'}),
+    ('sarcophagus_lid', 'capac', None, 'sarcophagus'),
     ('torch_stand', 'foot', 0.25),
     ('door', 'door_dun', 0.05),
     ('wall_door', 'd_wall_door', None),
@@ -160,13 +164,16 @@ def main():
         e = extent.get(g)
         extent[g] = (np.minimum(e[0], lo), np.maximum(e[1], hi)) if e else (lo, hi)
     models = []
-    for name, anchor, margin in PIECES:
+    for name, anchor, margin, *extra in PIECES:
+        frame = extra[0] if extra else None
+        leave_out = extra[1] if len(extra) > 1 else set()
         if margin is None:
             groups = {anchor}
         else:
             alo, ahi = extent[anchor]
             groups = {g for g, (lo, hi) in extent.items()
                       if lo[0] >= alo[0] - margin and hi[0] <= ahi[0] + margin and lo[1] >= alo[1] - margin and hi[1] <= ahi[1] + margin}
+            groups -= leave_out
         tris = []
         for a, b, c, m, g in faces:
             if g in groups:
@@ -174,18 +181,20 @@ def main():
                 tris.append((v[[a[0], b[0], c[0]]], uv, texture_index(m)))
         if name.startswith('wall_'):
             tris = front_to_max_x(tris)
-        models.append((name, tris, sorted(groups)))
-    models.append(('vault', build_vault(faces, v), []))
+        models.append((name, tris, sorted(groups), frame))
+    models.append(('vault', build_vault(faces, v), [], None))
     surfaces = [(np.zeros((3, 3)), np.zeros((3, 2)), texture_index(m)) for m in SURFACES]
     out = open(os.path.join(ASSETS, 'dungeonkit.bin'), 'wb')
     out.write(struct.pack('<4sI', b'FPL2', len(textures)))
     for t in textures:
         out.write(struct.pack('<HH', t.shape[1], t.shape[0]) + t.tobytes())
     out.write(struct.pack('<I', len(models) + 1))
-    for name, tris, groups in models + [('surfaces', surfaces, [])]:
+    by_name = {m[0]: m[1] for m in models}
+    for name, tris, groups, frame in models + [('surfaces', surfaces, [], None)]:
         p = np.array([t[0] for t in tris])
-        lo = p.reshape(-1, 3).min(axis=0)
-        hi = p.reshape(-1, 3).max(axis=0)
+        fp = np.array([t[0] for t in by_name[frame]]) if frame else p
+        lo = fp.reshape(-1, 3).min(axis=0)
+        hi = fp.reshape(-1, 3).max(axis=0)
         span = np.maximum(np.array([hi[0] - lo[0], hi[1] - lo[1], 1.0]), 1e-6)
         span[2] = 1.0
         q = (p - lo) / span

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <cstdint>
 #include <cstring>
@@ -2840,7 +2841,12 @@ int KitMeshColor(const WorldTriangle &tri, float wx, float wy, float wz)
 	return tex.indexed[static_cast<size_t>(y) * tex.width + x];
 }
 
-void AddKitModelOriented(Building &b, const LandmarkMesh &mesh, Vec2 c, Vec2 axisU, Vec2 axisW, float sizeU, float sizeW, float z0, float height, bool ownTextures)
+/**
+ * @brief Adds a kit model with its u and w axes along axisU and axisW, spanning sizeU by sizeW around c and height up
+ * from z0. If given, move takes each world point to where it is drawn (a lid lifted off its box).
+ */
+void AddKitModelOriented(Building &b, const LandmarkMesh &mesh, Vec2 c, Vec2 axisU, Vec2 axisW, float sizeU, float sizeW, float z0, float height, bool ownTextures,
+    const std::function<V3(V3)> &move = nullptr)
 {
 	float modelHeight = 0;
 	for (const auto &t : mesh.triangles)
@@ -2851,9 +2857,10 @@ void AddKitModelOriented(Building &b, const LandmarkMesh &mesh, Vec2 c, Vec2 axi
 	auto toWorld = [&](const float *q) {
 		const float u = (q[0] - 0.5F) * sizeU;
 		const float w = (q[1] - 0.5F) * sizeW;
-		return V3 { c.x + axisU.x * u + axisW.x * w, c.y + axisU.y * u + axisW.y * w, z0 + q[2] / modelHeight * height };
+		const V3 p { c.x + axisU.x * u + axisW.x * w, c.y + axisU.y * u + axisW.y * w, z0 + q[2] / modelHeight * height };
+		return move ? move(p) : p;
 	};
-	const V3 middle { c.x, c.y, z0 + height * 0.5F };
+	const V3 middle = move ? move(V3 { c.x, c.y, z0 + height * 0.5F }) : V3 { c.x, c.y, z0 + height * 0.5F };
 	for (size_t t = 0; t < mesh.triangles.size(); t++) {
 		const V3 p0 = toWorld(&mesh.triangles[t][0]);
 		const V3 p1 = toWorld(&mesh.triangles[t][3]);
@@ -3330,10 +3337,13 @@ bool IsBoxObject(const Object &object)
  */
 bool BuildObjectBox(ObjectBox &box, const Object &object, ClxSprite sprite)
 {
+	// The box is measured on the first frame (a sarcophagus closed), so it keeps its size while the lid moves; the
+	// current frame is the art laid on it.
+	const ClxSprite closed = (*object._oAnimData)[0];
 	std::vector<int16_t> pixels;
-	DecodeClx(sprite, pixels);
-	const int w = sprite.width();
-	const int h = sprite.height();
+	DecodeClx(closed, pixels);
+	const int w = closed.width();
+	const int h = closed.height();
 	for (int16_t &p : pixels)
 		if (p == 0)
 			p = -1; // shadow
@@ -3370,21 +3380,67 @@ bool BuildObjectBox(ObjectBox &box, const Object &object, ClxSprite sprite)
 	const float ly = std::max(0.15F, (sum - difference) / 2.0F);
 	const float height = std::max(0.2F, (static_cast<float>(bottom - top + 1) - sum * 16.0F) / SpritePixelsPerTileY);
 	const Point tile = object.position;
-	Building &b = box.st.art;
-	b = Building {};
-	b.originX = (tile.x - tile.y) * 32 - w / 2;
-	b.originY = (tile.x + tile.y + 2) * 16 - (h - 1);
-	b.canvasWidth = w;
-	b.canvasHeight = h;
-	b.canvas = std::move(pixels);
 	// The box's middle: on screen, x at the picture's middle, the ground under it (sum * 8) px above the front corner.
-	const float a = (static_cast<float>(b.originX) + middle) / 32.0F;                               // cx - cy
-	const float c = (static_cast<float>(b.originY + bottom) - sum * 8.0F) / 16.0F;                    // cx + cy
+	const int closedOriginX = (tile.x - tile.y) * 32 - w / 2;
+	const int closedOriginY = (tile.x + tile.y + 2) * 16 - (h - 1);
+	const float a = (static_cast<float>(closedOriginX) + middle) / 32.0F;                           // cx - cy
+	const float c = (static_cast<float>(closedOriginY + bottom) - sum * 8.0F) / 16.0F;              // cx + cy
 	const float cx = (a + c) / 2.0F;
 	const float cy = (c - a) / 2.0F;
-	if (const LandmarkMesh *mesh = SarcophagusKitOn ? KitMesh("sarcophagus") : nullptr; mesh != nullptr) {
+	Building &b = box.st.art;
+	b = Building {};
+	DecodeClx(sprite, b.canvas);
+	for (int16_t &p : b.canvas)
+		if (p == 0)
+			p = -1;
+	b.canvasWidth = sprite.width();
+	b.canvasHeight = sprite.height();
+	b.originX = (tile.x - tile.y) * 32 - b.canvasWidth / 2;
+	b.originY = (tile.x + tile.y + 2) * 16 - (b.canvasHeight - 1);
+	// How far the lid is off: the opening animation's progress.
+	const float opened = object._oAnimLen > 1 ? std::clamp(static_cast<float>(object._oAnimFrame - 1) / static_cast<float>(object._oAnimLen - 1), 0.0F, 1.0F) : 0.0F;
+	const LandmarkMesh *body = KitMesh("sarcophagus_body");
+	const LandmarkMesh *lid = KitMesh("sarcophagus_lid");
+	if (const LandmarkMesh *mesh = SarcophagusKitOn ? KitMesh("sarcophagus") : nullptr; mesh != nullptr && (opened <= 0.0F || body == nullptr || lid == nullptr)) {
 		// The kit's sarcophagus (long along its x) over the box the sprite shows.
 		AddKitModel(b, *mesh, { cx, cy }, lx, ly, 0.0F, height, lx < ly, false); // with the sprite's own stone
+	} else if (mesh != nullptr) {
+		// Opening: the body, and the lid slid off sideways, turned a little and tipped over the edge it rests on.
+		// Both pieces are placed in the closed sarcophagus's frame; the body stops below the lid.
+		auto top = [](const LandmarkMesh &m) {
+			float z = 0;
+			for (const auto &t : m.triangles)
+				z = std::max({ z, t[2], t[5], t[8] });
+			return z;
+		};
+		const float full = std::max(top(*lid), 1e-3F);
+		const bool swap = lx < ly;
+		const Vec2 axisU = swap ? Vec2 { 0, 1 } : Vec2 { 1, 0 };
+		const Vec2 axisW = swap ? Vec2 { 1, 0 } : Vec2 { 0, 1 };
+		const float sizeU = swap ? ly : lx;
+		const float sizeW = swap ? lx : ly;
+		AddKitModelOriented(b, *body, { cx, cy }, axisU, axisW, sizeU, sizeW, 0.0F, height * top(*body) / full, false);
+		const float yaw = 0.3F * opened;
+		const float tilt = 0.18F * std::clamp(opened * 2.0F - 1.0F, 0.0F, 1.0F);
+		const float slideU = 0.12F * sizeU * opened;
+		const float slideW = 0.48F * sizeW * opened;
+		auto moveLid = [=](V3 p) {
+			// To the box's own axes, around its middle.
+			float u = (p.x - cx) * axisU.x + (p.y - cy) * axisU.y;
+			float w = (p.x - cx) * axisW.x + (p.y - cy) * axisW.y;
+			float z = p.z;
+			const float ru = u * std::cos(yaw) - w * std::sin(yaw);
+			const float rw = u * std::sin(yaw) + w * std::cos(yaw);
+			u = ru + slideU;
+			w = rw + slideW;
+			// Tip about the box's top edge on the side it slid to: the overhang goes down.
+			const float dw = w - sizeW / 2.0F;
+			const float dz = z - height;
+			w = sizeW / 2.0F + dw * std::cos(tilt) + dz * std::sin(tilt);
+			z = height + dz * std::cos(tilt) - dw * std::sin(tilt);
+			return V3 { cx + axisU.x * u + axisW.x * w, cy + axisU.y * u + axisW.y * w, z };
+		};
+		AddKitModelOriented(b, *lid, { cx, cy }, axisU, axisW, sizeU, sizeW, 0.0F, height, false, moveLid);
 	} else {
 		AddStructureBox(b, cx - lx / 2.0F, cy - ly / 2.0F, 0.0F, cx + lx / 2.0F, cy + ly / 2.0F, height);
 	}
@@ -3395,6 +3451,7 @@ bool BuildObjectBox(ObjectBox &box, const Object &object, ClxSprite sprite)
 	b.y1 = cy + ly / 2.0F;
 	b.lowestZ = 0;
 	b.highestZ = height;
+	b.boundsOverhang = opened > 0.0F ? 0.7F * std::max(lx, ly) : 0.0F; // the lid slid off
 	box.tile = tile;
 	box.frame = sprite.pixelData();
 	return true;

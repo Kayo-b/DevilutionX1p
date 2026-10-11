@@ -8,7 +8,7 @@ fan-made rebuild of Diablo 1's assets:
 - **Contents of the original release:** stairs to hell, all the houses of the town, the fountain, Adria's shack,
   the church, and a set of dungeon pieces.
 - **Used here:** the Tristram plaza houses (the cottages, Griswold's smithy, Ogden's tavern), the church exterior,
-  and the dungeon kit's entrance stairs (`stairs_01`), and on branch `fp-modkit` its column, sarcophagus, candle stand
+  and the dungeon kit's entrance stairs (`stairs_01`), and on branch `fp-modkit` its column, sarcophagus (also split into body and lid, for the lid opening), candle stand
   and door, with the kit's stone block, pavement, marble and iron textures (`dungeonkit.bin`). They were converted by the scripts in `fp-tools/export/`:
   voxelized, re-meshed, rescaled and fitted to the original game's tile layout.
 
