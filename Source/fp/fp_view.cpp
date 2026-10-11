@@ -261,7 +261,7 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 	const float stretch = VerticalScale();
 	const bool kit = KitSurfacesActive();
 	const bool kitDoors = KitDoorsActive();
-	static const bool kitWalls = std::getenv("FP_NO_KITWALLS") == nullptr;
+	static const bool kitWalls = 0; //std::getenv("FP_KITWALLS") != nullptr;
 	const int wallRows = LevelWallRows();
 	const int faceHeight = FaceTextureHeight();
 	const std::vector<int16_t> &fallback = GetFallbackFace();

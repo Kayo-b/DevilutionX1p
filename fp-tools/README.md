@@ -194,7 +194,7 @@ Known test spots:
   arches `BlindArchDepth`.
 - **Doors:** in the mod-kit dungeon closed doors are the kit's door model (`BuildDoorModel`, drawn by `DrawDoorModels`; the wall pass leaves the panel open). Otherwise closed door tiles (`IsClosedDoorTile`) get a shallow recess and a brightened panel. Tune them with
   `DoorDepth` and `DoorBrightening` in `fp_view.cpp`; the colour boost (`* 1.7F`) is in `DoorColor`.
-- **Mod-kit walls (experiment, costly):** within `KitWallModelRange` the wall pass skips each face and `KitWallModel` registers the kit's `wall_concave` (or `wall_door` for faces with openings) in its place; `FP_NO_KITWALLS=1` turns it off. About +35 ms per frame in a room.
+- **Mod-kit walls (experiment, too heavy: off by default):** within `KitWallModelRange` the wall pass skips each face and `KitWallModel` registers the kit's `wall_concave` (or `wall_door` for faces with openings) in its place; Off by default: `FP_KITWALLS=1` turns it on. About +35 ms per frame in a room.
 - **Mod-kit ceiling:** `BuildCeilingVaults` lays the kit's groin vault (the `vault` model, a 6x6 resample of `ceiling_big_master` made by `export_kit.py`) over each open tile at the wall tops, flat-shaded (`MeshSolid`), drawn only within `VaultDrawRange`. Off by default (flat ceiling): `FP_VAULT=1` turns it on.
 - **Heights:** `VerticalScale()` (1.25 in the dungeon) stretches walls, ceiling, structures and tile-art sprites. Art
   heights stay in art units (`SpritePixelsPerTileY` = 39.2 px per unit), and the stretch is applied only when drawing.
