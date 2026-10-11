@@ -177,9 +177,10 @@ void UpdateLightOffset(const Player &player)
 	if (player.lightId == NO_LIGHT || leveltype == DTYPE_TOWN)
 		return;
 	const Vec2 center = TileCenter(player.position.tile);
-	const auto ox = static_cast<int8_t>(std::lround((View.x - center.x) * 8.0F));
-	const auto oy = static_cast<int8_t>(std::lround((View.y - center.y) * 8.0F));
-	ChangeLightOffset(player.lightId, { ox, oy });
+	// DoLighting indexes its tables with the offset and only accepts -8 .. 7 (eighths of a tile). The camera can be
+	// more than a tile from the player's tile (gliding to a walk step the game took at once), so clamp it.
+	auto eighths = [](float d) { return static_cast<int8_t>(std::clamp<long>(std::lround(d * 8.0F), -7, 7)); };
+	ChangeLightOffset(player.lightId, { eighths(View.x - center.x), eighths(View.y - center.y) });
 }
 
 void ApplyLook(float dt)
