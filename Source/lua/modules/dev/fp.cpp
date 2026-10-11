@@ -377,6 +377,12 @@ std::string DebugCmdFpModelTextures(bool enabled)
 	return enabled ? "Model textures on." : "Model textures off (projected iso art).";
 }
 
+std::string DebugCmdFpModKit(bool enabled)
+{
+	fp::SetModKitEnabled(enabled);
+	return enabled ? "Mod-kit dungeon on." : "Mod-kit dungeon off (the original art).";
+}
+
 } // namespace
 
 sol::table LuaDevFirstPersonModule(sol::state_view &lua)
@@ -402,6 +408,7 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "walkto", "(x: number, y: number)", "Walk to a tile the way a click does (path finding).", &DebugCmdFpWalkTo);
 	LuaSetDocFn(table, "where", "()", "Player tile and camera position (x100).", &DebugCmdFpWhere);
 	LuaSetDocFn(table, "modeltextures", "(enabled: boolean)", "Texture town buildings with the 3D models' own textures (default) or their projected iso art.", &DebugCmdFpModelTextures);
+	LuaSetDocFn(table, "modkit", "(enabled: boolean)", "Dungeon in the 3D mod's stone and models (default on this branch) or its original art.", &DebugCmdFpModKit);
 	LuaSetDocFn(table, "on", "(enabled: boolean)", "Switch between first-person and the original view.", &DebugCmdFpOn);
 	LuaSetDocFn(table, "buildings", "(enabled: boolean)", "Draw town houses as reconstructed 3D models (default) or flat billboards.", &DebugCmdFpBuildings);
 	return table;

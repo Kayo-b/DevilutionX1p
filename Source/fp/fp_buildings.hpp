@@ -52,6 +52,18 @@ bool DumpIsoRegion(int x0, int y0, int x1, int y1, const std::string &path, bool
 std::string TileMap(int x0, int y0, int x1, int y1);
 #endif
 
+/**
+ * @brief The mod-kit dungeon (dev.fp.modkit): walls, floors and ceilings in the dungeon kit's stone, shaded by the
+ * original art's light and dark so arches, niches and doors still read; columns, sarcophagi, torch stands as the
+ * kit's models. Whether it is on and ready for this level.
+ */
+[[nodiscard]] bool KitSurfacesActive();
+/** @param u along the wall face (tiles), v height (tiles); art the original texel, for its light and dark */
+[[nodiscard]] uint8_t KitWallColor(float u, float v, int16_t art);
+[[nodiscard]] uint8_t KitFloorColor(float wx, float wy, int16_t art);
+[[nodiscard]] uint8_t KitCeilingColor(float wx, float wy);
+void SetModKitEnabled(bool enabled);
+
 /** @brief Whether a dungeon tile is drawn as part of a mesh structure (a free-standing column, the stairs down) instead of a wall cube or billboard. */
 [[nodiscard]] bool IsStructureTile(Point tile);
 /**

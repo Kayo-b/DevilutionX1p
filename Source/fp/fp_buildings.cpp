@@ -668,7 +668,7 @@ constexpr float TextureDim = 0.42F;
  * @brief Converts the model textures to the current palette: nearest colour by eye weights, leaving out colour 0 and
  * the near-blacks 112 - 127 (the light tables turn them red, see PatchColor).
  */
-void QuantizeMeshTextures()
+void QuantizeMeshTextures(float dim = 0.42F, bool dusk = true, std::array<float, 3> tint = { 1.0F, 1.0F, 1.0F })
 {
 	std::vector<int16_t> lut(32768, -1);
 	for (MeshTexture &tex : MeshTextures) {
@@ -680,9 +680,10 @@ void QuantizeMeshTextures()
 			const float g0 = tex.rgb[i * 3 + 1];
 			const float b0 = tex.rgb[i * 3 + 2];
 			const float grey = (r0 + g0 + b0) / 3.0F;
-			const int r = std::clamp(static_cast<int>((r0 * 0.75F + grey * 0.25F) * TextureDim * 0.92F), 0, 255);
-			const int g = std::clamp(static_cast<int>((g0 * 0.75F + grey * 0.25F) * TextureDim * 0.95F), 0, 255);
-			const int bl = std::clamp(static_cast<int>((b0 * 0.75F + grey * 0.25F) * TextureDim * 1.08F), 0, 255);
+			const float sat = dusk ? 0.75F : 0.85F;
+			const int r = std::clamp(static_cast<int>((r0 * sat + grey * (1.0F - sat)) * dim * (dusk ? 0.92F : 1.0F) * tint[0]), 0, 255);
+			const int g = std::clamp(static_cast<int>((g0 * sat + grey * (1.0F - sat)) * dim * (dusk ? 0.95F : 1.0F) * tint[1]), 0, 255);
+			const int bl = std::clamp(static_cast<int>((b0 * sat + grey * (1.0F - sat)) * dim * (dusk ? 1.08F : 1.0F) * tint[2]), 0, 255);
 			const int key = (r >> 3) << 10 | (g >> 3) << 5 | (bl >> 3);
 			if (lut[key] < 0) {
 				const int qr = (r & ~7) + 4;
@@ -843,6 +844,118 @@ const LandmarkMesh *KitMesh(std::string_view name)
 		if (mesh.name == name)
 			return &mesh;
 	return nullptr;
+}
+
+bool ModKitOn = true;
+/** Brightness the dungeon kit's textures are brought to (the dungeon's light tables darken them further). */
+constexpr float KitDim = 0.45F;
+
+/** @brief The dungeon kit's wall, floor and ceiling textures for the current level (quantized), or nulls. */
+struct KitSurfaces {
+	const MeshTexture *wall = nullptr;
+	const MeshTexture *floor = nullptr;
+	const MeshTexture *ceiling = nullptr;
+	std::array<std::array<uint8_t, 16>, 256> modulate {}; // kit colour dimmed / brightened in 16 steps (within its ramp)
+	std::array<uint8_t, 256> artStep {};                   // the step an art colour asks for (its brightness against the level's walls)
+};
+KitSurfaces Kit;
+bool KitReady = false;
+
+float PaletteLuma(int index)
+{
+	const SDL_Color c = logical_palette[index];
+	return 0.30F * c.r + 0.59F * c.g + 0.11F * c.b;
+}
+
+/** Brightness factor of modulation step i (0 .. 15), 1 at step 8. */
+float KitStepFactor(int i)
+{
+	return 0.25F * std::pow(6.0F, static_cast<float>(i) / 15.0F) * (1.0F / (0.25F * std::pow(6.0F, 8.0F / 15.0F)));
+}
+
+void PrepareKitSurfaces()
+{
+	KitReady = false;
+	// The kit is the cathedral's (its stone blocks, marble and pavement): the other tilesets keep their art.
+	if (!ModKitOn || leveltype != DTYPE_CATHEDRAL)
+		return;
+	const LandmarkMesh *surfaces = KitMesh("surfaces");
+	if (surfaces == nullptr || surfaces->textures.size() < 3)
+		return;
+	// Tint the kit by the level's own wall colour (warm in the cathedral, cold in the catacombs, ...).
+	std::array<double, 3> artSum {};
+	int artCount = 0;
+	for (const int16_t t : GetFallbackFace()) {
+		if (t <= 0)
+			continue;
+		const SDL_Color c = logical_palette[t];
+		artSum[0] += c.r;
+		artSum[1] += c.g;
+		artSum[2] += c.b;
+		artCount++;
+	}
+	std::array<float, 3> tint { 1.0F, 1.0F, 1.0F };
+	if (artCount > 0) {
+		const double grey = (artSum[0] + artSum[1] + artSum[2]) / 3.0;
+		for (int i = 0; i < 3; i++)
+			tint[i] = static_cast<float>(std::clamp(artSum[i] / std::max(grey, 1.0), 0.6, 1.5));
+	}
+	QuantizeMeshTextures(KitDim, false, tint);
+	auto texture = [&](int i) -> const MeshTexture * {
+		const int16_t t = surfaces->textures[i];
+		return t >= 0 && static_cast<size_t>(t) < MeshTextures.size() ? &MeshTextures[t] : nullptr;
+	};
+	Kit.wall = texture(0);
+	Kit.floor = texture(1);
+	Kit.ceiling = texture(2);
+	for (int i = 0; i < 256; i++) {
+		const SDL_Color c = logical_palette[i];
+		for (int step = 0; step < 16; step++) {
+			const float f = KitStepFactor(step);
+			const float r = c.r * f;
+			const float g = c.g * f;
+			const float b = c.b * f;
+			float best = 1e30F;
+			uint8_t pick = static_cast<uint8_t>(i);
+			for (int j = 1; j < 256; j++) {
+				if (j >= 112 && j <= 127)
+					continue;
+				const SDL_Color o = logical_palette[j];
+				const float d = (o.r - r) * (o.r - r) * 3 + (o.g - g) * (o.g - g) * 6 + (o.b - b) * (o.b - b);
+				if (d < best) {
+					best = d;
+					pick = static_cast<uint8_t>(j);
+				}
+			}
+			Kit.modulate[i][step] = pick;
+		}
+	}
+	// The art's brightness against the level's typical wall: shadows, outlines and lit edges of arches, doors and
+	// niches carry over onto the kit's stone.
+	const std::vector<int16_t> &plain = GetFallbackFace();
+	double sum = 0;
+	int n = 0;
+	for (const int16_t t : plain) {
+		if (t > 0) {
+			sum += PaletteLuma(t);
+			n++;
+		}
+	}
+	const float mean = n > 0 ? static_cast<float>(sum / n) : 60.0F;
+	for (int i = 0; i < 256; i++) {
+		const float ratio = std::clamp(PaletteLuma(i) / std::max(mean, 1.0F), 0.25F, 1.5F);
+		int step = 0;
+		float best = 1e30F;
+		for (int s2 = 0; s2 < 16; s2++) {
+			const float d = std::abs(std::log(KitStepFactor(s2)) - std::log(ratio));
+			if (d < best) {
+				best = d;
+				step = s2;
+			}
+		}
+		Kit.artStep[i] = static_cast<uint8_t>(step);
+	}
+	KitReady = Kit.wall != nullptr && Kit.floor != nullptr && Kit.ceiling != nullptr;
 }
 
 int PaletteBrightness(int index)
@@ -1482,7 +1595,7 @@ void BuildLandmarkMesh(Building &b, const LandmarkPlacement &place, const Landma
 void AddLandmarks()
 {
 	LoadLandmarks();
-	QuantizeMeshTextures(); // the palette is the level's
+	QuantizeMeshTextures(TextureDim, true); // the palette is the level's
 	for (size_t l = 0; l < Landmarks.size(); l++) {
 		const LandmarkPlacement &place = Landmarks[l];
 		const auto mesh = std::find_if(LandmarkMeshes.begin(), LandmarkMeshes.end(), [&](const LandmarkMesh &m) { return m.name == place.name; });
@@ -2594,6 +2707,88 @@ void AddStructureCone(Building &b, Vec2 c, float r0, float r1, float z0, float z
 /** @brief Builds a column's mesh at its tile from the profile of its art. */
 bool BuildColumnSlices(Structure &st, Point tile, const std::vector<ColumnSlice> &slices, int axisTwice);
 
+/** @brief Sets up a triangle for looking up its texture coordinates at a point (barycentric weights from two axes). */
+void PrepareUvLookup(WorldTriangle &tri)
+{
+	const V3 &p0 = tri.p[0];
+	const V3 e1 { tri.p[1].x - p0.x, tri.p[1].y - p0.y, tri.p[1].z - p0.z };
+	const V3 e2 { tri.p[2].x - p0.x, tri.p[2].y - p0.y, tri.p[2].z - p0.z };
+	const V3 n { e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x };
+	const float ax = std::abs(n.x);
+	const float ay = std::abs(n.y);
+	const float az = std::abs(n.z);
+	tri.bakeAxis = ax >= ay && ax >= az ? 0 : (ay >= az ? 1 : 2);
+	const auto [a1, b1] = DropAxis(tri.bakeAxis, e1.x, e1.y, e1.z);
+	const auto [a2, b2] = DropAxis(tri.bakeAxis, e2.x, e2.y, e2.z);
+	const float det = a1 * b2 - a2 * b1;
+	if (std::abs(det) < 1e-12F) {
+		tri.texture = -1;
+		return;
+	}
+	tri.bakeInv = { b2 / det, -a2 / det, -b1 / det, a1 / det };
+}
+
+/** @brief Texture colour of a kit-textured triangle at a point; -1 if it has none. */
+int KitMeshColor(const WorldTriangle &tri, float wx, float wy, float wz)
+{
+	if (tri.texture < 0 || static_cast<size_t>(tri.texture) >= MeshTextures.size())
+		return -1;
+	const auto [da, db] = DropAxis(tri.bakeAxis, wx - tri.p[0].x, wy - tri.p[0].y, wz - tri.p[0].z);
+	const float w1 = tri.bakeInv[0] * da + tri.bakeInv[1] * db;
+	const float w2 = tri.bakeInv[2] * da + tri.bakeInv[3] * db;
+	const float w0 = 1.0F - w1 - w2;
+	const float u = w0 * tri.uv[0] + w1 * tri.uv[2] + w2 * tri.uv[4];
+	const float v = w0 * tri.uv[1] + w1 * tri.uv[3] + w2 * tri.uv[5];
+	const MeshTexture &tex = MeshTextures[tri.texture];
+	const int x = static_cast<int>((u - std::floor(u)) * static_cast<float>(tex.width)) & (tex.width - 1);
+	const int y = static_cast<int>((std::ceil(v) - v) * static_cast<float>(tex.height)) & (tex.height - 1);
+	return tex.indexed[static_cast<size_t>(y) * tex.width + x];
+}
+
+/**
+ * @brief Adds a kit model to a structure, its footprint spanning size x by size y around c (x and y swapped if asked)
+ * from z0 up height (art units), textured with its own textures.
+ */
+void AddKitModel(Building &b, const LandmarkMesh &mesh, Vec2 c, float sizeX, float sizeY, float z0, float height, bool swap)
+{
+	float modelHeight = 0;
+	for (const auto &t : mesh.triangles)
+		for (int k = 0; k < 3; k++)
+			modelHeight = std::max(modelHeight, t[static_cast<size_t>(k) * 3 + 2]);
+	if (modelHeight <= 0)
+		return;
+	auto toWorld = [&](const float *q) {
+		float u = q[0] - 0.5F;
+		float w = q[1] - 0.5F;
+		if (swap)
+			std::swap(u, w);
+		return V3 { c.x + u * sizeX, c.y + w * sizeY, z0 + q[2] / modelHeight * height };
+	};
+	const V3 middle { c.x, c.y, z0 + height * 0.5F };
+	for (size_t t = 0; t < mesh.triangles.size(); t++) {
+		const V3 p0 = toWorld(&mesh.triangles[t][0]);
+		const V3 p1 = toWorld(&mesh.triangles[t][3]);
+		const V3 p2 = toWorld(&mesh.triangles[t][6]);
+		const V3 e1 { p1.x - p0.x, p1.y - p0.y, p1.z - p0.z };
+		const V3 e2 { p2.x - p0.x, p2.y - p0.y, p2.z - p0.z };
+		V3 n { e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x };
+		const V3 centroid { (p0.x + p1.x + p2.x) / 3.0F, (p0.y + p1.y + p2.y) / 3.0F, (p0.z + p1.z + p2.z) / 3.0F };
+		if (n.x * (centroid.x - middle.x) + n.y * (centroid.y - middle.y) + n.z * (centroid.z - middle.z) < 0)
+			n = { -n.x, -n.y, -n.z };
+		const size_t before = b.mesh.size();
+		AddStructureFace(b, { p0, p1, p2 }, n, c, MeshProjective);
+		if (b.mesh.size() == before)
+			continue;
+		WorldTriangle &tri = b.mesh.back();
+		tri.cull = false; // kit models are not all closed: draw both sides
+		if (!mesh.textures.empty()) {
+			tri.texture = mesh.textures[t];
+			tri.uv = mesh.uvs[t];
+			PrepareUvLookup(tri);
+		}
+	}
+}
+
 bool BuildColumn(Structure &st, Point tile)
 {
 	const PieceTextures &textures = GetPieceTextures(dPiece[tile.x][tile.y]);
@@ -2627,6 +2822,22 @@ bool BuildColumnSlices(Structure &st, Point tile, const std::vector<ColumnSlice>
 	// An axis off the tile's middle by d px on screen is off by d / 32 in x - y.
 	const float offset = static_cast<float>(axisTwice - ColumnWidth) / 2.0F / 64.0F;
 	const Vec2 c { static_cast<float>(tile.x) + 0.5F + offset, static_cast<float>(tile.y) + 0.5F - offset };
+	if (KitReady) {
+		// The kit's marble column, or its candle stand for the thin torch stands, as tall as the art's.
+		// A torch stand is a thin pole for most of its height (its bowl can be as wide as a column).
+		float thin = 0;
+		for (const ColumnSlice &slice : slices)
+			if (std::max(slice.size0, slice.size1) < 0.07F)
+				thin += slice.z1 - slice.z0;
+		const float height = slices.back().z1;
+		const bool stand = thin > 0.4F * height;
+		const LandmarkMesh *mesh = KitMesh(stand ? "torch_stand" : "column");
+		if (mesh != nullptr) {
+			const float width = stand ? 0.5F * height / 1.43F : std::min(0.5F * height / 1.97F, 0.62F);
+			AddKitModel(st.art, *mesh, c, width, width, 0.0F, height, false);
+			return true;
+		}
+	}
 	auto reach = [](const ColumnSlice &slice, bool atTop) { return (atTop ? slice.size1 : slice.size0) * (slice.square ? 1.41F : 1.0F); };
 	for (size_t i = 0; i < slices.size(); i++) {
 		const ColumnSlice &slice = slices[i];
@@ -2659,6 +2870,13 @@ bool BuildArcadePillar(Structure &st, Point tile, float &spring)
 	}
 	const float offset = static_cast<float>(axisTwice - ColumnWidth) / 2.0F / 64.0F;
 	const Vec2 c { static_cast<float>(tile.x) + 0.5F + offset, static_cast<float>(tile.y) + 0.5F - offset };
+	if (const LandmarkMesh *mesh = KitReady ? KitMesh("column") : nullptr; mesh != nullptr) {
+		// The kit's column, its capital at the springing of the arches.
+		const float height = spring + 0.1F;
+		const float width = std::min(0.5F * height / 1.97F, 0.5F);
+		AddKitModel(st.art, *mesh, c, width, width, 0.0F, height, false);
+		return true;
+	}
 	for (size_t i = 0; i < slices.size(); i++) {
 		const ColumnSlice &slice = slices[i];
 		const bool top = i + 1 == slices.size();
@@ -2946,7 +3164,15 @@ bool BuildStairsUp(Structure &st, Point trigger)
 		// The fan takes the floor art it stands on; the flight (down to its last riser, on the foot line) its own.
 		const bool tread = std::abs(n.z) > 0.5F * std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
 		const bool onFan = c.y > foot + 0.02F || (tread && c.y >= foot - 0.05F);
+		const size_t before = st.art.mesh.size();
 		AddStructureFace(st.art, { p0, p1, p2 }, n, mid, onFan ? MeshFloorArt : MeshProjective);
+		if (KitReady && st.art.mesh.size() > before && !kit->textures.empty()) {
+			WorldTriangle &tri = st.art.mesh.back();
+			const size_t index = static_cast<size_t>(&t - kit->triangles.data());
+			tri.texture = kit->textures[index];
+			tri.uv = kit->uvs[index];
+			PrepareUvLookup(tri);
+		}
 	}
 	for (int dx = 0; dx < 2; dx++)
 		for (int dy = 1; dy <= 3; dy++)
@@ -3050,7 +3276,12 @@ bool BuildObjectBox(ObjectBox &box, const Object &object, ClxSprite sprite)
 	const float c = (static_cast<float>(b.originY + bottom) - sum * 8.0F) / 16.0F;                    // cx + cy
 	const float cx = (a + c) / 2.0F;
 	const float cy = (c - a) / 2.0F;
-	AddStructureBox(b, cx - lx / 2.0F, cy - ly / 2.0F, 0.0F, cx + lx / 2.0F, cy + ly / 2.0F, height);
+	if (const LandmarkMesh *mesh = KitReady ? KitMesh("sarcophagus") : nullptr; mesh != nullptr) {
+		// The kit's sarcophagus (long along its x) over the box the sprite shows.
+		AddKitModel(b, *mesh, { cx, cy }, lx, ly, 0.0F, height, lx < ly);
+	} else {
+		AddStructureBox(b, cx - lx / 2.0F, cy - ly / 2.0F, 0.0F, cx + lx / 2.0F, cy + ly / 2.0F, height);
+	}
 	SetStructureFallbacks(box.st);
 	b.x0 = cx - lx / 2.0F;
 	b.y0 = cy - ly / 2.0F;
@@ -3065,6 +3296,7 @@ bool BuildObjectBox(ObjectBox &box, const Object &object, ClxSprite sprite)
 
 void BuildStructures()
 {
+	PrepareKitSurfaces();
 	Structures.clear();
 	ObjectBoxes.clear();
 	FloorHoles.clear();
@@ -3229,6 +3461,14 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 	if (!ScreenBounds(st.art, proj, left, top, right, bottom))
 		return;
 	RasterizeTriangles(out, proj, depthBuffer, st.art.mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
+		if (KitReady && tri.texture >= 0) {
+			const int kitColor = KitMeshColor(tri, wx, wy, wz);
+			if (kitColor >= 0) {
+				const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
+				const uint8_t level = InDungeonBounds(lit) ? LightAt(lit) : LightsMax;
+				return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(static_cast<uint8_t>(kitColor), tri.darkness)]);
+			}
+		}
 		if (tri.mapping == MeshArcade) {
 			const float along = (wx - tri.mirrorX) * tri.downX + (wy - tri.mirrorY) * tri.downY;
 			const float span = tri.slopeScale;
@@ -3463,6 +3703,46 @@ std::string TakeRasterStats(int frames)
 	const std::string text = StrCat("per frame: ", RasterStats[0] / frames, " pixels in triangles, ", RasterStats[1] / frames, " pass depth, ", RasterStats[2] / frames, " triangles");
 	RasterStats = {};
 	return text;
+}
+
+bool KitSurfacesActive()
+{
+	if (leveltype == DTYPE_TOWN || !ModKitOn)
+		return false;
+	EnsureStructures();
+	return KitReady;
+}
+
+namespace {
+inline uint8_t KitTexel(const MeshTexture &tex, float u, float v)
+{
+	const int x = static_cast<int>((u - std::floor(u)) * static_cast<float>(tex.width)) & (tex.width - 1);
+	const int y = static_cast<int>((v - std::floor(v)) * static_cast<float>(tex.height)) & (tex.height - 1);
+	return tex.indexed[static_cast<size_t>(y) * tex.width + x];
+}
+} // namespace
+
+uint8_t KitWallColor(float u, float v, int16_t art)
+{
+	const uint8_t stone = KitTexel(*Kit.wall, u, 1.0F - v);
+	return art > 0 ? Kit.modulate[stone][Kit.artStep[static_cast<uint8_t>(art)]] : stone;
+}
+
+uint8_t KitFloorColor(float wx, float wy, int16_t art)
+{
+	const uint8_t stone = KitTexel(*Kit.floor, wx * 0.5F, wy * 0.5F);
+	return art > 0 ? Kit.modulate[stone][Kit.artStep[static_cast<uint8_t>(art)]] : stone;
+}
+
+uint8_t KitCeilingColor(float wx, float wy)
+{
+	return Kit.modulate[KitTexel(*Kit.ceiling, wx * 0.5F, wy * 0.5F)][5];
+}
+
+void SetModKitEnabled(bool enabled)
+{
+	ModKitOn = enabled;
+	StructuresFor = LevelKey { nullptr, -1, -1, false }; // rebuild
 }
 
 bool IsStructureTile(Point tile)

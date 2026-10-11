@@ -68,6 +68,7 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 
 	const uint8_t *structures = StructureTileMap();
 	const uint8_t *buildings = BuildingTileMap();
+	const bool kit = KitSurfacesActive();
 	const bool holes = HasFloorHoles();
 	const std::vector<int16_t> &ground = GetGroundFloor();
 	for (int y = 0; y < proj.height; y++) {
@@ -94,6 +95,7 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 		const std::vector<int16_t> *floorArt = nullptr;
 		const std::vector<int16_t> *floorFill = nullptr;
 		uint8_t tileLight = 0;
+		bool kitTile = false;
 
 		for (int x = 0; x < proj.width; x++, wx += stepX, wy += stepY) {
 			const float fx = std::floor(wx);
@@ -115,6 +117,7 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 				// The ceiling is the plain ground: mirroring each tile's floor would hang lava, water and blood overhead.
 				floorArt = (structure != 0 && structure != 3) || !isFloor || (buildings != nullptr && buildings[static_cast<size_t>(tile.y) * MAXDUNX + tile.x] != 0) ? &ground : &piece.floor;
 				floorFill = isTown ? &ground : nullptr; // baked shadows and holes in town ground
+				kitTile = kit && !piece.isFlatSolid; // lava and water keep their art
 				tileLight = LightAt(tile);
 				if (!isFloor)
 					tileLight = std::min<uint8_t>(tileLight + CeilingExtraDarkness, LightsMax);
@@ -125,7 +128,10 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 			if (floorFill != nullptr && texel <= 0)
 				texel = (*floorFill)[v * FloorTextureSize + u];
 			const uint8_t light = tileLight;
-			dst[x] = texel == NoPixel ? 0 : Shade(static_cast<uint8_t>(texel), light);
+			if (kitTile)
+				dst[x] = Shade(isFloor ? KitFloorColor(wx, wy, texel) : KitCeilingColor(wx, wy), light);
+			else
+				dst[x] = texel == NoPixel ? 0 : Shade(static_cast<uint8_t>(texel), light);
 			if (isFloor)
 				depthBuffer[static_cast<size_t>(y) * proj.width + x] = rowDistance * FloorDepthBias;
 		}
@@ -236,6 +242,7 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 {
 	const float wallHeight = WallHeight();
 	const float stretch = VerticalScale();
+	const bool kit = KitSurfacesActive();
 	const int wallRows = LevelWallRows();
 	const int faceHeight = FaceTextureHeight();
 	const std::vector<int16_t> &fallback = GetFallbackFace();
@@ -278,9 +285,11 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 			const float recessDepth = door ? DoorDepth : art.recessDepth;
 			const float recessDistance = art.recess != nullptr && rayAcross > 1e-4F ? hit.distance + recessDepth / rayAcross : 0.0F;
 			int recessU = -1;
+			float recessAlong = 0;
 			if (recessDistance > 0) {
 				const Vec2 p { proj.pos.x + ray.x * recessDistance, proj.pos.y + ray.y * recessDistance };
 				float along2 = hit.xSide ? p.y - static_cast<float>(hit.tile.y) : p.x - static_cast<float>(hit.tile.x);
+				recessAlong = along2;
 				if (along2 >= 0.0F && along2 < 1.0F)
 					recessU = std::clamp(static_cast<int>(along2 * FaceTextureWidth), 0, FaceTextureWidth - 1);
 			}
@@ -302,11 +311,13 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 					uint8_t color;
 					float depth = hit.distance;
 					const int16_t back = recessU >= 0 ? (*art.face)[static_cast<size_t>(row2) * FaceTextureWidth + recessU] : NoPixel;
+					const float rowHeight = static_cast<float>(faceHeight - 1 - row) / SpritePixelsPerTileY;
 					if (recessU >= 0 && row2 >= (*art.recess)[recessU] && back != NoPixel) {
-						color = recessLight[door ? DoorColor(static_cast<uint8_t>(back)) : back];
+						const uint8_t base = door ? DoorColor(static_cast<uint8_t>(back)) : (kit ? KitWallColor(recessAlong, height, back) : static_cast<uint8_t>(back));
+						color = recessLight[base];
 						depth = recessDistance;
 					} else {
-						color = revealLight[(*art.face)[at]];
+						color = revealLight[kit && !door ? KitWallColor(along, rowHeight, (*art.face)[at]) : (*art.face)[at]];
 					}
 					*out.at(x, y) = color;
 					filled[y] = 1;
@@ -321,6 +332,8 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 					}
 					texel = fallback[at];
 				}
+				if (kit)
+					texel = KitWallColor(along, static_cast<float>(faceHeight - 1 - row) / SpritePixelsPerTileY, texel);
 				*out.at(x, y) = light[texel];
 				filled[y] = 1;
 				depthBuffer[static_cast<size_t>(y) * proj.width + x] = hit.distance;

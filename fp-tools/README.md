@@ -117,6 +117,7 @@ Open the console with the backtick key, then run `dev = require('devilutionx.dev
 | `dev.fp.dumppiece(x,y,path)` / `dev.fp.dumpfaces(...)` | one tile's iso column, or its extracted wall faces (openings in red) |
 | `dev.fp.buildings / housemodels / housemeshes / housetextures / recesses (bool)` | switch individual features off to compare |
 | `dev.fp.walkto(x,y)`, `dev.fp.where()` | test click-walks; print the camera position |
+| `dev.fp.modkit(bool)` | (branch `fp-modkit`) cathedral in the 3D mod's stone and models, or its original art |
 | `dev.fp.modeltextures(bool)` | town buildings with the 3D models' own textures (default) or their projected iso art |
 | `dev.level.warp.dungeon(0)` | go to town (any `n` for dungeon level `n`) |
 
