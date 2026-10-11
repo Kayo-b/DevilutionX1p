@@ -2147,6 +2147,8 @@ void AddStructureCone(Building &b, Vec2 c, float r0, float r1, float z0, float z
 }
 
 /** @brief Builds a column's mesh at its tile from the profile of its art. */
+bool BuildColumnSlices(Structure &st, Point tile, const std::vector<ColumnSlice> &slices, int axisTwice);
+
 bool BuildColumn(Structure &st, Point tile)
 {
 	const PieceTextures &textures = GetPieceTextures(dPiece[tile.x][tile.y]);
@@ -2156,6 +2158,24 @@ bool BuildColumn(Structure &st, Point tile)
 	if (std::getenv("FP_DUMP_PROFILES") != nullptr)
 		LogInfo("fp: column piece {} at {},{}: {} slices, axis {}", dPiece[tile.x][tile.y], tile.x, tile.y, slices.size(), axisTwice);
 #endif
+	if (slices.empty())
+		return false;
+	// Nothing reaches above the ceiling: the art's upper rows there are the vault the column carries.
+	std::vector<ColumnSlice> clamped;
+	for (ColumnSlice slice : slices) {
+		if (slice.z0 >= WallHeight())
+			break;
+		if (slice.z1 > WallHeight()) {
+			slice.size1 = slice.size0 + (slice.size1 - slice.size0) * (WallHeight() - slice.z0) / (slice.z1 - slice.z0);
+			slice.z1 = WallHeight();
+		}
+		clamped.push_back(slice);
+	}
+	return BuildColumnSlices(st, tile, clamped, axisTwice);
+}
+
+bool BuildColumnSlices(Structure &st, Point tile, const std::vector<ColumnSlice> &slices, int axisTwice)
+{
 	if (slices.empty())
 		return false;
 	BuildCanvas(st.art, { tile }, {});
@@ -2205,6 +2225,74 @@ bool BuildArcadePillar(Structure &st, Point tile, float &spring)
 	return true;
 }
 
+/** @brief The level's plain wall pair and where its painted arch is centred, for arch walls (cached per level). */
+struct ArcadeArt {
+	bool ok = false;
+	bool hasRecess = false;
+	uint16_t pairA = 0;
+	uint16_t pairB = 0;
+	bool useX = false;
+	float centre = 1.0F; // tiles from the start of the first face
+};
+
+const ArcadeArt &GetArcadeArt()
+{
+	static int builtFor = -1;
+	static ArcadeArt art;
+	if (builtFor == StructuresBuildCount)
+		return art;
+	builtFor = StructuresBuildCount;
+	art = {};
+	art.ok = GetPlainWallPair(art.pairA, art.pairB, art.useX);
+	if (art.ok) {
+		const PieceTextures &ta = GetPieceTextures(art.pairA);
+		const PieceTextures &tb = GetPieceTextures(art.pairB);
+		const std::vector<int> &ra = art.useX ? ta.recessX : ta.recessY;
+		const std::vector<int> &rb = art.useX ? tb.recessX : tb.recessY;
+		const int faceHeight = FaceTextureHeight();
+		int sum = 0;
+		int n = 0;
+		for (int u = 0; u < 2 * FaceTextureWidth; u++) {
+			const std::vector<int> &r = u < FaceTextureWidth ? ra : rb;
+			if (!r.empty() && r[u % FaceTextureWidth] < faceHeight) {
+				sum += u;
+				n++;
+			}
+		}
+		art.centre = n > 0 ? (static_cast<float>(sum) / static_cast<float>(n) + 0.5F) / FaceTextureWidth : 1.0F;
+		art.hasRecess = n > 0;
+	}
+	return art;
+}
+
+/** @brief Where an arch wall's texture is at a point along its span: which face of the pair, and its column. */
+void ArcadeTexel(const ArcadeArt &art, float along, float span, bool &second, int &u)
+{
+	const float t = along - span / 2.0F + art.centre;
+	const float wrapped = t - 2.0F * std::floor(t / 2.0F);
+	second = wrapped >= 1.0F;
+	u = std::clamp(static_cast<int>((wrapped - (second ? 1.0F : 0.0F)) * FaceTextureWidth), 0, FaceTextureWidth - 1);
+}
+
+/** @brief Height of the top of an arch wall's opening at a point along its span; 0 where it is closed. */
+float ArcadeOpeningTop(const ArcadeArt &art, float along, float span)
+{
+	if (art.ok && art.hasRecess) {
+		bool second;
+		int u;
+		ArcadeTexel(art, along, span, second, u);
+		const PieceTextures &tex = GetPieceTextures(second ? art.pairB : art.pairA);
+		const std::vector<int> &recess = art.useX ? tex.recessX : tex.recessY;
+		const int faceHeight = FaceTextureHeight();
+		if (recess.empty() || recess[u] >= faceHeight)
+			return 0.0F;
+		return static_cast<float>(faceHeight - 1 - recess[u]) / SpritePixelsPerTileY;
+	}
+	const float radius = span / 2.0F - 0.2F;
+	const float offset = along - span / 2.0F;
+	return std::abs(offset) < radius ? 1.0F + std::sqrt(radius * radius - offset * offset) * 0.8F : 0.0F;
+}
+
 /** @brief A pillar of an arcade, for joining it to its neighbours with arch walls. */
 struct ArcadePillar {
 	Point tile;
@@ -2245,6 +2333,27 @@ void AddArcadeWall(Building &b, Vec2 from, Vec2 to, float spring)
 	for (const float s : { 1.0F, -1.0F }) {
 		const float a = s * HalfThickness;
 		addFace({ corner(0, a, z0), corner(length, a, z0), corner(length, a, z1), corner(0, a, z1) }, { side.x * s, side.y * s, 0 }, MeshArcade);
+	}
+	// The underside of the arch (its intrados) between the two faces, following the opening, so the wall has its
+	// thickness seen from below and from the side.
+	const ArcadeArt &art = GetArcadeArt();
+	const int samples = std::max(4, static_cast<int>(length * 16.0F));
+	auto top = [&](int i) { return std::max(z0, ArcadeOpeningTop(art, length * static_cast<float>(i) / static_cast<float>(samples), length)); };
+	float prev = top(0);
+	for (int i = 0; i < samples; i++) {
+		const float next = top(i + 1);
+		if (std::max(prev, next) > z0 + 0.01F) {
+			const float s0 = length * static_cast<float>(i) / static_cast<float>(samples);
+			const float s1 = length * static_cast<float>(i + 1) / static_cast<float>(samples);
+			const float ds = s1 - s0;
+			const float dz = next - prev;
+			const size_t first = b.mesh.size();
+			addFace({ corner(s0, -HalfThickness, prev), corner(s1, -HalfThickness, next), corner(s1, HalfThickness, next), corner(s0, HalfThickness, prev) },
+			    { dir.x * dz, dir.y * dz, -ds }, MeshArcade);
+			for (size_t t = first; t < b.mesh.size(); t++)
+				b.mesh[t].faceX = true; // underside: not cut
+		}
+		prev = next;
 	}
 	addFace({ corner(0, -HalfThickness, z1), corner(length, -HalfThickness, z1), corner(length, HalfThickness, z1), corner(0, HalfThickness, z1) }, { 0, 0, 1 }, MeshProjective);
 }
@@ -2667,37 +2776,7 @@ uint8_t StructureColor(const Structure &st, const WorldTriangle &tri, float wx, 
 
 void DrawStructure(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer, const Structure &st)
 {
-	// The level's plain wall pair and where its painted arch is centred, for arch walls.
-	static int arcadeFor = -1;
-	static bool arcadeOk = false;
-	static bool hasRecess = false;
-	static uint16_t pairA = 0;
-	static uint16_t pairB = 0;
-	static bool pairUseX = false;
-	static float archCentre = 1.0F;
-	if (arcadeFor != StructuresBuildCount) {
-		arcadeFor = StructuresBuildCount;
-		arcadeOk = GetPlainWallPair(pairA, pairB, pairUseX);
-		hasRecess = false;
-		if (arcadeOk) {
-			const PieceTextures &ta = GetPieceTextures(pairA);
-			const PieceTextures &tb = GetPieceTextures(pairB);
-			const std::vector<int> &ra = pairUseX ? ta.recessX : ta.recessY;
-			const std::vector<int> &rb = pairUseX ? tb.recessX : tb.recessY;
-			const int faceHeight = FaceTextureHeight();
-			int sum = 0;
-			int n = 0;
-			for (int u = 0; u < 2 * FaceTextureWidth; u++) {
-				const std::vector<int> &r = u < FaceTextureWidth ? ra : rb;
-				if (!r.empty() && r[u % FaceTextureWidth] < faceHeight) {
-					sum += u;
-					n++;
-				}
-			}
-			archCentre = n > 0 ? (static_cast<float>(sum) / static_cast<float>(n) + 0.5F) / FaceTextureWidth : 1.0F;
-			hasRecess = n > 0;
-		}
-	}
+	const ArcadeArt &arcade = GetArcadeArt();
 	int left;
 	int top;
 	int right;
@@ -2708,27 +2787,17 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 		if (tri.mapping == MeshArcade) {
 			const float along = (wx - tri.mirrorX) * tri.downX + (wy - tri.mirrorY) * tri.downY;
 			const float span = tri.slopeScale;
-			const float t = along - span / 2.0F + archCentre;
-			const float wrapped = t - 2.0F * std::floor(t / 2.0F);
-			const bool second = wrapped >= 1.0F;
-			const int u = std::clamp(static_cast<int>((wrapped - (second ? 1.0F : 0.0F)) * FaceTextureWidth), 0, FaceTextureWidth - 1);
+			bool second;
+			int u;
+			ArcadeTexel(arcade, along, span, second, u);
 			const int faceHeight = FaceTextureHeight();
 			const int row = std::clamp(faceHeight - 1 - static_cast<int>(wz * SpritePixelsPerTileY), 0, faceHeight - 1);
+			if (!tri.faceX && wz < ArcadeOpeningTop(arcade, along, span))
+				return -1; // inside the arch
 			int16_t texel = 0;
-			if (arcadeOk) {
-				const PieceTextures &tex = GetPieceTextures(second ? pairB : pairA);
-				const std::vector<int16_t> &face = pairUseX ? tex.faceX : tex.faceY;
-				const std::vector<int> &recess = pairUseX ? tex.recessX : tex.recessY;
-				if (hasRecess && !recess.empty() && row >= recess[u])
-					return -1; // inside the arch
-				texel = face[static_cast<size_t>(row) * FaceTextureWidth + u];
-			}
-			if (!hasRecess) {
-				// No painted arch to follow: a round one between the pillars.
-				const float radius = span / 2.0F - 0.2F;
-				const float offset = along - span / 2.0F;
-				if (std::abs(offset) < radius && wz < 1.0F + std::sqrt(radius * radius - offset * offset) * 0.8F)
-					return -1;
+			if (arcade.ok) {
+				const PieceTextures &tex = GetPieceTextures(second ? arcade.pairB : arcade.pairA);
+				texel = (arcade.useX ? tex.faceX : tex.faceY)[static_cast<size_t>(row) * FaceTextureWidth + u];
 			}
 			if (texel <= 0)
 				texel = GetFallbackFace()[static_cast<size_t>(row) * FaceTextureWidth + u];
