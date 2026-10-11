@@ -25,6 +25,11 @@ constexpr float EyeHeight = 1.3F;
 
 /** @brief Wall (and ceiling) height of the current level, from the height of its wall art. */
 [[nodiscard]] float WallHeight();
+/**
+ * @brief How much taller than their art the dungeon is drawn: walls, ceiling and 3D structures are stretched up by
+ * this (the art's walls are low for a first-person eye). 1 in town. Art heights stay in art units; scale at drawing.
+ */
+[[nodiscard]] float VerticalScale();
 constexpr float MaxRayDistance = 48.0F;
 
 /** @brief Camera plus the screen mapping of the game viewport. */

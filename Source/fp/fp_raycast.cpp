@@ -19,6 +19,11 @@
 
 namespace devilution::fp {
 
+float VerticalScale()
+{
+	return leveltype == DTYPE_TOWN ? 1.0F : 1.25F;
+}
+
 float WallHeight()
 {
 	return static_cast<float>(LevelWallRows()) / SpritePixelsPerTileY;
@@ -112,7 +117,7 @@ bool IsHoleAt(const RayHit &hit, float height)
 	float along = hit.xSide ? hit.point.y - static_cast<float>(hit.tile.y) : hit.point.x - static_cast<float>(hit.tile.x);
 	const int u = std::clamp(static_cast<int>(along * FaceTextureWidth), 0, FaceTextureWidth - 1);
 	const int faceHeight = FaceTextureHeight();
-	const int row = faceHeight - 1 - static_cast<int>(height * SpritePixelsPerTileY);
+	const int row = faceHeight - 1 - static_cast<int>(height / VerticalScale() * SpritePixelsPerTileY);
 	if (row < 0 || row >= faceHeight)
 		return false;
 	return holes[static_cast<size_t>(row) * FaceTextureWidth + u] != 0;

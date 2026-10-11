@@ -24,6 +24,7 @@
 #include "engine/render/text_render.hpp"
 #include "fp/fp_controls.hpp"
 #include "fp/fp_buildings.hpp"
+#include "objects.h"
 #include "utils/log.hpp"
 #include "fp/fp_raycast.hpp"
 #include "fp/fp_textures.hpp"
@@ -81,7 +82,7 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 			std::fill_n(dst, proj.width, 0);
 			continue;
 		}
-		const float heightAboveOrBelow = isFloor ? EyeHeight : wallHeight - EyeHeight;
+		const float heightAboveOrBelow = isFloor ? EyeHeight : wallHeight * VerticalScale() - EyeHeight;
 		const float rowDistance = heightAboveOrBelow * proj.focal / static_cast<float>(rowsFromHorizon);
 
 		const float stepX = rowDistance * (rayRight.x - rayLeft.x) / static_cast<float>(proj.width);
@@ -182,6 +183,51 @@ FaceArt FaceForHit(const RayHit &hit)
 	return art;
 }
 
+/** How far a closed door is set back into its frame, and how many light levels brighter it is drawn. */
+constexpr float DoorDepth = 0.08F;
+constexpr int DoorBrightening = 3;
+
+/** @brief A colour brightened within its own 16-colour ramp (the palette's ramps run light to dark), for doors. */
+uint8_t DoorColor(uint8_t color)
+{
+	static std::array<uint8_t, 256> table {};
+	static bool ready = false;
+	if (!ready) {
+		ready = true;
+		for (int i = 0; i < 256; i++) {
+			const SDL_Color c = logical_palette[i];
+			const float r = std::min(255.0F, c.r * 1.7F + 12.0F);
+			const float g = std::min(255.0F, c.g * 1.7F + 12.0F);
+			const float b = std::min(255.0F, c.b * 1.7F + 12.0F);
+			float best = 1e30F;
+			table[i] = static_cast<uint8_t>(i);
+			const int ramp = i & ~15;
+			for (int j = ramp; j < ramp + 16; j++) {
+				if (j == 0)
+					continue;
+				const SDL_Color o = logical_palette[j];
+				const float d = (o.r - r) * (o.r - r) * 3 + (o.g - g) * (o.g - g) * 6 + (o.b - b) * (o.b - b);
+				if (d < best) {
+					best = d;
+					table[i] = static_cast<uint8_t>(j);
+				}
+			}
+		}
+	}
+	return table[color];
+}
+
+bool IsClosedDoorTile(Point tile)
+{
+	if (!InDungeonBounds(tile))
+		return false;
+	const int id = std::abs(dObject[tile.x][tile.y]) - 1;
+	if (id < 0)
+		return false;
+	const Object &object = Objects[id];
+	return object.isDoor() && object._oVar4 == 0; // DOOR_CLOSED (objects.cpp)
+}
+
 /**
  * @brief Draws the walls. Openings in a wall (arches) are looked through to the walls behind them.
  * @param depthBuffer per-pixel camera depth (width * height); wall pixels write their depth, the rest stays infinite
@@ -189,6 +235,7 @@ FaceArt FaceForHit(const RayHit &hit)
 void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &zBuffer, std::vector<float> &depthBuffer)
 {
 	const float wallHeight = WallHeight();
+	const float stretch = VerticalScale();
 	const int wallRows = LevelWallRows();
 	const int faceHeight = FaceTextureHeight();
 	const std::vector<int16_t> &fallback = GetFallbackFace();
@@ -212,7 +259,7 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 			const float hitHeight = static_cast<float>(hitRows) / SpritePixelsPerTileY;
 			const bool lowWall = hitHeight < wallHeight - 0.2F;
 			const float scale = proj.focal / std::max(hit.distance, 0.01F);
-			const float topF = static_cast<float>(proj.horizon) - (hitHeight - EyeHeight) * scale;
+			const float topF = static_cast<float>(proj.horizon) - (hitHeight * stretch - EyeHeight) * scale;
 			const float bottomF = static_cast<float>(proj.horizon) + EyeHeight * scale;
 			const int top = std::max(0, static_cast<int>(topF));
 			const int bottom = std::min(proj.height - 1, static_cast<int>(bottomF));
@@ -224,9 +271,12 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 
 			const uint8_t lightLevel = LightAt(hit.previous);
 			const uint8_t *light = LightTables[lightLevel].data();
+			// A closed door: a shallow panel set into its frame, lit up a little so it stands out in the dark arch.
+			const bool door = IsClosedDoorTile(hit.tile);
 			// A recess (blind arch, niche) is a second plane behind the face; the rays carry on to it.
 			const float rayAcross = std::abs(hit.xSide ? ray.x : ray.y);
-			const float recessDistance = art.recess != nullptr && rayAcross > 1e-4F ? hit.distance + art.recessDepth / rayAcross : 0.0F;
+			const float recessDepth = door ? DoorDepth : art.recessDepth;
+			const float recessDistance = art.recess != nullptr && rayAcross > 1e-4F ? hit.distance + recessDepth / rayAcross : 0.0F;
 			int recessU = -1;
 			if (recessDistance > 0) {
 				const Vec2 p { proj.pos.x + ray.x * recessDistance, proj.pos.y + ray.y * recessDistance };
@@ -234,8 +284,8 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 				if (along2 >= 0.0F && along2 < 1.0F)
 					recessU = std::clamp(static_cast<int>(along2 * FaceTextureWidth), 0, FaceTextureWidth - 1);
 			}
-			const uint8_t *recessLight = LightTables[std::min<int>(lightLevel + 2, LightsMax)].data();
-			const uint8_t *revealLight = LightTables[std::min<int>(lightLevel + 5, LightsMax)].data();
+			const uint8_t *recessLight = LightTables[door ? std::max(0, lightLevel - DoorBrightening) : std::min<int>(lightLevel + 2, LightsMax)].data();
+			const uint8_t *revealLight = LightTables[door ? std::max(0, lightLevel - 1) : std::min<int>(lightLevel + 5, LightsMax)].data();
 			// The wall covers the bottom `hitRows` rows of the face texture.
 			const float rowsPerPixel = static_cast<float>(hitRows) / (bottomF - topF);
 			bool sawOpening = lowWall;
@@ -247,13 +297,13 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 				if (art.recess != nullptr && row >= (*art.recess)[u] && (*art.face)[at] != NoPixel) {
 					// Inside the recess outline: the back of the recess if the ray reaches it inside the outline,
 					// else the recess's side (its reveal).
-					const float height = EyeHeight + static_cast<float>(proj.horizon - y) * recessDistance / proj.focal;
+					const float height = (EyeHeight + static_cast<float>(proj.horizon - y) * recessDistance / proj.focal) / stretch;
 					const int row2 = std::clamp(faceHeight - static_cast<int>(height * SpritePixelsPerTileY), 0, faceHeight - 1);
 					uint8_t color;
 					float depth = hit.distance;
 					const int16_t back = recessU >= 0 ? (*art.face)[static_cast<size_t>(row2) * FaceTextureWidth + recessU] : NoPixel;
 					if (recessU >= 0 && row2 >= (*art.recess)[recessU] && back != NoPixel) {
-						color = recessLight[back];
+						color = recessLight[door ? DoorColor(static_cast<uint8_t>(back)) : back];
 						depth = recessDistance;
 					} else {
 						color = revealLight[(*art.face)[at]];

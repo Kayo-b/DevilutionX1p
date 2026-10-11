@@ -1913,20 +1913,21 @@ struct CameraVertex {
  * @param shade palette colour (lit) of a surface point of a triangle, or -1 to leave the pixel alone
  */
 template <typename ShadeFn>
-void RasterizeTriangles(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer, const std::vector<WorldTriangle> &triangles, ShadeFn shade)
+void RasterizeTriangles(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer, const std::vector<WorldTriangle> &triangles, ShadeFn shade, float stretch = 1.0F)
 {
 	constexpr float Near = 0.05F;
 	const float halfWidth = static_cast<float>(proj.width) / 2.0F;
 	auto toCamera = [&](const V3 &w) {
 		const float rx = w.x - proj.pos.x;
 		const float ry = w.y - proj.pos.y;
-		return CameraVertex { rx * proj.dir.x + ry * proj.dir.y, (rx * proj.plane.x + ry * proj.plane.y) / (PlaneLength * PlaneLength), w.z - EyeHeight, w };
+		return CameraVertex { rx * proj.dir.x + ry * proj.dir.y, (rx * proj.plane.x + ry * proj.plane.y) / (PlaneLength * PlaneLength), w.z * stretch - EyeHeight, w };
 	};
 	auto lerp = [](const CameraVertex &a, const CameraVertex &c, float t) {
 		return CameraVertex { a.depth + (c.depth - a.depth) * t, a.lateral + (c.lateral - a.lateral) * t, a.height + (c.height - a.height) * t,
 			{ a.world.x + (c.world.x - a.world.x) * t, a.world.y + (c.world.y - a.world.y) * t, a.world.z + (c.world.z - a.world.z) * t } };
 	};
-	const V3 eye { proj.pos.x, proj.pos.y, EyeHeight };
+	// Culling in drawn space: the eye stands lower relative to stretched geometry.
+	const V3 eye { proj.pos.x, proj.pos.y, EyeHeight / stretch };
 	static const bool NoCull = std::getenv("FP_NO_CULL") != nullptr; // debug
 	for (const WorldTriangle &tri : triangles) {
 		if (tri.cull && !NoCull && tri.normal.x * (tri.p[0].x - eye.x) + tri.normal.y * (tri.p[0].y - eye.y) + tri.normal.z * (tri.p[0].z - eye.z) > 0)
@@ -3065,7 +3066,7 @@ uint8_t StructureColor(const Structure &st, const WorldTriangle &tri, float wx, 
 	return tri.fallback;
 }
 
-void DrawStructure(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer, const Structure &st)
+void DrawStructure(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer, const Structure &st, float stretch = VerticalScale())
 {
 	const ArcadeArt &arcade = GetArcadeArt();
 	int left;
@@ -3139,7 +3140,7 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 		const Point tile { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
 		const uint8_t level = InDungeonBounds(tile) ? LightAt(tile) : LightsMax;
 		return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(color, darkness)]);
-	});
+	}, stretch);
 }
 
 void DrawObjectBoxes(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer)
@@ -3157,7 +3158,7 @@ void DrawObjectBoxes(const Surface &out, const Projection &proj, std::vector<flo
 			if (!BuildObjectBox(box, object, sprite))
 				continue;
 		}
-		DrawStructure(out, proj, depthBuffer, box.st);
+		DrawStructure(out, proj, depthBuffer, box.st, 1.0F); // objects keep their own size
 	}
 }
 

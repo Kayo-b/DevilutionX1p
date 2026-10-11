@@ -209,8 +209,12 @@ void CollectObjects(std::vector<Entity> &entities)
 		// the floor hides the part that sinks below it.
 		if (grounded)
 			entity.bottom -= static_cast<float>(BaseSinkPixels(sprite)) / SpritePixelsPerTileY;
-		else
-			entity.bottom = -static_cast<float>(TILE_HEIGHT / 2) / SpritePixelsPerTileY; // the iso renderer puts the sprite's bottom at the tile's front corner
+		else {
+			// The iso renderer puts the sprite's bottom at the tile's front corner. These sprites belong to the tile's
+			// art (a torch stand's flame), which is drawn stretched up: stretch them with it.
+			entity.bottom = -static_cast<float>(TILE_HEIGHT / 2) / SpritePixelsPerTileY * VerticalScale();
+			entity.height *= VerticalScale();
+		}
 		entity.lit = object.applyLighting;
 		entity.hidden = IsObjectDrawnAsMesh(id);
 		entities.push_back(entity);
@@ -296,7 +300,7 @@ void CollectProps(Vec2 viewerPos, std::vector<Entity> &entities)
 			entity.pos = TileCenter(tile);
 			entity.width = static_cast<float>(ColumnWidth) / SpritePixelsPerTileX;
 			const int columnRows = static_cast<int>(textures.column.size() / ColumnWidth);
-			entity.height = static_cast<float>(columnRows) / SpritePixelsPerTileY;
+			entity.height = static_cast<float>(columnRows) / SpritePixelsPerTileY * VerticalScale(); // tile art: stretched like the walls
 			entity.bottom = -FootOffsetPixels / SpritePixelsPerTileY;
 			entity.pixels = &textures.column;
 			entity.pixelsWidth = ColumnWidth;

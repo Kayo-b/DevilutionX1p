@@ -296,6 +296,10 @@ std::string DebugCmdFpFeatures()
 			}
 	for (int i = 0; i < ActiveObjectCount; i++) {
 		const Object &object = Objects[ActiveObjects[i]];
+		if (object.isDoor()) {
+			out += StrCat("door ", object.position.x, ",", object.position.y, object._oVar4 == 0 ? " closed" : " open", "\n");
+			continue;
+		}
 		if (!object._oAnimData)
 			continue;
 		const ClxSprite sprite = object.currentSprite();
