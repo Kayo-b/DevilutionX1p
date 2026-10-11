@@ -526,6 +526,9 @@ void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::
 		// where the sprite's coverage crosses one half; colours blend between the opaque neighbours and go back to
 		// the palette through NearestColor.
 		NearestColor.Prepare();
+		// The blend between neighbouring texels only spans the middle half of the way across (sharp bilinear): each
+		// texel stays solid over the rest, so the sprite is half as soft as with plain bilinear filtering.
+		auto Sharpen = [](int t) { return std::clamp((t - 64) * 2, 0, 256); };
 		// Each colour's lit RGB, once per sprite; the sample positions of each column, once per sprite.
 		std::array<uint8_t, 256> lit;
 		std::array<SDL_Color, 256> rgb;
@@ -543,7 +546,7 @@ void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::
 			const float fu = (static_cast<float>(x - rect.left) + 0.5F) * stepU - 0.5F;
 			const int u = static_cast<int>(std::floor(fu));
 			columnU[x - x0] = u;
-			columnT[x - x0] = static_cast<int>((fu - static_cast<float>(u)) * 256.0F);
+			columnT[x - x0] = Sharpen(static_cast<int>((fu - static_cast<float>(u)) * 256.0F));
 		}
 		// The sprite with a clear border, so the four samples need no bounds checks; shadow (0) counts as clear.
 		static std::vector<uint8_t> padded;
@@ -555,7 +558,7 @@ void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::
 		for (int y = y0; y < y1; y++) {
 			const float fv = (static_cast<float>(y - rect.top) + 0.5F) * stepV - 0.5F;
 			const int v0 = static_cast<int>(std::floor(fv));
-			const int tv = static_cast<int>((fv - static_cast<float>(v0)) * 256.0F);
+			const int tv = Sharpen(static_cast<int>((fv - static_cast<float>(v0)) * 256.0F));
 			if (v0 < -1 || v0 >= spriteHeight)
 				continue;
 			const uint8_t *row0 = &padded[static_cast<size_t>(v0 + 1) * paddedWidth + 1];

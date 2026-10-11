@@ -217,7 +217,8 @@ Known test spots:
 - Monsters and townsfolk are sized as if at `sqrt(d² + CreatureNearDepth²)` tiles (`ProjectBillboard`,
   `fp_world.cpp`; 1.3 now): up close they look farther off, far away nothing changes. Walls still hide them by their
   real depth. Raise the constant to push them back more.
-- A sprite drawn at 1.5 times its art size or more is sampled bilinearly (`DrawSpriteBillboard`): its outline is where
+- A sprite drawn at 1.5 times its art size or more is sampled "sharp bilinear" (`DrawSpriteBillboard`; the blend spans
+  only the middle half between texels, `Sharpen`, so it is half as soft as plain bilinear): its outline is where
   the coverage crosses one half, colours are blended in RGB and mapped back to the palette by `NearestColor` (a cache
   of 32768 entries, rebuilt on palette changes; colours 1-31 are left out because the caves and hell cycle them).
   Smaller sprites keep plain nearest sampling.
