@@ -119,6 +119,8 @@ struct WorldTriangle {
 	int16_t texture = -1;            // model texture (MeshTextures), sampled at uv when model textures are on
 	std::array<float, 6> uv {};
 	uint8_t textureDarkness = 0;     // shading of the textured surface by the sun
+	float texelDensity = 0;          // full-size texels of the model texture per world unit (for the mip level)
+	V3 unitNormal { 0, 0, 0 };       // for the mip level: surfaces seen at a slant cover more texels per pixel
 	uint8_t fallback;   // colour where the art has no pixel
 };
 
@@ -660,6 +662,13 @@ struct MeshTexture {
 	int height = 0;
 	std::vector<uint8_t> rgb;
 	std::vector<uint8_t> indexed;
+	/** Smaller copies (mip levels 1, 2, ...: each half the size of the one before, averaged), for far surfaces. */
+	struct Level {
+		int width;
+		int height;
+		std::vector<uint8_t> indexed;
+	};
+	std::vector<Level> mips;
 };
 std::vector<MeshTexture> MeshTextures;
 bool ModelTexturesOn = true;
@@ -673,14 +682,14 @@ constexpr float TextureDim = 0.42F;
 void QuantizeMeshTextures(float dim = 0.42F, bool dusk = true, std::array<float, 3> tint = { 1.0F, 1.0F, 1.0F })
 {
 	std::vector<int16_t> lut(32768, -1);
-	for (MeshTexture &tex : MeshTextures) {
-		tex.indexed.resize(static_cast<size_t>(tex.width) * tex.height);
-		for (size_t i = 0; i < tex.indexed.size(); i++) {
+	auto quantize = [&](const std::vector<uint8_t> &rgb, std::vector<uint8_t> &indexed) {
+		indexed.resize(rgb.size() / 3);
+		for (size_t i = 0; i < indexed.size(); i++) {
 			// The textures are daylight photographs; Tristram is drawn at dusk, dim and cool. Darken and pull the
 			// colours a little towards grey-blue so the buildings sit with the original art.
-			const float r0 = tex.rgb[i * 3];
-			const float g0 = tex.rgb[i * 3 + 1];
-			const float b0 = tex.rgb[i * 3 + 2];
+			const float r0 = rgb[i * 3];
+			const float g0 = rgb[i * 3 + 1];
+			const float b0 = rgb[i * 3 + 2];
 			const float grey = (r0 + g0 + b0) / 3.0F;
 			const float sat = dusk ? 0.75F : 0.85F;
 			const int r = std::clamp(static_cast<int>((r0 * sat + grey * (1.0F - sat)) * dim * (dusk ? 0.92F : 1.0F) * tint[0]), 0, 255);
@@ -703,9 +712,57 @@ void QuantizeMeshTextures(float dim = 0.42F, bool dusk = true, std::array<float,
 					}
 				}
 			}
-			tex.indexed[i] = static_cast<uint8_t>(lut[key]);
+			indexed[i] = static_cast<uint8_t>(lut[key]);
+		}
+	};
+	for (MeshTexture &tex : MeshTextures) {
+		quantize(tex.rgb, tex.indexed);
+		// Mip levels: each texel the average of 2 x 2 of the level above, averaged before quantizing so far
+		// surfaces show the texture's mean colours instead of whichever texel a screen pixel happens to hit.
+		tex.mips.clear();
+		const std::vector<uint8_t> *rgb = &tex.rgb;
+		std::vector<uint8_t> above;
+		std::vector<uint8_t> level;
+		int w = tex.width;
+		int h = tex.height;
+		while (w > 1 || h > 1) {
+			const int nw = std::max(1, w / 2);
+			const int nh = std::max(1, h / 2);
+			level.assign(static_cast<size_t>(nw) * nh * 3, 0);
+			for (int y = 0; y < nh; y++) {
+				for (int x = 0; x < nw; x++) {
+					for (int c = 0; c < 3; c++) {
+						int sum = 0;
+						for (int dy = 0; dy < 2; dy++)
+							for (int dx = 0; dx < 2; dx++)
+								sum += (*rgb)[(static_cast<size_t>(std::min(y * 2 + dy, h - 1)) * w + std::min(x * 2 + dx, w - 1)) * 3 + c];
+						level[(static_cast<size_t>(y) * nw + x) * 3 + c] = static_cast<uint8_t>((sum + 2) / 4);
+					}
+				}
+			}
+			MeshTexture::Level &mip = tex.mips.emplace_back(MeshTexture::Level { nw, nh, {} });
+			quantize(level, mip.indexed);
+			above.swap(level);
+			rgb = &above;
+			w = nw;
+			h = nh;
 		}
 	}
+}
+
+/**
+ * @brief Texel of a model texture at (u, v), from the mip level that fits a screen pixel covering `footprint` texels
+ * of the full-size texture (1 or less: the full-size texture).
+ */
+uint8_t MeshTexel(const MeshTexture &tex, float u, float v, float footprint)
+{
+	const int level = footprint >= 2.0F ? std::min(std::ilogb(footprint), static_cast<int>(tex.mips.size())) : 0;
+	const int width = level == 0 ? tex.width : tex.mips[level - 1].width;
+	const int height = level == 0 ? tex.height : tex.mips[level - 1].height;
+	const std::vector<uint8_t> &indexed = level == 0 ? tex.indexed : tex.mips[level - 1].indexed;
+	const int x = static_cast<int>(std::floor((u - std::floor(u)) * static_cast<float>(width))) % width;
+	const int y = static_cast<int>(std::floor((std::ceil(v) - v) * static_cast<float>(height))) % height;
+	return indexed[static_cast<size_t>(y) * width + x];
 }
 
 /**
@@ -2051,6 +2108,13 @@ void DrawHouseModel(const Surface &out, const Projection &proj, std::vector<floa
 	}
 }
 
+/** The eye of the view being rasterized, and the world size of a screen pixel at the pixel being shaded. */
+V3 ShadeEye { 0, 0, 0 };
+float ShadePixelWorld = 0;
+/** MeshColor's texels per world unit for the triangle it last shaded, taking its slant into account. */
+const WorldTriangle *SlantFor = nullptr;
+float SlantTexelsPerWorld = 0;
+
 /** @brief Palette colour of a mesh surface point: the house's own art patches tiled at the art's pixel density. */
 uint8_t MeshColor(const Building &b, const WorldTriangle &tri, float wx, float wy, float wz);
 
@@ -2083,6 +2147,13 @@ void BakeColors(Building &b)
 			continue;
 		}
 		tri.bakeInv = { b2 / det, -a2 / det, -b1 / det, a1 / det };
+		const float worldArea = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+		if (tri.texture >= 0 && static_cast<size_t>(tri.texture) < MeshTextures.size() && worldArea > 1e-9F) {
+			const MeshTexture &tex = MeshTextures[tri.texture];
+			const float uvArea = std::abs((tri.uv[2] - tri.uv[0]) * (tri.uv[5] - tri.uv[1]) - (tri.uv[4] - tri.uv[0]) * (tri.uv[3] - tri.uv[1]));
+			tri.texelDensity = std::sqrt(uvArea * static_cast<float>(tex.width) * static_cast<float>(tex.height) / worldArea);
+			tri.unitNormal = { n.x / worldArea, n.y / worldArea, n.z / worldArea };
+		}
 		const float longest = std::max({ std::sqrt(e1.x * e1.x + e1.y * e1.y + e1.z * e1.z), std::sqrt(e2.x * e2.x + e2.y * e2.y + e2.z * e2.z),
 		    std::hypot(e2.x - e1.x, e2.y - e1.y, e2.z - e1.z) });
 		const int size = std::clamp(static_cast<int>(std::ceil(longest * 32.0F)), 2, 192);
@@ -2112,10 +2183,19 @@ uint8_t MeshColor(const Building &b, const WorldTriangle &tri, float wx, float w
 		const float w0 = 1.0F - w1 - w2;
 		const float u = w0 * tri.uv[0] + w1 * tri.uv[2] + w2 * tri.uv[4];
 		const float v = w0 * tri.uv[1] + w1 * tri.uv[3] + w2 * tri.uv[5];
-		const MeshTexture &tex = MeshTextures[tri.texture];
-		const int x = static_cast<int>(std::floor((u - std::floor(u)) * static_cast<float>(tex.width))) % tex.width;
-		const int y = static_cast<int>(std::floor((std::ceil(v) - v) * static_cast<float>(tex.height))) % tex.height;
-		return tex.indexed[static_cast<size_t>(y) * tex.width + x];
+		// Texels a screen pixel covers: the world size of a pixel at this distance, larger where the surface is seen
+		// at a slant (by the square root: between the stretched and the unstretched direction, a little sharp). The
+		// slant is taken once per triangle, at its middle.
+		if (SlantFor != &tri) {
+			SlantFor = &tri;
+			const V3 view { (tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F - ShadeEye.x, (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F - ShadeEye.y,
+				(tri.p[0].z + tri.p[1].z + tri.p[2].z) / 3.0F - ShadeEye.z };
+			const float viewLength = std::sqrt(view.x * view.x + view.y * view.y + view.z * view.z);
+			const float facing = viewLength > 1e-6F ? std::abs(view.x * tri.unitNormal.x + view.y * tri.unitNormal.y + view.z * tri.unitNormal.z) / viewLength : 1.0F;
+			SlantTexelsPerWorld = tri.texelDensity / std::sqrt(std::max(facing, 0.1F));
+		}
+		const float footprint = SlantTexelsPerWorld * ShadePixelWorld;
+		return MeshTexel(MeshTextures[tri.texture], u, v, footprint);
 	}
 	if (tri.bakeN > 0) {
 		const auto [da, db] = DropAxis(tri.bakeAxis, wx - tri.p[0].x, wy - tri.p[0].y, wz - tri.p[0].z);
@@ -2200,6 +2280,8 @@ void RasterizeTriangles(const Surface &out, const Projection &proj, std::vector<
 	};
 	// Culling in drawn space: the eye stands lower relative to stretched geometry.
 	const V3 eye { proj.pos.x, proj.pos.y, EyeHeight / stretch };
+	ShadeEye = eye;
+	SlantFor = nullptr;
 	static const bool NoCull = std::getenv("FP_NO_CULL") != nullptr; // debug
 	const size_t triangleCount = order != nullptr ? order->size() : triangles.size();
 	RasterStats[2] += triangleCount;
@@ -2293,6 +2375,7 @@ void RasterizeTriangles(const Surface &out, const Projection &proj, std::vector<
 					const float wy = (w0 * v0.worldOverDepth.y + w1 * v1.worldOverDepth.y + w2 * v2.worldOverDepth.y) * distance;
 					const float wz = (w0 * v0.worldOverDepth.z + w1 * v1.worldOverDepth.z + w2 * v2.worldOverDepth.z) * distance;
 					RasterStats[1]++;
+					ShadePixelWorld = distance / proj.focal;
 					const int color = shade(tri, wx, wy, wz);
 					if (color < 0)
 						continue;
@@ -3038,6 +3121,10 @@ void AddArcadeWall(Building &b, Vec2 from, Vec2 to, float spring)
 		prev = next;
 	}
 	addFace({ corner(0, -HalfThickness, z1), corner(length, -HalfThickness, z1), corner(length, HalfThickness, z1), corner(0, HalfThickness, z1) }, { 0, 0, 1 }, MeshProjective);
+	// The ends, so a wall stopping at a pillar (the end of an arcade, a corner) is a slab from outside too and not
+	// two sheets. Where it runs on into another arch wall or meets a wall the end is hidden inside that.
+	addFace({ corner(0, -HalfThickness, z0), corner(0, HalfThickness, z0), corner(0, HalfThickness, z1), corner(0, -HalfThickness, z1) }, { -dir.x, -dir.y, 0 }, MeshProjective);
+	addFace({ corner(length, -HalfThickness, z0), corner(length, HalfThickness, z0), corner(length, HalfThickness, z1), corner(length, -HalfThickness, z1) }, { dir.x, dir.y, 0 }, MeshProjective);
 }
 
 

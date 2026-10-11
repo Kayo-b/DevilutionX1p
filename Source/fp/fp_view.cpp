@@ -54,6 +54,71 @@ constexpr uint8_t CeilingExtraDarkness = 4;
 /** Floor depth is stored a little farther than it is, so sprites lying on the floor (corpses) still win. */
 constexpr float FloorDepthBias = 1.03F;
 
+/** Town fog: things fade into the sky colour from FogStart tiles away, gone at FogEnd. */
+constexpr float FogStart = 20.0F;
+constexpr float FogEnd = 46.0F;
+constexpr int FogSteps = 16;
+
+/** @brief fog[step][colour]: the palette colour nearest to the colour mixed step / FogSteps of the way to the sky. */
+const std::array<std::array<uint8_t, 256>, FogSteps + 1> &FogTables()
+{
+	static std::array<std::array<uint8_t, 256>, FogSteps + 1> tables {};
+	static uint32_t readyFor = 0;
+	if (readyFor != PaletteVersion()) {
+		readyFor = PaletteVersion();
+		const SDL_Color sky = logical_palette[TownSkyColor];
+		for (int step = 0; step <= FogSteps; step++) {
+			const float t = static_cast<float>(step) / FogSteps;
+			for (int i = 0; i < 256; i++) {
+				const SDL_Color c = logical_palette[i];
+				const float r = c.r + (sky.r - c.r) * t;
+				const float g = c.g + (sky.g - c.g) * t;
+				const float b = c.b + (sky.b - c.b) * t;
+				float best = std::numeric_limits<float>::max();
+				tables[step][i] = static_cast<uint8_t>(i);
+				for (int j = 1; j < 256; j++) {
+					const SDL_Color o = logical_palette[j];
+					const float d = (o.r - r) * (o.r - r) * 3 + (o.g - g) * (o.g - g) * 6 + (o.b - b) * (o.b - b);
+					if (d < best) {
+						best = d;
+						tables[step][i] = static_cast<uint8_t>(j);
+					}
+				}
+			}
+			tables[step][TownSkyColor] = TownSkyColor;
+		}
+	}
+	return tables;
+}
+
+/** @returns the fog step (0: clear) at a camera depth; 0 outside town. */
+int FogStep(float depth)
+{
+	if (leveltype != DTYPE_TOWN || depth <= FogStart)
+		return 0;
+	if (depth >= FogEnd)
+		return FogSteps;
+	return static_cast<int>((depth - FogStart) / (FogEnd - FogStart) * FogSteps + 0.5F);
+}
+
+/** @brief Fogs everything drawn so far (the ground, walls and houses) by its depth; sprites fog themselves. */
+void DrawFog(const Surface &out, const Projection &proj, const std::vector<float> &depthBuffer)
+{
+	if (leveltype != DTYPE_TOWN)
+		return;
+	const auto &fog = FogTables();
+	for (int y = 0; y < proj.height; y++) {
+		uint8_t *dst = out.at(0, y);
+		const float *depth = &depthBuffer[static_cast<size_t>(y) * proj.width];
+		for (int x = 0; x < proj.width; x++) {
+			// The ground stores its depth a little farther (FloorDepthBias): a few percent is no matter here.
+			const int step = FogStep(depth[x]);
+			if (step > 0)
+				dst[x] = fog[step][dst[x]];
+		}
+	}
+}
+
 /**
  * @param depthBuffer per-pixel camera depth; floor pixels write theirs, so things sunk below the floor (the
  * stairs' pit, the feet of sprites) are hidden by it
@@ -397,6 +462,8 @@ void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::
 	const int x1 = std::min(proj.width, rect.right);
 	const int y0 = std::max(0, rect.top);
 	const int y1 = std::min(proj.height, rect.bottom);
+	const int fogStep = FogStep(rect.depth);
+	const uint8_t *fog = fogStep > 0 ? FogTables()[fogStep].data() : nullptr;
 	for (int x = x0; x < x1; x++) {
 		if (depthBuffer == nullptr && zBuffer[x] < rect.depth)
 			continue;
@@ -414,6 +481,8 @@ void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::
 				color = entity.trn[color];
 			else if (light != nullptr)
 				color = light[color];
+			if (fog != nullptr)
+				color = fog[color];
 			*out.at(x, y) = color;
 		}
 	}
@@ -463,6 +532,8 @@ void DrawFlatSprite(const Surface &out, const Projection &proj, const std::vecto
 	const uint8_t *light = entity.lit ? LightTables[LightAt(entity.tile)].data() : nullptr;
 	for (int y = y0; y <= y1; y++) {
 		const float depth = EyeHeight / -proj.rowSlope(y); // floor distance for this row
+		const int fogStep = FogStep(depth);
+		const uint8_t *fog = fogStep > 0 ? FogTables()[fogStep].data() : nullptr;
 		for (int x = x0; x <= x1; x++) {
 			if (depth >= depthBuffer[static_cast<size_t>(y) * proj.width + x])
 				continue; // behind a wall
@@ -481,6 +552,8 @@ void DrawFlatSprite(const Surface &out, const Projection &proj, const std::vecto
 				color = entity.trn[color];
 			else if (light != nullptr)
 				color = light[color];
+			if (fog != nullptr)
+				color = fog[color];
 			*out.at(x, y) = color;
 		}
 	}
@@ -580,6 +653,7 @@ void DrawFirstPersonView(const Surface &out)
 		DrawBuildings(out, proj, zBuffer, depthBuffer);
 	else
 		DrawStructures(out, proj, depthBuffer);
+	DrawFog(out, proj, depthBuffer);
 	lap(2);
 	DrawEntities(out, proj, zBuffer, &depthBuffer);
 	lap(3);
