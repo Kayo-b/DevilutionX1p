@@ -111,6 +111,11 @@ struct WorldTriangle {
 	bool faceX;         // MeshWallFace: the x face texture (else the y face)
 	bool cull = false;  // one-sided: skipped when turned away from the camera (closed shapes, slabs)
 	V3 normal { 0, 0, 0 }; // outward, for culling
+	// Baked colours (projective landmarks): an N x N grid over the triangle's (u, v) = weights of p1 and p2.
+	uint32_t bakeOffset = 0;
+	uint16_t bakeN = 0;
+	uint8_t bakeAxis = 0;        // the axis dropped to solve for (u, v)
+	std::array<float, 4> bakeInv {}; // inverse of the 2 x 2 matrix of the edges in the other two axes
 	uint8_t fallback;   // colour where the art has no pixel
 };
 
@@ -153,6 +158,7 @@ struct Building {
 	SurfaceTexture wallPatchVoxel; // the patches blurred to the size of one voxel, for the voxel model
 	SurfaceTexture roofPatchVoxel;
 	std::vector<WorldTriangle> mesh; // the model's surface in world space, when the model has a mesh
+	std::vector<uint8_t> baked;      // projective landmarks: baked triangle colours (see WorldTriangle::bakeN)
 	std::vector<float> isoNear;      // projective landmarks: nearest surface to the iso camera per 2 x 2 canvas pixels
 	float boundsOverhang = 0;        // how far the model reaches past the footprint, for screen culling
 	int landmark = -1;               // index into Landmarks for the hand-placed buildings
@@ -1135,12 +1141,19 @@ float IsoNearness(float x, float y, float z)
  * @brief Switches a landmark to being textured with its own iso art, and records which surface the iso camera saw
  * at each canvas pixel, so surfaces it did not see (hidden behind other parts) do not take another part's pixels.
  */
-void MakeProjective(Building &b)
+void MakeProjective(Building &b, bool mirroredPlacement)
 {
 	const float cx = (b.x0 + b.x1) / 2.0F;
 	const float cy = (b.y0 + b.y1) / 2.0F;
 	for (WorldTriangle &tri : b.mesh) {
 		tri.mapping = MeshProjective;
+		// The model's own winding is outward (the reoriented normal can be wrong on a complex shape): one-sided.
+		const V3 e1 { tri.p[1].x - tri.p[0].x, tri.p[1].y - tri.p[0].y, tri.p[1].z - tri.p[0].z };
+		const V3 e2 { tri.p[2].x - tri.p[0].x, tri.p[2].y - tri.p[0].y, tri.p[2].z - tri.p[0].z };
+		const V3 wound { e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x };
+		// Placing the model with one axis flipped turns its winding inside out.
+		tri.cull = true;
+		tri.normal = mirroredPlacement ? V3 { -wound.x, -wound.y, -wound.z } : wound;
 		const float horizontal = std::hypot(tri.normal.x, tri.normal.y);
 		tri.normalX = horizontal > 0.25F ? tri.normal.x / horizontal : 0.0F;
 		tri.normalY = horizontal > 0.25F ? tri.normal.y / horizontal : 0.0F;
@@ -1246,6 +1259,8 @@ void ClaimProjectiveTiles(const Building &b, const std::vector<Point> &artTiles)
 			BuildingTiles[at] = 1;
 	}
 }
+
+void BakeColors(Building &b);
 
 /** @brief Whether the iso camera saw a landmark's surface at a point (nothing of the landmark in front of it). */
 bool IsoVisible(const Building &b, float x, float y, float z)
@@ -1387,7 +1402,8 @@ void AddLandmarks()
 		BuildTextures(b);
 		BuildLandmarkMesh(b, place, *mesh);
 		if (place.projective) {
-			MakeProjective(b);
+			MakeProjective(b, place.flipW);
+			BakeColors(b);
 			ClaimProjectiveTiles(b, artTiles);
 		} else {
 			for (const Point t : artTiles)
@@ -1783,10 +1799,70 @@ void DrawHouseModel(const Surface &out, const Projection &proj, std::vector<floa
 }
 
 /** @brief Palette colour of a mesh surface point: the house's own art patches tiled at the art's pixel density. */
+uint8_t MeshColor(const Building &b, const WorldTriangle &tri, float wx, float wy, float wz);
+
+/** @brief The two coordinates of a point kept when dropping an axis. */
+inline std::pair<float, float> DropAxis(uint8_t axis, float x, float y, float z)
+{
+	return axis == 0 ? std::pair { y, z } : (axis == 1 ? std::pair { x, z } : std::pair { x, y });
+}
+
+/** @brief Bakes the colours of a projective landmark's triangles, at about the art's 32 pixels per tile. */
+void BakeColors(Building &b)
+{
+	b.baked.clear();
+	for (WorldTriangle &tri : b.mesh) {
+		const V3 &p0 = tri.p[0];
+		const V3 e1 { tri.p[1].x - p0.x, tri.p[1].y - p0.y, tri.p[1].z - p0.z };
+		const V3 e2 { tri.p[2].x - p0.x, tri.p[2].y - p0.y, tri.p[2].z - p0.z };
+		const V3 n { e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x };
+		const float ax = std::abs(n.x);
+		const float ay = std::abs(n.y);
+		const float az = std::abs(n.z);
+		tri.bakeAxis = ax >= ay && ax >= az ? 0 : (ay >= az ? 1 : 2);
+		const auto [a1, b1] = DropAxis(tri.bakeAxis, e1.x, e1.y, e1.z);
+		const auto [a2, b2] = DropAxis(tri.bakeAxis, e2.x, e2.y, e2.z);
+		const float det = a1 * b2 - a2 * b1;
+		if (std::abs(det) < 1e-9F) {
+			tri.bakeN = 0;
+			continue;
+		}
+		tri.bakeInv = { b2 / det, -a2 / det, -b1 / det, a1 / det };
+		const float longest = std::max({ std::sqrt(e1.x * e1.x + e1.y * e1.y + e1.z * e1.z), std::sqrt(e2.x * e2.x + e2.y * e2.y + e2.z * e2.z),
+		    std::hypot(e2.x - e1.x, e2.y - e1.y, e2.z - e1.z) });
+		const int size = std::clamp(static_cast<int>(std::ceil(longest * 32.0F)), 2, 192);
+		tri.bakeN = static_cast<uint16_t>(size);
+		tri.bakeOffset = static_cast<uint32_t>(b.baked.size());
+		b.baked.resize(b.baked.size() + static_cast<size_t>(size) * size, 0);
+		const uint16_t n0 = tri.bakeN;
+		tri.bakeN = 0; // sample unbaked
+		for (int j = 0; j < size; j++) {
+			for (int i = 0; i + j < size; i++) {
+				const float u = (static_cast<float>(i) + 0.33F) / static_cast<float>(size);
+				const float v = (static_cast<float>(j) + 0.33F) / static_cast<float>(size);
+				b.baked[tri.bakeOffset + static_cast<size_t>(j) * size + i] = MeshColor(b, tri, p0.x + e1.x * u + e2.x * v, p0.y + e1.y * u + e2.y * v, p0.z + e1.z * u + e2.z * v);
+			}
+		}
+		tri.bakeN = n0;
+	}
+}
+
 uint8_t MeshColor(const Building &b, const WorldTriangle &tri, float wx, float wy, float wz)
 {
+	if (tri.bakeN > 0) {
+		const auto [da, db] = DropAxis(tri.bakeAxis, wx - tri.p[0].x, wy - tri.p[0].y, wz - tri.p[0].z);
+		const float u = tri.bakeInv[0] * da + tri.bakeInv[1] * db;
+		const float v = tri.bakeInv[2] * da + tri.bakeInv[3] * db;
+		const int n = tri.bakeN;
+		const int j = std::clamp(static_cast<int>(v * static_cast<float>(n)), 0, n - 1);
+		const int i = std::clamp(static_cast<int>(u * static_cast<float>(n)), 0, n - 1 - j);
+		return b.baked[tri.bakeOffset + static_cast<size_t>(j) * n + i];
+	}
 	const SurfaceTexture &patch = tri.roof ? b.roofPatch : b.wallPatch;
 	const float up = tri.roof ? 32.0F : HeightPixels;
+	static const bool flatShade = std::getenv("FP_FLAT_SHADE") != nullptr; // debug: time the rasterizing alone
+	if (flatShade)
+		return 100;
 	if (tri.mapping == MeshProjective) {
 		// The art where the iso camera saw this point; else at its mirror image; else the wall patch.
 		float x = wx;
@@ -1895,12 +1971,39 @@ void RasterizeTriangles(const Surface &out, const Projection &proj, std::vector<
 			if (left > right || top > bottom)
 				continue;
 			const float invArea = 1.0F / area;
+			// The barycentric weights change linearly along a row: work out the span inside the triangle per row
+			// instead of testing the whole bounding box (long thin triangles have huge ones).
+			const float dw0 = (v1.y - v2.y) * invArea;
+			const float dw1 = (v2.y - v0.y) * invArea;
+			const float dw2 = -dw0 - dw1;
 			for (int y = top; y <= bottom; y++) {
 				const float py = static_cast<float>(y) + 0.5F;
-				for (int x = left; x <= right; x++) {
-					const float px = static_cast<float>(x) + 0.5F;
-					const float w0 = ((v1.x - px) * (v2.y - py) - (v1.y - py) * (v2.x - px)) * invArea;
-					const float w1 = ((v2.x - px) * (v0.y - py) - (v2.y - py) * (v0.x - px)) * invArea;
+				const float base = static_cast<float>(left) + 0.5F;
+				const float b0 = ((v1.x - base) * (v2.y - py) - (v1.y - py) * (v2.x - base)) * invArea;
+				const float b1 = ((v2.x - base) * (v0.y - py) - (v2.y - py) * (v0.x - base)) * invArea;
+				const float b2 = 1.0F - b0 - b1;
+				float from = 0.0F;
+				float to = static_cast<float>(right - left);
+				bool empty = false;
+				for (const auto &[b, d] : { std::pair { b0, dw0 }, std::pair { b1, dw1 }, std::pair { b2, dw2 } }) {
+					if (std::abs(d) < 1e-12F) {
+						empty = empty || b < 0.0F;
+						continue;
+					}
+					const float root = -b / d; // where this weight crosses zero
+					if (d > 0)
+						from = std::max(from, root);
+					else
+						to = std::min(to, root);
+				}
+				if (empty || from > to)
+					continue;
+				const int xStart = left + std::max(0, static_cast<int>(std::floor(from)));
+				const int xEnd = std::min(right, left + static_cast<int>(std::ceil(to)));
+				for (int x = xStart; x <= xEnd; x++) {
+					const float k = static_cast<float>(x - left);
+					const float w0 = b0 + dw0 * k;
+					const float w1 = b1 + dw1 * k;
 					const float w2 = 1.0F - w0 - w1;
 					if (w0 < 0.0F || w1 < 0.0F || w2 < 0.0F)
 						continue;
@@ -1934,7 +2037,25 @@ void DrawHouseMesh(const Surface &out, const Projection &proj, std::vector<float
 	for (int y = lightMin.y; y <= lightMax.y; y++)
 		for (int x = lightMin.x; x <= lightMax.x; x++)
 			light[static_cast<size_t>(y - lightMin.y) * lightWidth + x - lightMin.x] = LightAt({ x, y });
-	RasterizeTriangles(out, proj, depthBuffer, b.mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
+	// Big models: front to back, so the depth test turns hidden pixels away before their colour is looked up.
+	const std::vector<WorldTriangle> *triangles = &b.mesh;
+	static std::vector<WorldTriangle> sorted;
+	if (b.mesh.size() > 2000) {
+		static std::vector<std::pair<float, uint32_t>> order;
+		order.clear();
+		for (uint32_t i = 0; i < b.mesh.size(); i++) {
+			const WorldTriangle &tri = b.mesh[i];
+			const float dx = (tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F - proj.pos.x;
+			const float dy = (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F - proj.pos.y;
+			order.emplace_back(dx * dx + dy * dy, i);
+		}
+		std::sort(order.begin(), order.end());
+		sorted.clear();
+		for (const auto &[distance, i] : order)
+			sorted.push_back(b.mesh[i]);
+		triangles = &sorted;
+	}
+	RasterizeTriangles(out, proj, depthBuffer, *triangles, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
 		const uint8_t color = MeshColor(b, tri, wx, wy, wz);
 		const int tx = std::clamp(static_cast<int>(std::floor(wx)), lightMin.x, lightMax.x);
 		const int ty = std::clamp(static_cast<int>(std::floor(wy)), lightMin.y, lightMax.y);
