@@ -89,6 +89,7 @@ set(libdevilutionx_SRCS
   fp/fp_raycast.cpp
   fp/fp_textures.cpp
   fp/fp_view.cpp
+  fp/fp_weapon.cpp
   fp/fp_world.cpp
 
   items/validation.cpp

@@ -29,6 +29,7 @@
 #include "utils/log.hpp"
 #include "fp/fp_raycast.hpp"
 #include "fp/fp_textures.hpp"
+#include "fp/fp_weapon.hpp"
 #include "fp/fp_world.hpp"
 #include "levels/dun_tile_data.hpp"
 #include "levels/gendung.h"
@@ -656,6 +657,7 @@ void DrawFirstPersonView(const Surface &out)
 	DrawFog(out, proj, depthBuffer);
 	lap(2);
 	DrawEntities(out, proj, zBuffer, &depthBuffer);
+	DrawFirstPersonWeapon(out);
 	lap(3);
 	if (timePhases) {
 		for (size_t i = 0; i < phase.size(); i++)

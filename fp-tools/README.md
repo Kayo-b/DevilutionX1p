@@ -34,6 +34,7 @@ Outside the repo (not committed: big source files):
 | Path | What it is |
 |---|---|
 | `~/Downloads/devilutionX/` | game data: `DIABDAT.MPQ`, `hellfire.mpq`, `hf*.mpq` (override with `FP_DATA_DIR`) |
+| `~/.wine/drive_c/GOG Games/Daggerfall/arena2/` | Daggerfall's first-person weapon art (`WEAPON*.CIF`, `ART_PAL.COL`), read at run time from your own copy and **never committed or shipped** (override with `FP_DAGGERFALL_DIR`; empty: no weapon drawn) |
 | `~/projects/diablo-hellfire-fp/*.7z, *.rar` | fan-made 3D models (plaza, church, dungeon pieces, Adria's shack, hell stairs) from Nexus Mods 67266; **free, non-commercial use only**: see `assets/fp/CREDITS.md` |
 | `~/projects/diablo-hellfire-fp/research/{tristram_plaza,church,dungeon_pieces}/` | the extracted models the export scripts read (override with `FP_PLAZA_DIR`, `FP_CHURCH_DIR`, `FP_DUNGEON_PIECES_DIR`) |
 | `~/projects/diablo-hellfire-fp/` | the old working copy (`devilutionx/`, `devilutionx-buildings/`), kept as a backup; `PLAN.md` holds the original design decisions |
@@ -49,6 +50,7 @@ All first-person code lives in `Source/fp/` of each checkout:
 | `fp_world.cpp/.hpp` | collects the sprites to draw (monsters, NPCs, objects, items, missiles, corpses, props); sizes and grounding |
 | `fp_controls.cpp` | movement, mouse/gamepad look, pitch limit, taking over click-to-walk |
 | `fp_pick.cpp` | what the crosshair points at |
+| `fp_weapon.cpp/.hpp` | the weapon in hand: reads Daggerfall's `WEAPON*.CIF`, picks one for the equipped Diablo weapon, swings it with the attack |
 | `fp_autotest.cpp` | headless scripted runs (`FP_TEST_STEPS`) |
 | `Source/lua/modules/dev/fp.cpp` | the `dev.fp.*` console commands |
 
@@ -117,6 +119,7 @@ Open the console with the backtick key, then run `dev = require('devilutionx.dev
 | `dev.fp.dumppiece(x,y,path)` / `dev.fp.dumpfaces(...)` | one tile's iso column, or its extracted wall faces (openings in red) |
 | `dev.fp.buildings / housemodels / housemeshes / housetextures / recesses (bool)` | switch individual features off to compare |
 | `dev.fp.walkto(x,y)`, `dev.fp.where()` | test click-walks; print the camera position |
+| `dev.fp.weapon(file, record, frame)` | show one Daggerfall weapon frame (`WEAPON<file>.CIF`; record 0 rest, 1-6 strikes); no arguments to follow the player again |
 | `dev.fp.modkit(bool)` | global kit walls, floors, ceilings, columns, and arcade pillars (default off); kit doors, entrance stairs, and sarcophagus remain on |
 | `dev.fp.modeltextures(bool)` | town buildings with the 3D models' own textures (default) or their projected iso art |
 | `dev.fp.sarcophagus(bool)` | use the 3D mod-kit sarcophagus model independently of `dev.fp.modkit` (default on) |
@@ -297,6 +300,16 @@ Texturing modes for structure faces (`AddStructureFace(..., mapping)`):
 | `MeshFloorArt` | the floor art under the point (the stairs' fan) |
 | `MeshWallFace` | one wall-face texture |
 | `MeshArcade` | the arch wall |
+
+### 5.6.1 The weapon in hand
+- Daggerfall's first-person weapon art, drawn over the view (`fp_weapon.cpp`). The CIF format is described at the
+  top of the file. Colours map to the palette's fixed half (128-255), so they are the same on every level.
+- Which art for which Diablo weapon: `WeaponFileFor`. Dagger and short sword: 02 (gauntlet and blade); other swords:
+  04 (uniques: the gilt 00); axes: 08; maces, clubs, morning stars: 05; flail: 06; war hammer, maul: 07; staves: 01;
+  bows: 09; nothing in hand: 10 (fists). 03 (a long blade cut off at Daggerfall's HUD) and 11 (werecreature claws)
+  are unused.
+- A melee attack plays one of the six strike records (going round them) over Diablo's attack animation; a bow
+  plays its seven frames over the ranged attack.
 
 ### 5.7 Palette pitfalls (learned the hard way)
 - Darkening colours with the game's light tables turns some colours **red**. For mesh shading, use
