@@ -133,6 +133,7 @@ enum : uint8_t {
 	MeshProjectiveCut, // like MeshProjective, but see-through where the art has no pixel
 	MeshWallFace,   // a wall face texture of the tile at (mirrorX, mirrorY) (faceX picks which), open where it has no art
 	MeshFloorArt,   // the floor art under the point (what the art paints on the floor, raised into 3D: the stairs' fan)
+	MeshSolid,      // one colour (fallback) for the whole triangle, shaded by its darkness: the kit's ceiling vaults
 };
 
 struct Building {
@@ -852,6 +853,8 @@ bool ModKitOn = true;
 constexpr float KitDim = 0.45F;
 /** How much of the original art's light and dark the kit's walls take (1: all of it, 0: none). */
 constexpr float KitArtStrength = 0.45F;
+/** How high the ceiling vaults rise above the wall tops (art units). */
+constexpr float VaultRise = 0.4F;
 
 /** @brief The dungeon kit's wall, floor and ceiling textures for the current level (quantized), or nulls. */
 struct KitSurfaces {
@@ -3350,6 +3353,74 @@ bool IsClosedDoor(const Object &object)
 	return object.isDoor() && object._oVar4 == 0; // DOOR_CLOSED (objects.cpp)
 }
 
+struct VaultChunk {
+	Point centre;
+	Structure st;
+};
+std::vector<VaultChunk> VaultChunks;
+
+/** Light levels added to the vaults so they read darker than the walls, as the flat ceiling does. */
+constexpr uint8_t CeilingExtraDarkness = 1;
+
+/** @brief A vault triangle's colour: the kit's ceiling stone at the tile, darker where the shell is steep (flat: 1 = level). */
+uint8_t KitCeilingColorAt(float wx, float wy, float flat)
+{
+	const MeshTexture &tex = *Kit.ceiling;
+	const float u = wx * 0.5F;
+	const float v = wy * 0.5F;
+	const int x = static_cast<int>((u - std::floor(u)) * static_cast<float>(tex.width)) & (tex.width - 1);
+	const int y = static_cast<int>((v - std::floor(v)) * static_cast<float>(tex.height)) & (tex.height - 1);
+	const uint8_t stone = Kit.modulate[tex.indexed[static_cast<size_t>(y) * tex.width + x]][5];
+	return ShadeColor(stone, flat > 0.85F ? 0 : (flat > 0.6F ? 1 : 2));
+}
+
+/**
+ * @brief The kit ceiling: the dungeon kit's groin vault (resampled as a low-poly shell, see export_kit.py) over every
+ * open tile, its lowest edge at the wall tops. Drawn in chunks of tiles; the flat ceiling stays behind it.
+ */
+void BuildCeilingVaults()
+{
+	const LandmarkMesh *mesh = KitReady && std::getenv("FP_NO_VAULT") == nullptr ? KitMesh("vault") : nullptr;
+	if (mesh == nullptr)
+		return;
+	constexpr int Chunk = 2;
+	for (int cy = 0; cy < MAXDUNY; cy += Chunk) {
+		for (int cx = 0; cx < MAXDUNX; cx += Chunk) {
+			Structure st;
+			Building &b = st.art;
+			b = Building {};
+			for (int y = cy; y < std::min(cy + Chunk, MAXDUNY); y++) {
+				for (int x = cx; x < std::min(cx + Chunk, MAXDUNX); x++) {
+					if (!InDungeonBounds({ x, y }) || IsTileSolid({ x, y }))
+						continue;
+					const size_t before = b.mesh.size();
+					AddKitModel(b, *mesh, { static_cast<float>(x) + 0.5F, static_cast<float>(y) + 0.5F }, 1.0F, 1.0F, WallHeight(), VaultRise, false);
+					for (size_t i = before; i < b.mesh.size(); i++) {
+						// Flat shaded: the stone's colour (darker on the steep parts) per triangle, far cheaper than texturing.
+						WorldTriangle &tri = b.mesh[i];
+						const V3 e1 { tri.p[1].x - tri.p[0].x, tri.p[1].y - tri.p[0].y, tri.p[1].z - tri.p[0].z };
+						const V3 e2 { tri.p[2].x - tri.p[0].x, tri.p[2].y - tri.p[0].y, tri.p[2].z - tri.p[0].z };
+						const V3 n { e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x };
+						const float flat = std::abs(n.z) / std::max(std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z), 1e-6F);
+						tri.mapping = MeshSolid;
+						tri.texture = -1;
+						tri.fallback = KitCeilingColorAt(static_cast<float>(x) + 0.5F, static_cast<float>(y) + 0.5F, flat);
+					}
+				}
+			}
+			if (b.mesh.empty())
+				continue;
+			b.x0 = static_cast<float>(cx);
+			b.y0 = static_cast<float>(cy);
+			b.x1 = static_cast<float>(cx + Chunk);
+			b.y1 = static_cast<float>(cy + Chunk);
+			b.lowestZ = WallHeight();
+			b.highestZ = WallHeight() + VaultRise;
+			VaultChunks.push_back({ { cx + Chunk / 2, cy + Chunk / 2 }, std::move(st) });
+		}
+	}
+}
+
 void BuildStructures()
 {
 	PrepareKitSurfaces();
@@ -3425,6 +3496,8 @@ void BuildStructures()
 			}
 		}
 	}
+	VaultChunks.clear();
+	BuildCeilingVaults();
 	for (Structure &st : Structures) {
 		float lowest = 0;
 		float highest = 0;
@@ -3519,6 +3592,11 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 	if (!ScreenBounds(st.art, proj, left, top, right, bottom))
 		return;
 	RasterizeTriangles(out, proj, depthBuffer, st.art.mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
+		if (tri.mapping == MeshSolid) {
+			const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
+			const uint8_t level = InDungeonBounds(lit) ? std::min<uint8_t>(LightAt(lit) + CeilingExtraDarkness, LightsMax) : LightsMax;
+			return static_cast<int>(LightTables[level][tri.fallback]);
+		}
 		if (KitReady && tri.texture >= 0) {
 			const int kitColor = KitMeshColor(tri, wx, wy, wz);
 			if (kitColor >= 0) {
@@ -3592,6 +3670,20 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 		const uint8_t level = InDungeonBounds(tile) ? LightAt(tile) : LightsMax;
 		return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(color, darkness)]);
 	}, stretch);
+}
+
+/** Vault chunks farther than this (tiles) are not drawn: beyond the light, the flat ceiling is all there is to see. */
+constexpr float VaultDrawRange = 13.0F;
+
+void DrawCeilingVaults(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer)
+{
+	for (const VaultChunk &chunk : VaultChunks) {
+		const float dx = static_cast<float>(chunk.centre.x) - proj.pos.x;
+		const float dy = static_cast<float>(chunk.centre.y) - proj.pos.y;
+		if (dx * dx + dy * dy > VaultDrawRange * VaultDrawRange || LightAt(chunk.centre) >= LightsMax)
+			continue;
+		DrawStructure(out, proj, depthBuffer, chunk.st);
+	}
 }
 
 void DrawDoorModels(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer)
@@ -3873,6 +3965,7 @@ void DrawStructures(const Surface &out, const Projection &proj, std::vector<floa
 		DrawStructure(out, proj, depthBuffer, st);
 	DrawObjectBoxes(out, proj, depthBuffer);
 	DrawDoorModels(out, proj, depthBuffer);
+	DrawCeilingVaults(out, proj, depthBuffer);
 }
 
 bool IsObjectDrawnAsMesh(int id)

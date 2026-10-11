@@ -81,6 +81,62 @@ def read_obj(path):
     return np.array(verts), np.array(uvs), tris
 
 
+VAULT_CELLS = 6
+
+
+def build_vault(faces, v, anchor='ceiling_big_master017'):
+    """The ceiling_big_master groin vault, resampled as a low-poly heightfield of its underside (VAULT_CELLS squared
+    cells): the original has about 1900 fine strips, far too many for one vault per ceiling tile."""
+    tris = np.array([v[[a[0], b[0], c[0]]] for a, b, c, m, g in faces if g == anchor])
+    lo, hi = tris.reshape(-1, 3).min(0), tris.reshape(-1, 3).max(0)
+    n = VAULT_CELLS
+    # Only the shell: the faces that are not near-vertical (the arches' sides and the springers are left out).
+    normal = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+    normal /= np.linalg.norm(normal, axis=1)[:, None] + 1e-12
+    shell = tris[np.abs(normal[:, 2]) > 0.3]
+    heights = np.full((n + 1, n + 1), np.nan)
+    eps = 2e-3
+    for i in range(n + 1):
+        for j in range(n + 1):
+            px = lo[0] + (hi[0] - lo[0]) * i / n
+            py = lo[1] + (hi[1] - lo[1]) * j / n
+            best = np.inf
+            for t in shell:
+                d = (t[1, 1] - t[2, 1]) * (t[0, 0] - t[2, 0]) + (t[2, 0] - t[1, 0]) * (t[0, 1] - t[2, 1])
+                if abs(d) < 1e-12:
+                    continue
+                a = ((t[1, 1] - t[2, 1]) * (px - t[2, 0]) + (t[2, 0] - t[1, 0]) * (py - t[2, 1])) / d
+                b = ((t[2, 1] - t[0, 1]) * (px - t[2, 0]) + (t[0, 0] - t[2, 0]) * (py - t[2, 1])) / d
+                c = 1 - a - b
+                if a >= -eps and b >= -eps and c >= -eps:
+                    best = min(best, a * t[0, 2] + b * t[1, 2] + c * t[2, 2])
+            if np.isfinite(best):
+                heights[i, j] = best
+    # Grid points the shell does not cover (the steep springers at the corners) take the lowest height around them.
+    while np.isnan(heights).any():
+        filled = heights.copy()
+        for i in range(n + 1):
+            for j in range(n + 1):
+                if np.isnan(heights[i, j]):
+                    near = heights[max(0, i - 1):i + 2, max(0, j - 1):j + 2]
+                    if not np.isnan(near).all():
+                        filled[i, j] = np.nanmin(near)
+        heights = filled
+    # Four-fold symmetric (the original's sides differ), so that neighbouring bays meet along their edges.
+    heights = sum(np.rot90(h, k) for h in (heights, heights.T) for k in range(4)) / 8.0
+    tex = texture_index('dungeon_wall')
+    out = []
+    for i in range(n):
+        for j in range(n):
+            corner = lambda a, b: np.array([lo[0] + (hi[0] - lo[0]) * a / n, lo[1] + (hi[1] - lo[1]) * b / n, heights[a, b]])
+            uvf = lambda a, b: (a / n * 1.5, b / n * 1.5)
+            for quad in (((i, j), (i + 1, j), (i + 1, j + 1)), ((i, j), (i + 1, j + 1), (i, j + 1))):
+                pos = np.array([corner(*q) for q in quad])
+                uv = np.array([uvf(*q) for q in quad])
+                out.append((pos, uv, tex))
+    return out
+
+
 def main():
     v, uvs, faces = read_obj(os.path.join(FP_DUNGEON_PIECES_DIR, 'dungeon_pieces.obj'))
     extent = {}
@@ -103,6 +159,7 @@ def main():
                 uv = np.array([uvs[i[1]] if i[1] >= 0 else (0.0, 0.0) for i in (a, b, c)])
                 tris.append((v[[a[0], b[0], c[0]]], uv, texture_index(m)))
         models.append((name, tris, sorted(groups)))
+    models.append(('vault', build_vault(faces, v), []))
     surfaces = [(np.zeros((3, 3)), np.zeros((3, 2)), texture_index(m)) for m in SURFACES]
     out = open(os.path.join(ASSETS, 'dungeonkit.bin'), 'wb')
     out.write(struct.pack('<4sI', b'FPL2', len(textures)))
