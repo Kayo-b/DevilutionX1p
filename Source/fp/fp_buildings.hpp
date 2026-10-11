@@ -31,6 +31,8 @@ void SetHouseTexturesEnabled(bool enabled);
 /** @brief Voxel-model houses are drawn as the reference triangle mesh with full-resolution art textures (default) or as voxels. */
 void SetHouseMeshesEnabled(bool enabled);
 
+/** @brief Per-tile building marks in town (index y * MAXDUNX + x): 0 none, 1 art drawn by a building, 2 also under a model whose ground art must give way to plain ground. Null outside town. */
+[[nodiscard]] const uint8_t *BuildingTileMap();
 /** @brief Whether the tile belongs to a reconstructed building (and so is not drawn as a billboard). */
 [[nodiscard]] bool IsBuildingTile(Point tile);
 

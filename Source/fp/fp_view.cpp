@@ -66,6 +66,7 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 	const bool hasCeiling = !isTown && leveltype != DTYPE_HELL;
 
 	const uint8_t *structures = StructureTileMap();
+	const uint8_t *buildings = BuildingTileMap();
 	const bool holes = HasFloorHoles();
 	const std::vector<int16_t> &ground = GetGroundFloor();
 	for (int y = 0; y < proj.height; y++) {
@@ -111,7 +112,7 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 				// Under a structure the piece's own art is the structure, drawn as a mesh: plain ground instead.
 				const PieceTextures &piece = GetPieceTextures(dPiece[tile.x][tile.y]);
 				// The ceiling is the plain ground: mirroring each tile's floor would hang lava, water and blood overhead.
-				floorArt = (structure != 0 && structure != 3) || !isFloor ? &ground : &piece.floor;
+				floorArt = (structure != 0 && structure != 3) || !isFloor || (buildings != nullptr && buildings[static_cast<size_t>(tile.y) * MAXDUNX + tile.x] != 0) ? &ground : &piece.floor;
 				floorFill = isTown ? &ground : nullptr; // baked shadows and holes in town ground
 				tileLight = LightAt(tile);
 				if (!isFloor)

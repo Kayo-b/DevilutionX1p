@@ -153,6 +153,7 @@ struct Building {
 	SurfaceTexture wallPatchVoxel; // the patches blurred to the size of one voxel, for the voxel model
 	SurfaceTexture roofPatchVoxel;
 	std::vector<WorldTriangle> mesh; // the model's surface in world space, when the model has a mesh
+	std::vector<float> isoNear;      // projective landmarks: nearest surface to the iso camera per 2 x 2 canvas pixels
 	float boundsOverhang = 0;        // how far the model reaches past the footprint, for screen culling
 	int landmark = -1;               // index into Landmarks for the hand-placed buildings
 };
@@ -658,14 +659,18 @@ struct LandmarkPlacement {
 	float zScaleAbove; // world height per plaza unit above it, so a low eave can be lifted without a towering ridge
 	bool flipW;     // the plaza's y axis runs the other way round to the town's
 	std::array<Vec2, 2> posts; // thin wooden posts holding up an open roof; { 0, 0 } for none
+	bool projective = false;   // textured by projecting its own iso art (its model was fitted to it), not with patches
 };
 
-const std::array<LandmarkPlacement, 2> Landmarks { {
+const std::array<LandmarkPlacement, 3> Landmarks { {
 	// Griswold's smithy: the long hall along x, and over the forge where he stands an open porch roof on two posts.
 	// The plaza porch eaves are low; the art has them at the hall's wall height, high enough to stand under.
 	{ "smithy", { 60, 56 }, { 71, 65 }, 60.6F, 72.25F, 55.75F, 65.5F, 1.45F, 1.0F, 0.55F, true, { Vec2 { 62.25F, 65.2F }, Vec2 { 65.25F, 65.2F } } },
 	// Ogden's tavern: two front gables with the door in the corner between them, where Ogden stands.
 	{ "ogden", { 46, 53 }, { 57, 63 }, 46.75F, 57.0F, 55.0F, 64.0F, 0.76F, 100.0F, 0.76F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } } },
+	// Tristram's church (research/church): tower, nave and round apse, fitted to the iso art by silhouette overlap.
+	// Slate roofs and stone walls both come from projecting that art back on.
+	{ "church", { 19, 14 }, { 31, 29 }, 19.78F, 32.22F, 14.31F, 30.19F, 0.85F, 100.0F, 0.85F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },
 } };
 
 std::vector<LandmarkMesh> LandmarkMeshes;
@@ -1115,8 +1120,144 @@ void AddMeshTriangle(Building &b, const std::array<V3, 3> &p, bool roof, V3 midd
 			tri.darkness = 2;
 		else if (n.x + n.y < 0.0F)
 			tri.darkness = 1;
+		tri.normal = n;
 		b.mesh.push_back(tri);
 	}
+}
+
+/** Nearness to the iso camera: larger is nearer (the iso rays run along -(1, 1, 32 / HeightPixels)). */
+float IsoNearness(float x, float y, float z)
+{
+	return x + y + z * (32.0F / HeightPixels);
+}
+
+/**
+ * @brief Switches a landmark to being textured with its own iso art, and records which surface the iso camera saw
+ * at each canvas pixel, so surfaces it did not see (hidden behind other parts) do not take another part's pixels.
+ */
+void MakeProjective(Building &b)
+{
+	const float cx = (b.x0 + b.x1) / 2.0F;
+	const float cy = (b.y0 + b.y1) / 2.0F;
+	for (WorldTriangle &tri : b.mesh) {
+		tri.mapping = MeshProjective;
+		const float horizontal = std::hypot(tri.normal.x, tri.normal.y);
+		tri.normalX = horizontal > 0.25F ? tri.normal.x / horizontal : 0.0F;
+		tri.normalY = horizontal > 0.25F ? tri.normal.y / horizontal : 0.0F;
+		tri.mirrored = horizontal > 0.25F && tri.normalX + tri.normalY < -0.05F;
+		tri.mirrorX = cx;
+		tri.mirrorY = cy;
+		// The art carries its own light; only undersides and the sides it never saw get darker.
+		tri.darkness = tri.normal.z < -0.3F ? 3 : (tri.mirrored ? 1 : 0);
+	}
+	const int w = (b.canvasWidth + 1) / 2;
+	const int h = (b.canvasHeight + 1) / 2;
+	b.isoNear.assign(static_cast<size_t>(w) * h, -1e9F);
+	for (const WorldTriangle &tri : b.mesh) {
+		std::array<float, 3> sx;
+		std::array<float, 3> sy;
+		std::array<float, 3> n;
+		for (int k = 0; k < 3; k++) {
+			const V3 &p = tri.p[k];
+			sx[k] = ((p.x - p.y) * 32.0F - static_cast<float>(b.originX)) / 2.0F;
+			sy[k] = ((p.x + p.y) * 16.0F - p.z * HeightPixels - static_cast<float>(b.originY)) / 2.0F;
+			n[k] = IsoNearness(p.x, p.y, p.z);
+		}
+		const float area = (sx[1] - sx[0]) * (sy[2] - sy[0]) - (sy[1] - sy[0]) * (sx[2] - sx[0]);
+		if (std::abs(area) < 1e-6F)
+			continue;
+		const int left = std::max(0, static_cast<int>(std::floor(std::min({ sx[0], sx[1], sx[2] }))));
+		const int right = std::min(w - 1, static_cast<int>(std::ceil(std::max({ sx[0], sx[1], sx[2] }))));
+		const int top = std::max(0, static_cast<int>(std::floor(std::min({ sy[0], sy[1], sy[2] }))));
+		const int bottom = std::min(h - 1, static_cast<int>(std::ceil(std::max({ sy[0], sy[1], sy[2] }))));
+		for (int y = top; y <= bottom; y++) {
+			for (int x = left; x <= right; x++) {
+				const float px = static_cast<float>(x) + 0.5F;
+				const float py = static_cast<float>(y) + 0.5F;
+				const float w0 = ((sx[1] - px) * (sy[2] - py) - (sy[1] - py) * (sx[2] - px)) / area;
+				const float w1 = ((sx[2] - px) * (sy[0] - py) - (sy[2] - py) * (sx[0] - px)) / area;
+				const float w2 = 1.0F - w0 - w1;
+				if (w0 < 0 || w1 < 0 || w2 < 0)
+					continue;
+				float &near = b.isoNear[static_cast<size_t>(y) * w + x];
+				near = std::max(near, w0 * n[0] + w1 * n[1] + w2 * n[2]);
+			}
+		}
+	}
+}
+
+/**
+ * @brief Marks the tiles a projective landmark replaces: those under the model (2: their ground art, which shows
+ * the building, gives way to plain ground) and art tiles around it whose picture is mostly the building (1). Trees,
+ * graves and walls next to it keep their billboards.
+ */
+void ClaimProjectiveTiles(const Building &b, const std::vector<Point> &artTiles)
+{
+	// Footprint: tiles whose middle lies under some triangle of the model.
+	std::vector<uint8_t> under(static_cast<size_t>(MAXDUNX) * MAXDUNY, 0);
+	for (const WorldTriangle &tri : b.mesh) {
+		const float minX = std::min({ tri.p[0].x, tri.p[1].x, tri.p[2].x });
+		const float maxX = std::max({ tri.p[0].x, tri.p[1].x, tri.p[2].x });
+		const float minY = std::min({ tri.p[0].y, tri.p[1].y, tri.p[2].y });
+		const float maxY = std::max({ tri.p[0].y, tri.p[1].y, tri.p[2].y });
+		const float area = (tri.p[1].x - tri.p[0].x) * (tri.p[2].y - tri.p[0].y) - (tri.p[1].y - tri.p[0].y) * (tri.p[2].x - tri.p[0].x);
+		if (std::abs(area) < 1e-6F)
+			continue;
+		for (int y = static_cast<int>(std::floor(minY)); y <= static_cast<int>(std::floor(maxY)); y++) {
+			for (int x = static_cast<int>(std::floor(minX)); x <= static_cast<int>(std::floor(maxX)); x++) {
+				if (!InDungeonBounds({ x, y }))
+					continue;
+				const float px = static_cast<float>(x) + 0.5F;
+				const float py = static_cast<float>(y) + 0.5F;
+				const float w1 = ((px - tri.p[0].x) * (tri.p[2].y - tri.p[0].y) - (py - tri.p[0].y) * (tri.p[2].x - tri.p[0].x)) / area;
+				const float w2 = ((tri.p[1].x - tri.p[0].x) * (py - tri.p[0].y) - (tri.p[1].y - tri.p[0].y) * (px - tri.p[0].x)) / area;
+				if (w1 >= 0 && w2 >= 0 && w1 + w2 <= 1)
+					under[static_cast<size_t>(y) * MAXDUNX + x] = 1;
+			}
+		}
+	}
+	for (size_t i = 0; i < under.size(); i++)
+		if (under[i] != 0)
+			BuildingTiles[i] = 2;
+	// Art tiles outside it: hidden when most of their upright art lies on the model's iso silhouette.
+	const int w = (b.canvasWidth + 1) / 2;
+	for (const Point t : artTiles) {
+		const size_t at = static_cast<size_t>(t.y) * MAXDUNX + t.x;
+		if (under[at] != 0)
+			continue;
+		const PieceTextures &textures = GetPieceTextures(dPiece[t.x][t.y]);
+		const int rows = static_cast<int>(textures.column.size() / ColumnWidth);
+		const int left = (t.x - t.y) * 32 - 32 - b.originX;
+		const int top = (t.x + t.y + 2) * 16 - (rows - 1) - b.originY;
+		int inside = 0;
+		int total = 0;
+		for (int cy = 0; cy < rows - 32; cy++) {
+			for (int cx = 0; cx < ColumnWidth; cx++) {
+				if (textures.column[static_cast<size_t>(cy) * ColumnWidth + cx] <= 0)
+					continue;
+				total++;
+				const int px = (left + cx) / 2;
+				const int py = (top + cy) / 2;
+				if (px >= 0 && py >= 0 && px < w && py < (b.canvasHeight + 1) / 2 && b.isoNear[static_cast<size_t>(py) * w + px] > -1e8F)
+					inside++;
+			}
+		}
+		if (total > 0 && inside * 10 >= total * 6)
+			BuildingTiles[at] = 1;
+	}
+}
+
+/** @brief Whether the iso camera saw a landmark's surface at a point (nothing of the landmark in front of it). */
+bool IsoVisible(const Building &b, float x, float y, float z)
+{
+	if (b.isoNear.empty())
+		return true;
+	const int w = (b.canvasWidth + 1) / 2;
+	const int px = static_cast<int>(std::floor(((x - y) * 32.0F - static_cast<float>(b.originX)) / 2.0F));
+	const int py = static_cast<int>(std::floor(((x + y) * 16.0F - z * HeightPixels - static_cast<float>(b.originY)) / 2.0F));
+	if (px < 0 || py < 0 || px >= w || py >= (b.canvasHeight + 1) / 2)
+		return false;
+	return IsoNearness(x, y, z) >= b.isoNear[static_cast<size_t>(py) * w + px] - 0.25F;
 }
 
 /** @brief Lowest roof surface above a point (the underside a post holds up); -1 if no roof covers it. */
@@ -1244,9 +1385,14 @@ void AddLandmarks()
 		FitBuilding(b);
 		BuildRamps(b);
 		BuildTextures(b);
-		for (const Point t : artTiles)
-			BuildingTiles[static_cast<size_t>(t.y) * MAXDUNX + t.x] = 1;
 		BuildLandmarkMesh(b, place, *mesh);
+		if (place.projective) {
+			MakeProjective(b);
+			ClaimProjectiveTiles(b, artTiles);
+		} else {
+			for (const Point t : artTiles)
+				BuildingTiles[static_cast<size_t>(t.y) * MAXDUNX + t.x] = 1;
+		}
 		LogInfo("fp: landmark {} placed with {} triangles", place.name, b.mesh.size());
 		Buildings.push_back(std::move(b));
 	}
@@ -1641,6 +1787,30 @@ uint8_t MeshColor(const Building &b, const WorldTriangle &tri, float wx, float w
 {
 	const SurfaceTexture &patch = tri.roof ? b.roofPatch : b.wallPatch;
 	const float up = tri.roof ? 32.0F : HeightPixels;
+	if (tri.mapping == MeshProjective) {
+		// The art where the iso camera saw this point; else at its mirror image; else the wall patch.
+		float x = wx;
+		float y = wy;
+		for (int attempt = 0; attempt < 2; attempt++) {
+			if (attempt == 1 || tri.mirrored) {
+				if (tri.normalX == 0 && tri.normalY == 0)
+					break;
+				const float d = (wx - tri.mirrorX) * tri.normalX + (wy - tri.mirrorY) * tri.normalY;
+				x = wx - 2.0F * d * tri.normalX;
+				y = wy - 2.0F * d * tri.normalY;
+			}
+			if (IsoVisible(b, x, y, wz)) {
+				const int16_t art = SampleArt(b, x, y, wz);
+				if (art > 0)
+					return PatchColor(art);
+			}
+			if (tri.mirrored)
+				break;
+		}
+		if (b.wallPatch.valid)
+			return ScatteredTexel(b.wallPatch, (std::abs(tri.normalX) > std::abs(tri.normalY) ? wy : wx) * 32.0F, wz * HeightPixels);
+		return 0;
+	}
 	switch (tri.mapping) {
 	case MeshRoof:
 		return ScatteredTexel(patch, (tri.downX * wy - tri.downY * wx) * 32.0F, -(tri.downX * wx + tri.downY * wy) * tri.slopeScale * 32.0F);
@@ -2952,6 +3122,14 @@ void SetHouseTexturesEnabled(bool enabled)
 void SetHouseMeshesEnabled(bool enabled)
 {
 	HouseMeshesOn = enabled;
+}
+
+const uint8_t *BuildingTileMap()
+{
+	if (leveltype != DTYPE_TOWN || !BuildingsEnabled())
+		return nullptr;
+	EnsureBuilt();
+	return BuildingTiles.data();
 }
 
 bool IsBuildingTile(Point tile)
