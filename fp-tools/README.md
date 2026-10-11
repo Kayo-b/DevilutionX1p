@@ -119,6 +119,7 @@ Open the console with the backtick key, then run `dev = require('devilutionx.dev
 | `dev.fp.dumppiece(x,y,path)` / `dev.fp.dumpfaces(...)` | one tile's iso column, or its extracted wall faces (openings in red) |
 | `dev.fp.buildings / housemodels / housemeshes / housetextures / recesses (bool)` | switch individual features off to compare |
 | `dev.fp.walkto(x,y)`, `dev.fp.where()` | test click-walks; print the camera position |
+| `dev.fp.operate(x, y)` | operate the object at a tile as a click would (open a sarcophagus, a door, a chest) |
 | `dev.fp.weapon(file, record, frame)` | show one Daggerfall weapon frame (`WEAPON<file>.CIF`; record 0 rest, 1-6 strikes); no arguments to follow the player again |
 | `dev.fp.modkit(bool)` | global kit walls, floors, ceilings, columns, and arcade pillars (default off); kit doors, entrance stairs, and sarcophagus remain on |
 | `dev.fp.modeltextures(bool)` | town buildings with the 3D models' own textures (default) or their projected iso art |
@@ -212,6 +213,15 @@ Known test spots:
 - To make an object a 3D box instead of a billboard, add its type to `IsBoxObject` in `fp_buildings.cpp` (that is how
   sarcophagi work). The box is measured from the sprite.
 
+### 5.2.1 Sprite size and smoothing
+- Monsters and townsfolk are sized as if at `sqrt(d² + CreatureNearDepth²)` tiles (`ProjectBillboard`,
+  `fp_world.cpp`; 1.3 now): up close they look farther off, far away nothing changes. Walls still hide them by their
+  real depth. Raise the constant to push them back more.
+- A sprite drawn at 1.5 times its art size or more is sampled bilinearly (`DrawSpriteBillboard`): its outline is where
+  the coverage crosses one half, colours are blended in RGB and mapped back to the palette by `NearestColor` (a cache
+  of 32768 entries, rebuilt on palette changes; colours 1-31 are left out because the caves and hell cycle them).
+  Smaller sprites keep plain nearest sampling.
+
 ### 5.3 Controls
 `fp_controls.cpp`:
 - **Speed and look limits:** `MoveSpeed`, and `MaxPitch` (the tan of the max up/down angle).
@@ -278,7 +288,7 @@ All in `fp_buildings.cpp`, built per level in `BuildStructures`:
 | **Arcade pillars** | a shaft from the symmetric lower art; neighbouring pillars joined by **arch walls** wearing the filler wall pair, with the painted arch cut open and an underside added | `BuildArcadePillar`, `AddArcadeWall`, `MeshArcade` shader |
 | **Stairs down (between levels)** | built by hand from measurements of the art; the floor is cut open over the pit (the exported kit currently has no down-stair mesh) | `BuildStairsDown`, `FloorHoles` |
 | **Stairs up / main entrance** | the kit's `stairs_01` mesh fitted over the stair tiles by default, independently of the global kit surfaces | `BuildStairsUp` |
-| **Sarcophagus** | a box measured from its sprite; the 3D mod-kit model can be toggled independently with `dev.fp.sarcophagus(bool)`, even while `dev.fp.modkit(false)` is active | `BuildObjectBox` |
+| **Sarcophagus** | a box measured from its first (closed) frame; while it opens, the kit's body plus its lid slid off, turned and tipped over the edge, following the object's animation frame (`sarcophagus_body`, `sarcophagus_lid`, exported in the closed sarcophagus's frame); the 3D mod-kit model can be toggled independently with `dev.fp.sarcophagus(bool)`, even while `dev.fp.modkit(false)` is active | `BuildObjectBox` |
 
 To add a new piece from `Dungeon Pieces-67266-.7z`:
 1. Add its group name to `PIECES` in `fp-tools/export/export_kit.py` and run it; it writes `assets/fp/dungeonkit.bin`.

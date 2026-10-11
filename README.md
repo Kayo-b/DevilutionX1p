@@ -9,8 +9,10 @@ is unchanged: same levels, monsters, items, saves and rules.
 
 - **A software 3D view of the live level.** Walls, floors and ceilings are rebuilt from the game's own tile art.
   Light comes from the game's lighting (torches, your light radius, spells). Arches, recesses, doors, columns,
-  arcades, stairs and sarcophagi are 3D.
+  arcades, stairs and sarcophagi are 3D. A sarcophagus's lid slides off in 3D when you open it.
 - **Monsters, townsfolk, items, objects and missiles** are shown as sprites at their positions in the world.
+  Up close they're smoothed instead of drawn as big square pixels. Monsters and townsfolk are drawn as if a little
+  farther away, so an enemy right in front of you doesn't fill the screen.
 - **A 3D Tristram.** The houses, Griswold's smithy, Ogden's tavern, the fountain and the church are 3D models.
   The town fades into fog from about 20 tiles away.
 - **Free movement:** walk with WASD and look with the mouse. Clicks go to whatever the crosshair points at, so
@@ -107,14 +109,39 @@ performance budget.
 
 ## Credits and licences
 
-- [DevilutionX](https://github.com/diasurgical/devilutionX) by diasurgical and contributors. The original
-  README follows below.
-- The 3D town buildings and dungeon pieces come from the fan-made "Rebuild of Diablo 1 assets" (Nexus Mods,
-  mod 67266). They may **only be used in products given away free of charge**, so this mod is and must stay free
-  and non-commercial. See [`assets/fp/CREDITS.md`](assets/fp/CREDITS.md).
-- The first-person weapon art is from The Elder Scrolls II: Daggerfall (© Bethesda Softworks). It is not
-  distributed here. The game reads it from your own copy.
-- Diablo and Hellfire are © Blizzard Entertainment. You need your own copy of the game data.
+**DevilutionX.** The engine this mod is built on: [DevilutionX](https://github.com/diasurgical/devilutionX) by
+diasurgical and its contributors, under its own licence (see [`LICENSE.md`](LICENSE.md)). The original README
+follows below.
+
+**3D models: "Rebuild of Diablo 1 assets in FBX and OBJ format".** The town (the Tristram plaza's houses,
+Griswold's smithy, Ogden's tavern, the fountain, the church) and the dungeon pieces (entrance stairs, column,
+sarcophagus and its lid, candle stand, door, ceiling vault) come from this fan-made rebuild of Diablo 1's assets on
+Nexus Mods, [mod 67266](https://www.nexusmods.com/skyrim/mods/67266), by its author on Nexus Mods.<!-- TODO: add the author's Nexus Mods name -->
+The models were converted (voxelized, re-meshed, rescaled and fitted to the game's tile layout) by the scripts in
+`fp-tools/export/`. The author's terms:
+
+> You may use the meshes any way you like as long as your final product is provided free of charge. You are not
+> allowed to use the meshes in commercial products or to sell them.
+
+So this mod is free and non-commercial, and must stay that way while it includes these models; anything built from
+it is under the same restriction.
+
+The rebuild's textures, which this mod uses on the town buildings and dungeon pieces, are credited by its author to
+their creators, who made them available free of charge: Dmitriy Chugai ([texturelib.com](http://www.texturelib.com)),
+[lughertexture.com](http://www.lughertexture.com), [seamlesstextures.deviantart.com](http://seamlesstextures.deviantart.com),
+[10ravens.com](http://www.10ravens.com/textures/), [Spiral Graphics](http://www.spiralgraphics.biz),
+[mb3d.co.uk](http://www.mb3d.co.uk/mb3d), [texturez.com](http://texturez.com/), and borysses and Obsidian Dawn on
+DeviantArt. Details: [`assets/fp/CREDITS.md`](assets/fp/CREDITS.md).
+
+**First-person weapons: The Elder Scrolls II: Daggerfall.** The weapon art (`WEAPON*.CIF`) and its palette
+(`ART_PAL.COL`) are from *The Elder Scrolls II: Daggerfall* by Bethesda Softworks (© 1996 Bethesda Softworks LLC,
+a ZeniMax Media company), which Bethesda has made available for free. None of it is included in this
+repository: the game reads it at run time from your own Daggerfall install (`FP_DAGGERFALL_DIR`).
+
+**Diablo and Hellfire** are © Blizzard Entertainment (Hellfire by Sierra / Synergistic Software). You need your own
+copy of the game data.
+
+This mod is not affiliated with or endorsed by Blizzard Entertainment, Bethesda Softworks or ZeniMax Media.
 
 ---
 
