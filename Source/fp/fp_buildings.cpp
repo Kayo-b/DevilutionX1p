@@ -3302,11 +3302,60 @@ bool BuildObjectBox(ObjectBox &box, const Object &object, ClxSprite sprite)
 	return true;
 }
 
+/** @brief A closed door drawn as the kit's door model, set in its doorway; rebuilt when its tile changes. */
+struct DoorModel {
+	Point tile { -1, -1 };
+	Structure st;
+};
+
+std::unordered_map<int, DoorModel> DoorModels;
+
+/** Door width (of a tile) and thickness, in tiles; the model's height follows its proportions. */
+constexpr float DoorModelWidth = 0.92F;
+constexpr float DoorModelThickness = 0.14F;
+
+bool BuildDoorModel(DoorModel &door, const Object &object)
+{
+	const LandmarkMesh *mesh = KitMesh("door");
+	if (mesh == nullptr)
+		return false;
+	const Point tile = object.position;
+	// The wall runs along x if the tiles either side of the doorway in x are solid, else along y.
+	const bool alongX = IsTileSolid({ tile.x - 1, tile.y }) && IsTileSolid({ tile.x + 1, tile.y });
+	const float width = DoorModelWidth;
+	// The door model is 1.35 wide and 2.48 high (x thin): its height keeps those proportions.
+	const float height = width * 2.48F / 1.35F;
+	Building &b = door.st.art;
+	b = Building {};
+	b.canvasWidth = 0;
+	b.canvasHeight = 0;
+	const Vec2 c { static_cast<float>(tile.x) + 0.5F, static_cast<float>(tile.y) + 0.5F };
+	if (alongX)
+		AddKitModel(b, *mesh, c, width, DoorModelThickness, 0.0F, height, true);
+	else
+		AddKitModel(b, *mesh, c, DoorModelThickness, width, 0.0F, height, false);
+	SetStructureFallbacks(door.st);
+	b.x0 = c.x - (alongX ? width : DoorModelThickness) / 2.0F;
+	b.x1 = c.x + (alongX ? width : DoorModelThickness) / 2.0F;
+	b.y0 = c.y - (alongX ? DoorModelThickness : width) / 2.0F;
+	b.y1 = c.y + (alongX ? DoorModelThickness : width) / 2.0F;
+	b.lowestZ = 0;
+	b.highestZ = height;
+	door.tile = tile;
+	return !b.mesh.empty();
+}
+
+bool IsClosedDoor(const Object &object)
+{
+	return object.isDoor() && object._oVar4 == 0; // DOOR_CLOSED (objects.cpp)
+}
+
 void BuildStructures()
 {
 	PrepareKitSurfaces();
 	Structures.clear();
 	ObjectBoxes.clear();
+	DoorModels.clear();
 	FloorHoles.clear();
 	StructureTiles.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY, 0);
 	if (leveltype == DTYPE_TOWN)
@@ -3545,6 +3594,22 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 	}, stretch);
 }
 
+void DrawDoorModels(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer)
+{
+	if (!KitReady)
+		return;
+	for (int i = 0; i < ActiveObjectCount; i++) {
+		const int id = ActiveObjects[i];
+		const Object &object = Objects[id];
+		if (!IsClosedDoor(object) || !InDungeonBounds(object.position) || LightAt(object.position) >= LightsMax)
+			continue;
+		DoorModel &door = DoorModels[id];
+		if (door.tile != object.position && !BuildDoorModel(door, object))
+			continue;
+		DrawStructure(out, proj, depthBuffer, door.st, 1.0F);
+	}
+}
+
 void DrawObjectBoxes(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer)
 {
 	for (int i = 0; i < ActiveObjectCount; i++) {
@@ -3754,6 +3819,11 @@ void SetModKitEnabled(bool enabled)
 	StructuresFor = LevelKey { nullptr, -1, -1, false }; // rebuild
 }
 
+bool KitDoorsActive()
+{
+	return KitSurfacesActive() && KitMesh("door") != nullptr;
+}
+
 bool IsStructureTile(Point tile)
 {
 	if (leveltype == DTYPE_TOWN || !InDungeonBounds(tile))
@@ -3802,6 +3872,7 @@ void DrawStructures(const Surface &out, const Projection &proj, std::vector<floa
 	for (const Structure &st : Structures)
 		DrawStructure(out, proj, depthBuffer, st);
 	DrawObjectBoxes(out, proj, depthBuffer);
+	DrawDoorModels(out, proj, depthBuffer);
 }
 
 bool IsObjectDrawnAsMesh(int id)

@@ -243,6 +243,7 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 	const float wallHeight = WallHeight();
 	const float stretch = VerticalScale();
 	const bool kit = KitSurfacesActive();
+	const bool kitDoors = KitDoorsActive();
 	const int wallRows = LevelWallRows();
 	const int faceHeight = FaceTextureHeight();
 	const std::vector<int16_t> &fallback = GetFallbackFace();
@@ -306,6 +307,10 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 				if (art.recess != nullptr && row >= (*art.recess)[u] && (*art.face)[at] != NoPixel) {
 					// Inside the recess outline: the back of the recess if the ray reaches it inside the outline,
 					// else the recess's side (its reveal).
+					if (door && kitDoors) {
+						sawOpening = true; // the door model fills the doorway: look through to it
+						continue;
+					}
 					const float height = (EyeHeight + static_cast<float>(proj.horizon - y) * recessDistance / proj.focal) / stretch;
 					const int row2 = std::clamp(faceHeight - static_cast<int>(height * SpritePixelsPerTileY), 0, faceHeight - 1);
 					uint8_t color;

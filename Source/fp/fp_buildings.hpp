@@ -58,6 +58,8 @@ std::string TileMap(int x0, int y0, int x1, int y1);
  * kit's models. Whether it is on and ready for this level.
  */
 [[nodiscard]] bool KitSurfacesActive();
+/** @brief Whether closed doors are drawn as the kit's door model (the wall pass then leaves their panel open). */
+[[nodiscard]] bool KitDoorsActive();
 /** @param u along the wall face (tiles), v height (tiles); art the original texel, for its light and dark */
 [[nodiscard]] uint8_t KitWallColor(float u, float v, int16_t art);
 [[nodiscard]] uint8_t KitFloorColor(float wx, float wy, int16_t art);

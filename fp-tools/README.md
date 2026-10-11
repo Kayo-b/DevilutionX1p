@@ -192,7 +192,7 @@ Known test spots:
 - **Recesses:** blind arches and niches are found from the dark run in the art (`FindRecess`). They are drawn as a
   second plane behind the wall, with lit side reveals (in `DrawWalls`). Deep niches use `NicheDepth` and plain blind
   arches `BlindArchDepth`.
-- **Doors:** closed door tiles (`IsClosedDoorTile`) get a shallow recess and a brightened panel. Tune them with
+- **Doors:** in the mod-kit dungeon closed doors are the kit's door model (`BuildDoorModel`, drawn by `DrawDoorModels`; the wall pass leaves the panel open). Otherwise closed door tiles (`IsClosedDoorTile`) get a shallow recess and a brightened panel. Tune them with
   `DoorDepth` and `DoorBrightening` in `fp_view.cpp`; the colour boost (`* 1.7F`) is in `DoorColor`.
 - **Heights:** `VerticalScale()` (1.25 in the dungeon) stretches walls, ceiling, structures and tile-art sprites. Art
   heights stay in art units (`SpritePixelsPerTileY` = 39.2 px per unit), and the stretch is applied only when drawing.

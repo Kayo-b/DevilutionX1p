@@ -35,6 +35,8 @@ TEXTURES = {
     'door': 'door_diff.tga', 'black_Marble': 'Black marble seamless.tga', 'Wood_cabinet': 'seamless-wood-texture-free-6.jpg',
     'grinzi': 'grinda_02.jpg', 'capac': 'marble_diablo.tga',
 }
+# Textures that come out too dark in the dim dungeon light (the door is meant to stand out in its arch).
+BRIGHTEN = {'door_diff.tga': 2.4}
 SURFACES = ['dungeon_wall', 'podea_biserica', 'dungeon_wall']  # walls, floors, ceilings
 
 textures = []
@@ -49,7 +51,10 @@ def texture_index(material):
         from PIL import Image
         im = Image.open(os.path.join(FP_DUNGEON_PIECES_DIR, name)).convert('RGB').resize((TEXTURE_SIZE, TEXTURE_SIZE), Image.LANCZOS)
         texture_ids[name] = len(textures)
-        textures.append(np.asarray(im, dtype=np.uint8))
+        pixels = np.asarray(im, dtype=np.uint8)
+        if name in BRIGHTEN:
+            pixels = np.clip(pixels.astype(np.float32) * BRIGHTEN[name], 0, 255).astype(np.uint8)
+        textures.append(pixels)
     return texture_ids[name]
 
 
