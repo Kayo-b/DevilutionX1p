@@ -79,6 +79,12 @@ void SetWallRecessesEnabled(bool enabled);
 [[nodiscard]] const std::vector<int16_t> &GetFallbackFace(int parity);
 /** @brief Whether the level has a plain straight wall to use as filler (hell's bone walls do not). */
 [[nodiscard]] bool HasPlainWall();
+/**
+ * @brief A number that changes whenever the game's logical palette does (checked once per frame by
+ * NotePaletteChange). Colour tables built from the palette compare against it and rebuild.
+ */
+[[nodiscard]] uint32_t PaletteVersion();
+void NotePaletteChange();
 /** @brief Debug: only the floor part of a piece's iso column (its bottom 32 rows), NoPixel elsewhere. */
 [[nodiscard]] std::vector<int16_t> RenderPieceFloor(uint16_t pieceId);
 /** @brief The pieces of that pair and which of their faces runs along the wall; false if there is none. */

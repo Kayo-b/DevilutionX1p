@@ -688,6 +688,31 @@ std::vector<int16_t> RenderPieceFloor(uint16_t pieceId)
 	return RenderColumnWithAlpha(pieceId, FloorHeight, true);
 }
 
+namespace {
+uint32_t PaletteHash = 0;
+uint32_t PaletteVersionNumber = 1;
+} // namespace
+
+uint32_t PaletteVersion()
+{
+	return PaletteVersionNumber;
+}
+
+void NotePaletteChange()
+{
+	uint32_t hash = 2166136261U;
+	for (int i = 0; i < 256; i++) {
+		const SDL_Color c = logical_palette[i];
+		hash = (hash ^ c.r) * 16777619U;
+		hash = (hash ^ c.g) * 16777619U;
+		hash = (hash ^ c.b) * 16777619U;
+	}
+	if (hash != PaletteHash) {
+		PaletteHash = hash;
+		PaletteVersionNumber++;
+	}
+}
+
 bool HasPlainWall()
 {
 	GetFallbackFace(0);

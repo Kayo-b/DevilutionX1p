@@ -172,6 +172,7 @@ struct LevelKey {
 	int level;
 	int type;
 	bool isSetLevel;
+	uint32_t palette = 0; // textures and colour tables are built for the palette: a new one rebuilds them
 	bool operator==(const LevelKey &) const = default;
 };
 
@@ -246,8 +247,9 @@ bool RayBody(const Body &body, V3 o, V3 d, float &tIn, float &tOut, int &face)
 uint8_t PatchColor(int16_t art)
 {
 	static std::array<uint8_t, 256> safe {};
-	static bool ready = false;
-	if (!ready) {
+	static uint32_t readyFor = 0;
+	if (readyFor != PaletteVersion()) {
+		readyFor = PaletteVersion();
 		for (int i = 0; i < 256; i++) {
 			safe[i] = static_cast<uint8_t>(i);
 			if (i < 112 || i > 127)
@@ -265,7 +267,6 @@ uint8_t PatchColor(int16_t art)
 				}
 			}
 		}
-		ready = true;
 	}
 	return safe[static_cast<uint8_t>(art)];
 }
@@ -281,8 +282,9 @@ constexpr std::array<float, 6> SurfaceShade { 1.0F, 0.85F, 0.7F, 0.55F, 0.4F, 0.
 uint8_t ShadeColor(uint8_t color, int darkness)
 {
 	static std::array<std::array<uint8_t, 256>, SurfaceShade.size()> table {};
-	static bool ready = false;
-	if (!ready) {
+	static uint32_t readyFor = 0;
+	if (readyFor != PaletteVersion()) {
+		readyFor = PaletteVersion();
 		for (size_t level = 0; level < SurfaceShade.size(); level++) {
 			for (int i = 0; i < 256; i++) {
 				const SDL_Color c = logical_palette[i];
@@ -304,7 +306,6 @@ uint8_t ShadeColor(uint8_t color, int darkness)
 				}
 			}
 		}
-		ready = true;
 	}
 	return table[std::min<size_t>(darkness, SurfaceShade.size() - 1)][color];
 }
@@ -849,6 +850,8 @@ const LandmarkMesh *KitMesh(std::string_view name)
 bool ModKitOn = true;
 /** Brightness the dungeon kit's textures are brought to (the dungeon's light tables darken them further). */
 constexpr float KitDim = 0.45F;
+/** How much of the original art's light and dark the kit's walls take (1: all of it, 0: none). */
+constexpr float KitArtStrength = 0.45F;
 
 /** @brief The dungeon kit's wall, floor and ceiling textures for the current level (quantized), or nulls. */
 struct KitSurfaces {
@@ -943,7 +946,9 @@ void PrepareKitSurfaces()
 	}
 	const float mean = n > 0 ? static_cast<float>(sum / n) : 60.0F;
 	for (int i = 0; i < 256; i++) {
-		const float ratio = std::clamp(PaletteLuma(i) / std::max(mean, 1.0F), 0.25F, 1.5F);
+		// Softened (a power under 1): the kit's blocks lead, only the art's strong shapes (arch shadows, the edges of
+		// niches and doors) show through.
+		const float ratio = std::pow(std::clamp(PaletteLuma(i) / std::max(mean, 1.0F), 0.2F, 1.6F), KitArtStrength);
 		int step = 0;
 		float best = 1e30F;
 		for (int s2 = 0; s2 < 16; s2++) {
@@ -1487,7 +1492,8 @@ void ClaimProjectiveTiles(const Building &b, const std::vector<Point> &artTiles)
 		if (std::getenv("FP_DUMP_PROFILES") != nullptr)
 			LogInfo("fp: claim {},{}: {} of {} art pixels on the model, beside {}", t.x, t.y, inside, total, besideFootprint);
 #endif
-		if (total > 0 && inside * 100 >= total * (besideFootprint ? 12 : 35))
+		// Low pieces (the fountain) have almost no art above their floor rows: beside the model they are its own.
+		if ((total > 0 && inside * 100 >= total * (besideFootprint ? 12 : 35)) || (besideFootprint && total < 120))
 			BuildingTiles[at] = 1;
 	}
 }
@@ -1929,7 +1935,8 @@ void BuildAll()
 
 void EnsureBuilt()
 {
-	const LevelKey key { pDungeonCels.get(), currlevel, static_cast<int>(leveltype), setlevel };
+	NotePaletteChange();
+	const LevelKey key { pDungeonCels.get(), currlevel, static_cast<int>(leveltype), setlevel, PaletteVersion() };
 	if (key == BuiltFor)
 		return;
 	BuiltFor = key;
@@ -2749,7 +2756,7 @@ int KitMeshColor(const WorldTriangle &tri, float wx, float wy, float wz)
  * @brief Adds a kit model to a structure, its footprint spanning size x by size y around c (x and y swapped if asked)
  * from z0 up height (art units), textured with its own textures.
  */
-void AddKitModel(Building &b, const LandmarkMesh &mesh, Vec2 c, float sizeX, float sizeY, float z0, float height, bool swap)
+void AddKitModel(Building &b, const LandmarkMesh &mesh, Vec2 c, float sizeX, float sizeY, float z0, float height, bool swap, bool ownTextures = true)
 {
 	float modelHeight = 0;
 	for (const auto &t : mesh.triangles)
@@ -2781,7 +2788,7 @@ void AddKitModel(Building &b, const LandmarkMesh &mesh, Vec2 c, float sizeX, flo
 			continue;
 		WorldTriangle &tri = b.mesh.back();
 		tri.cull = false; // kit models are not all closed: draw both sides
-		if (!mesh.textures.empty()) {
+		if (ownTextures && !mesh.textures.empty()) {
 			tri.texture = mesh.textures[t];
 			tri.uv = mesh.uvs[t];
 			PrepareUvLookup(tri);
@@ -2833,8 +2840,9 @@ bool BuildColumnSlices(Structure &st, Point tile, const std::vector<ColumnSlice>
 		const bool stand = thin > 0.4F * height;
 		const LandmarkMesh *mesh = KitMesh(stand ? "torch_stand" : "column");
 		if (mesh != nullptr) {
+			// The column wears the original art projected on (its marble), the iron stand its own texture.
 			const float width = stand ? 0.5F * height / 1.43F : std::min(0.5F * height / 1.97F, 0.62F);
-			AddKitModel(st.art, *mesh, c, width, width, 0.0F, height, false);
+			AddKitModel(st.art, *mesh, c, width, width, 0.0F, height, false, stand);
 			return true;
 		}
 	}
@@ -2874,7 +2882,7 @@ bool BuildArcadePillar(Structure &st, Point tile, float &spring)
 		// The kit's column, its capital at the springing of the arches.
 		const float height = spring + 0.1F;
 		const float width = std::min(0.5F * height / 1.97F, 0.5F);
-		AddKitModel(st.art, *mesh, c, width, width, 0.0F, height, false);
+		AddKitModel(st.art, *mesh, c, width, width, 0.0F, height, false, false);
 		return true;
 	}
 	for (size_t i = 0; i < slices.size(); i++) {
@@ -3278,7 +3286,7 @@ bool BuildObjectBox(ObjectBox &box, const Object &object, ClxSprite sprite)
 	const float cy = (c - a) / 2.0F;
 	if (const LandmarkMesh *mesh = KitReady ? KitMesh("sarcophagus") : nullptr; mesh != nullptr) {
 		// The kit's sarcophagus (long along its x) over the box the sprite shows.
-		AddKitModel(b, *mesh, { cx, cy }, lx, ly, 0.0F, height, lx < ly);
+		AddKitModel(b, *mesh, { cx, cy }, lx, ly, 0.0F, height, lx < ly, false); // with the sprite's own stone
 	} else {
 		AddStructureBox(b, cx - lx / 2.0F, cy - ly / 2.0F, 0.0F, cx + lx / 2.0F, cy + ly / 2.0F, height);
 	}
@@ -3397,7 +3405,8 @@ void BuildStructures()
 
 void EnsureStructures()
 {
-	const LevelKey key { pDungeonCels.get(), currlevel, static_cast<int>(leveltype), setlevel };
+	NotePaletteChange();
+	const LevelKey key { pDungeonCels.get(), currlevel, static_cast<int>(leveltype), setlevel, PaletteVersion() };
 	if (key == StructuresFor)
 		return;
 	StructuresFor = key;

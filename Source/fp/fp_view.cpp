@@ -197,9 +197,9 @@ constexpr int DoorBrightening = 3;
 uint8_t DoorColor(uint8_t color)
 {
 	static std::array<uint8_t, 256> table {};
-	static bool ready = false;
-	if (!ready) {
-		ready = true;
+	static uint32_t readyFor = 0;
+	if (readyFor != PaletteVersion()) {
+		readyFor = PaletteVersion();
 		for (int i = 0; i < 256; i++) {
 			const SDL_Color c = logical_palette[i];
 			const float r = std::min(255.0F, c.r * 1.7F + 12.0F);
@@ -524,6 +524,7 @@ void DrawFirstPersonView(const Surface &out)
 	static std::vector<float> zBuffer;
 	static std::vector<float> depthBuffer;
 
+	NotePaletteChange();
 	const Projection proj = GetProjection();
 	zBuffer.resize(static_cast<size_t>(proj.width));
 
