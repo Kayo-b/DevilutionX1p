@@ -668,7 +668,8 @@ void DrawFlatSprite(const Surface &out, const Projection &proj, const std::vecto
 	}
 	const int x0 = std::max(0, static_cast<int>(std::floor(minX)));
 	const int x1 = std::min(proj.width - 1, static_cast<int>(std::ceil(maxX)));
-	const int y0 = std::max(proj.horizon + 1, static_cast<int>(std::floor(minY)));
+	// Looking down hard puts the horizon above the top of the view: the rows still start at 0.
+	const int y0 = std::max({ 0, proj.horizon + 1, static_cast<int>(std::floor(minY)) });
 	const int y1 = std::min(proj.height - 1, static_cast<int>(std::ceil(maxY)));
 	const uint8_t *light = entity.lit ? LightTables[LightAt(entity.tile)].data() : nullptr;
 	for (int y = y0; y <= y1; y++) {
