@@ -683,6 +683,11 @@ bool GetPlainWallPair(uint16_t &first, uint16_t &second, bool &useX)
 	return true;
 }
 
+std::vector<int16_t> RenderPieceFloor(uint16_t pieceId)
+{
+	return RenderColumnWithAlpha(pieceId, FloorHeight, true);
+}
+
 bool HasPlainWall()
 {
 	GetFallbackFace(0);

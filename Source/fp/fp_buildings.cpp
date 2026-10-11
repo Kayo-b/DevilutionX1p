@@ -668,14 +668,23 @@ struct LandmarkPlacement {
 	bool projective = false;   // textured by projecting its own iso art (its model was fitted to it), not with patches
 };
 
-const std::array<LandmarkPlacement, 3> Landmarks { {
-	// Griswold's smithy: the long hall along x, and over the forge where he stands an open porch roof on two posts.
-	// The plaza porch eaves are low; the art has them at the hall's wall height, high enough to stand under.
-	{ "smithy", { 60, 56 }, { 71, 65 }, 60.6F, 72.25F, 55.75F, 65.5F, 1.45F, 1.0F, 0.55F, true, { Vec2 { 62.25F, 65.2F }, Vec2 { 65.25F, 65.2F } } },
+const std::array<LandmarkPlacement, 10> Landmarks { {
+	// The buildings of the Tristram plaza model (Nexus Mods 67266), each fitted to the town's iso art by silhouette
+	// overlap (fp-tools/export/fit_landmark.py; the plaza is laid out like the town, at its scale, y flipped) and
+	// textured by projecting that art back on. The comment gives each fit's overlap with the art.
+	{ "cottage_long", { 45, 42 }, { 55, 46 }, 45.64F, 55.34F, 42.09F, 46.45F, 0.931F, 100.0F, 0.931F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },  // 0.77
+	{ "farnham", { 67, 78 }, { 73, 82 }, 67.59F, 73.30F, 78.04F, 82.41F, 0.919F, 100.0F, 0.919F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },       // 0.65
+	{ "gillian", { 37, 64 }, { 43, 68 }, 37.64F, 43.34F, 64.09F, 68.45F, 0.950F, 100.0F, 0.950F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },       // 0.63
 	// Ogden's tavern: two front gables with the door in the corner between them, where Ogden stands.
-	{ "ogden", { 46, 53 }, { 57, 63 }, 46.75F, 57.0F, 55.0F, 64.0F, 0.76F, 100.0F, 0.76F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } } },
+	{ "ogden", { 48, 56 }, { 56, 64 }, 48.95F, 56.60F, 56.61F, 64.50F, 0.934F, 100.0F, 0.934F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },         // 0.70
+	{ "pepin", { 48, 74 }, { 55, 81 }, 48.31F, 55.01F, 74.38F, 81.02F, 0.687F, 100.0F, 0.687F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },         // 0.66
+	{ "cottage_small", { 25, 48 }, { 30, 53 }, 25.78F, 30.90F, 48.48F, 53.39F, 0.875F, 100.0F, 0.875F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true }, // 0.65
+	{ "cottage_tall", { 69, 66 }, { 74, 73 }, 69.74F, 74.86F, 66.35F, 73.25F, 0.881F, 100.0F, 0.881F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },  // 0.66
+	// Griswold's smithy: the long hall, and over the forge where he stands an open porch roof on two posts. The plaza
+	// porch eaves are low; they are lifted to the hall's wall height, high enough to stand under.
+	{ "smithy", { 60, 56 }, { 70, 64 }, 60.17F, 70.87F, 56.78F, 64.08F, 1.59F, 1.0F, 0.60F, true, { Vec2 { 61.69F, 63.85F }, Vec2 { 64.44F, 63.85F } }, true }, // 0.59
+	{ "fountain", { 59, 69 }, { 61, 71 }, 59.65F, 61.46F, 69.75F, 71.53F, 0.643F, 100.0F, 0.643F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },     // 0.52
 	// Tristram's church (research/church): tower, nave and round apse, fitted to the iso art by silhouette overlap.
-	// Slate roofs and stone walls both come from projecting that art back on.
 	{ "church", { 19, 14 }, { 31, 29 }, 19.78F, 32.22F, 14.31F, 30.19F, 0.85F, 100.0F, 0.85F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },
 } };
 
@@ -1369,7 +1378,7 @@ void AddLandmarks()
 		for (int y = place.claimMin.y; y <= place.claimMax.y; y++)
 			for (int x = place.claimMin.x; x <= place.claimMax.x; x++, tiles++)
 				solid += IsTileSolid({ x, y }) || GetPieceTextures(dPiece[x][y]).hasTallArt ? 1 : 0;
-		if (solid * 2 < tiles) {
+		if (solid * 4 < tiles) { // a quarter: small pieces like the fountain stand on mostly walkable tiles
 			LogInfo("fp: landmark {} not found on this town map", place.name);
 			continue;
 		}
@@ -3190,7 +3199,7 @@ std::string TileMap(int x0, int y0, int x1, int y1)
 	return map;
 }
 
-bool DumpIsoRegion(int x0, int y0, int x1, int y1, const std::string &path)
+bool DumpIsoRegion(int x0, int y0, int x1, int y1, const std::string &path, bool uprightOnly)
 {
 	std::vector<Point> tiles;
 	for (int y = y0; y <= y1; y++)
@@ -3201,6 +3210,26 @@ bool DumpIsoRegion(int x0, int y0, int x1, int y1, const std::string &path)
 		return false;
 	Building region {};
 	BuildCanvas(region, tiles, {});
+	if (uprightOnly) {
+		// Leave the ground out: redraw each tile's floor part over the canvas as transparent, nearest last as in
+		// BuildCanvas, wherever the floor is what the canvas shows.
+		const int rows = static_cast<int>(GetPieceTextures(dPiece[tiles[0].x][tiles[0].y]).column.size() / ColumnWidth);
+		for (const Point t : tiles) {
+			const std::vector<int16_t> floor = RenderPieceFloor(dPiece[t.x][t.y]);
+			const int left = (t.x - t.y) * 32 - 32 - region.originX;
+			const int top = (t.x + t.y + 2) * 16 - (rows - 1) - region.originY + (rows - 32);
+			for (int cy = 0; cy < 32; cy++) {
+				for (int cx = 0; cx < ColumnWidth; cx++) {
+					const int16_t p = floor[static_cast<size_t>(cy) * ColumnWidth + cx];
+					if (p <= 0)
+						continue;
+					int16_t &c = region.canvas[static_cast<size_t>(top + cy) * region.canvasWidth + left + cx];
+					if (c == p)
+						c = -1;
+				}
+			}
+		}
+	}
 	FILE *f = std::fopen(path.c_str(), "wb");
 	if (f == nullptr)
 		return false;

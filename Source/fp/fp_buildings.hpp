@@ -45,7 +45,7 @@ void DrawBuildings(const Surface &out, const Projection &proj, const std::vector
 
 #ifdef _DEBUG
 /** @brief Debug: stitches the original iso art of a tile rectangle into a PPM, with the tile grid's own layout. */
-bool DumpIsoRegion(int x0, int y0, int x1, int y1, const std::string &path);
+bool DumpIsoRegion(int x0, int y0, int x1, int y1, const std::string &path, bool uprightOnly = false);
 /** @brief Debug: an ASCII map of solid, tall-art and building tiles in a rectangle. */
 std::string TileMap(int x0, int y0, int x1, int y1);
 #endif

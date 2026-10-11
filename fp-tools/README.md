@@ -58,7 +58,7 @@ Assets the game loads come from `assets/fp/` and are listed in `CMake/Assets.cma
 |---|---|---|
 | `houses.bin` | voxel cottages | `fp-tools/export/export_houses.py` |
 | `housemesh.bin` | cottage triangle meshes | `fp-tools/export/export_meshes.py` |
-| `landmarks.bin` | smithy, tavern, church meshes | `fp-tools/export/export_landmarks.py` |
+| `landmarks.bin` | every town building: the plaza's houses, smithy, tavern, fountain, and the church | `fp-tools/export/export_landmarks.py` |
 | `dungeonkit.bin` | dungeon kit pieces (the entrance stairs) | `fp-tools/export/export_kit.py` |
 
 ---
@@ -232,11 +232,19 @@ add one, for example Adria's hut:
 3. **Add it to `fp-tools/export/export_landmarks.py`** (in `LANDMARKS`, or with a loader like `church_triangles()`)
    and run it; it writes `assets/fp/landmarks.bin`.
 4. **Find its town tiles:** use `dev.fp.tilemap` and `dev.fp.dumpiso` over the area.
-5. **Fit the placement to the original art.** The approach is to project the model's triangles into iso
-   (`sx = (x-y)*32`, `sy = (x+y)*16 - z*39.2`) and maximise the overlap between that silhouette and the art pixels.
-   Search over the 8 flips/swaps and over `x0,x1,y0,y1,zScale`, then save an overlay image and check it by eye. The
-   fitting scripts lived in the session scratchpad and are gone, so write a new one along these lines. The
-   resulting numbers for the existing landmarks are in the `Landmarks` table.
+5. **Fit the placement to the original art** with `fp-tools/export/fit_landmark.py`. It projects the model into
+   iso and maximises the overlap of its silhouette with the art. First dump the town's upright art (no ground):
+   ```bash
+   fp-tools/selftest/headless.sh "lua:dev=require('devilutionx.dev');lua:dev.fp.on(true);wait:3;lua:dev.fp.dumpiso(0,0,95,95,'$PWD/fp-tools/selftest/out/town_up.ppm',true);quit"
+   ```
+   Then fit. For the plaza, one transform places every house (scale 1, flip y); refine each building from it:
+   ```bash
+   python3 fp-tools/export/fit_landmark.py <obj> fp-tools/selftest/out/town_up.ppm \
+     --bbox 61.7,243.0,68.4,248.3 --init 1,-24.794,311.938,0.931 --variants 0,1,0 \
+     --margin 12 --fix-scale --steps 0,0.25,0.25,0.05 --overlay out.png
+   ```
+   For a model from another file, start with `--variants all --search 8` and a rough `--init`. Check the overlay
+   image by eye; the printed `placement` is the `x0, x1, y0, y1, zScale` for the `Landmarks` entry (with `flipW`).
 6. **Add a `LandmarkPlacement` entry:**
    - `claimMin/claimMax`: tiles whose auto-detected houses are dropped.
    - `x0..y1, zScale, flipW`: the fitted numbers.
