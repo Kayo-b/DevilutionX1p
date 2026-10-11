@@ -10,6 +10,7 @@
 #include "fp/fp_view.hpp"
 
 #include <algorithm>
+#include <unordered_map>
 #include <cstdlib>
 #include <array>
 #include <chrono>
@@ -192,6 +193,8 @@ FaceArt FaceForHit(const RayHit &hit)
 /** How far a closed door is set back into its frame, and how many light levels brighter it is drawn. */
 constexpr float DoorDepth = 0.08F;
 constexpr int DoorBrightening = 3;
+/** Wall faces nearer than this (tiles) are the kit's wall models; farther ones are drawn from the art. */
+constexpr float KitWallModelRange = 6.0F;
 
 /** @brief A colour brightened within its own 16-colour ramp (the palette's ramps run light to dark), for doors. */
 uint8_t DoorColor(uint8_t color)
@@ -234,6 +237,20 @@ bool IsClosedDoorTile(Point tile)
 	return object.isDoor() && object._oVar4 == 0; // DOOR_CLOSED (objects.cpp)
 }
 
+/** @brief Whether a face's opening mask has any opening in it (cached per mask). */
+bool HasOpenings(const std::vector<uint8_t> *holes)
+{
+	if (holes == nullptr)
+		return false;
+	static std::unordered_map<const std::vector<uint8_t> *, bool> cache;
+	const auto found = cache.find(holes);
+	if (found != cache.end())
+		return found->second;
+	const bool any = std::any_of(holes->begin(), holes->end(), [](uint8_t h) { return h != 0; });
+	cache.emplace(holes, any);
+	return any;
+}
+
 /**
  * @brief Draws the walls. Openings in a wall (arches) are looked through to the walls behind them.
  * @param depthBuffer per-pixel camera depth (width * height); wall pixels write their depth, the rest stays infinite
@@ -244,6 +261,7 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 	const float stretch = VerticalScale();
 	const bool kit = KitSurfacesActive();
 	const bool kitDoors = KitDoorsActive();
+	static const bool kitWalls = std::getenv("FP_NO_KITWALLS") == nullptr;
 	const int wallRows = LevelWallRows();
 	const int faceHeight = FaceTextureHeight();
 	const std::vector<int16_t> &fallback = GetFallbackFace();
@@ -281,6 +299,14 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 			const uint8_t *light = LightTables[lightLevel].data();
 			// A closed door: a shallow panel set into its frame, lit up a little so it stands out in the dark arch.
 			const bool door = IsClosedDoorTile(hit.tile);
+			// In the mod-kit dungeon, faces with a niche or a doorway are the kit's wall models (drawn with the
+			// meshes): here they are looked through to whatever is behind them.
+			bool kitModel = false;
+			if (kit && kitWalls && !door && !lowWall && !art.emptyIsOpen && hit.distance < KitWallModelRange) {
+				// Openings are doorway walls; every other face (recessed or plain) a niche wall.
+				const bool opening = art.recess == nullptr && HasOpenings(art.holes);
+				kitModel = KitWallModel(hit.tile, hit.previous, !opening, hitHeight);
+			}
 			// A recess (blind arch, niche) is a second plane behind the face; the rays carry on to it.
 			const float rayAcross = std::abs(hit.xSide ? ray.x : ray.y);
 			const float recessDepth = door ? DoorDepth : art.recessDepth;
@@ -298,8 +324,8 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 			const uint8_t *revealLight = LightTables[door ? std::max(0, lightLevel - 1) : std::min<int>(lightLevel + 5, LightsMax)].data();
 			// The wall covers the bottom `hitRows` rows of the face texture.
 			const float rowsPerPixel = static_cast<float>(hitRows) / (bottomF - topF);
-			bool sawOpening = lowWall;
-			for (int y = top; y <= bottom; y++) {
+			bool sawOpening = lowWall || kitModel;
+			for (int y = top; y <= bottom && !kitModel; y++) {
 				if (filled[y] != 0)
 					continue;
 				const int row = std::clamp(faceHeight - hitRows + static_cast<int>((static_cast<float>(y) - topF) * rowsPerPixel), 0, faceHeight - 1);

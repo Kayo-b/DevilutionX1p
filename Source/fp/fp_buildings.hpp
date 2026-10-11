@@ -60,6 +60,11 @@ std::string TileMap(int x0, int y0, int x1, int y1);
 [[nodiscard]] bool KitSurfacesActive();
 /** @brief Whether closed doors are drawn as the kit's door model (the wall pass then leaves their panel open). */
 [[nodiscard]] bool KitDoorsActive();
+/**
+ * @brief Makes sure the wall face of `tile` that the ray reached from `previous` is drawn as the kit's niche (or
+ * doorway) wall model, `height` high. False if the kit has no such model: the face is then drawn from its art.
+ */
+bool KitWallModel(Point tile, Point previous, bool niche, float height);
 /** @param u along the wall face (tiles), v height (tiles); art the original texel, for its light and dark */
 [[nodiscard]] uint8_t KitWallColor(float u, float v, int16_t art);
 [[nodiscard]] uint8_t KitFloorColor(float wx, float wy, int16_t art);

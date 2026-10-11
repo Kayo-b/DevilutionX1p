@@ -26,6 +26,8 @@ PIECES = [
     ('sarcophagus', 'sarcofag', 0.15),
     ('torch_stand', 'foot', 0.25),
     ('door', 'door_dun', 0.05),
+    ('wall_door', 'd_wall_door', None),
+    ('wall_concave', 'd_wall_concave', None),
 ]
 TEXTURES = {
     'dungeon_wall': 'Modern-Cream-Blocks_seamless.tga', 'dungeon_wall_t': 'Modern-Cream-Blocks_seamless.tga',
@@ -137,6 +139,18 @@ def build_vault(faces, v, anchor='ceiling_big_master017'):
     return out
 
 
+def front_to_max_x(tris):
+    """Wall pieces are slabs seen from one side: mirror x so that the slab's flat front is at the highest x (the
+    game puts it on the face towards the room; a niche or doorway bulges back towards lower x)."""
+    xs = np.array([t[0][:, 0] for t in tris]).reshape(-1)
+    lo, hi = xs.min(), xs.max()
+    near_lo = np.count_nonzero(xs < lo + 0.2)
+    near_hi = np.count_nonzero(xs > hi - 0.2)
+    if near_hi >= near_lo:
+        return tris
+    return [(np.array([[2 * (lo + hi) / 2 - p[0], p[1], p[2]] for p in pos]), uv, tex) for pos, uv, tex in tris]
+
+
 def main():
     v, uvs, faces = read_obj(os.path.join(FP_DUNGEON_PIECES_DIR, 'dungeon_pieces.obj'))
     extent = {}
@@ -158,6 +172,8 @@ def main():
             if g in groups:
                 uv = np.array([uvs[i[1]] if i[1] >= 0 else (0.0, 0.0) for i in (a, b, c)])
                 tris.append((v[[a[0], b[0], c[0]]], uv, texture_index(m)))
+        if name.startswith('wall_'):
+            tris = front_to_max_x(tris)
         models.append((name, tris, sorted(groups)))
     models.append(('vault', build_vault(faces, v), []))
     surfaces = [(np.zeros((3, 3)), np.zeros((3, 2)), texture_index(m)) for m in SURFACES]

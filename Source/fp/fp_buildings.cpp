@@ -2755,11 +2755,7 @@ int KitMeshColor(const WorldTriangle &tri, float wx, float wy, float wz)
 	return tex.indexed[static_cast<size_t>(y) * tex.width + x];
 }
 
-/**
- * @brief Adds a kit model to a structure, its footprint spanning size x by size y around c (x and y swapped if asked)
- * from z0 up height (art units), textured with its own textures.
- */
-void AddKitModel(Building &b, const LandmarkMesh &mesh, Vec2 c, float sizeX, float sizeY, float z0, float height, bool swap, bool ownTextures = true)
+void AddKitModelOriented(Building &b, const LandmarkMesh &mesh, Vec2 c, Vec2 axisU, Vec2 axisW, float sizeU, float sizeW, float z0, float height, bool ownTextures)
 {
 	float modelHeight = 0;
 	for (const auto &t : mesh.triangles)
@@ -2768,11 +2764,9 @@ void AddKitModel(Building &b, const LandmarkMesh &mesh, Vec2 c, float sizeX, flo
 	if (modelHeight <= 0)
 		return;
 	auto toWorld = [&](const float *q) {
-		float u = q[0] - 0.5F;
-		float w = q[1] - 0.5F;
-		if (swap)
-			std::swap(u, w);
-		return V3 { c.x + u * sizeX, c.y + w * sizeY, z0 + q[2] / modelHeight * height };
+		const float u = (q[0] - 0.5F) * sizeU;
+		const float w = (q[1] - 0.5F) * sizeW;
+		return V3 { c.x + axisU.x * u + axisW.x * w, c.y + axisU.y * u + axisW.y * w, z0 + q[2] / modelHeight * height };
 	};
 	const V3 middle { c.x, c.y, z0 + height * 0.5F };
 	for (size_t t = 0; t < mesh.triangles.size(); t++) {
@@ -2797,6 +2791,18 @@ void AddKitModel(Building &b, const LandmarkMesh &mesh, Vec2 c, float sizeX, flo
 			PrepareUvLookup(tri);
 		}
 	}
+}
+
+/**
+ * @brief Adds a kit model to a structure, its footprint spanning size x by size y around c (x and y swapped if asked)
+ * from z0 up height (art units), textured with its own textures.
+ */
+void AddKitModel(Building &b, const LandmarkMesh &mesh, Vec2 c, float sizeX, float sizeY, float z0, float height, bool swap, bool ownTextures = true)
+{
+	if (swap)
+		AddKitModelOriented(b, mesh, c, { 0, 1 }, { 1, 0 }, sizeY, sizeX, z0, height, ownTextures);
+	else
+		AddKitModelOriented(b, mesh, c, { 1, 0 }, { 0, 1 }, sizeX, sizeY, z0, height, ownTextures);
 }
 
 bool BuildColumn(Structure &st, Point tile)
@@ -3305,6 +3311,17 @@ bool BuildObjectBox(ObjectBox &box, const Object &object, ClxSprite sprite)
 	return true;
 }
 
+/** @brief A wall face drawn as one of the kit's wall models (a niche or a doorway), registered when the wall pass first hits it. */
+struct KitWall {
+	Point tile;
+	Structure st;
+};
+
+std::unordered_map<int, KitWall> KitWalls;
+
+constexpr float KitWallConcaveDepth = 0.42F; // tiles: the niche's depth over the slab, as the model's proportions give
+constexpr float KitWallDoorDepth = 0.075F;
+
 /** @brief A closed door drawn as the kit's door model, set in its doorway; rebuilt when its tile changes. */
 struct DoorModel {
 	Point tile { -1, -1 };
@@ -3380,7 +3397,7 @@ uint8_t KitCeilingColorAt(float wx, float wy, float flat)
  */
 void BuildCeilingVaults()
 {
-	const LandmarkMesh *mesh = KitReady && std::getenv("FP_NO_VAULT") == nullptr ? KitMesh("vault") : nullptr;
+	const LandmarkMesh *mesh = KitReady && std::getenv("FP_VAULT") != nullptr ? KitMesh("vault") : nullptr;
 	if (mesh == nullptr)
 		return;
 	constexpr int Chunk = 2;
@@ -3427,6 +3444,7 @@ void BuildStructures()
 	Structures.clear();
 	ObjectBoxes.clear();
 	DoorModels.clear();
+	KitWalls.clear();
 	FloorHoles.clear();
 	StructureTiles.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY, 0);
 	if (leveltype == DTYPE_TOWN)
@@ -3674,6 +3692,8 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 
 /** Vault chunks farther than this (tiles) are not drawn: beyond the light, the flat ceiling is all there is to see. */
 constexpr float VaultDrawRange = 13.0F;
+/** Kit wall models farther than this (tiles) are not drawn. */
+constexpr float KitWallDrawRange = 14.0F;
 
 void DrawCeilingVaults(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer)
 {
@@ -3683,6 +3703,20 @@ void DrawCeilingVaults(const Surface &out, const Projection &proj, std::vector<f
 		if (dx * dx + dy * dy > VaultDrawRange * VaultDrawRange || LightAt(chunk.centre) >= LightsMax)
 			continue;
 		DrawStructure(out, proj, depthBuffer, chunk.st);
+	}
+}
+
+void DrawKitWalls(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer)
+{
+	if (!KitReady)
+		return;
+	for (const auto &entry : KitWalls) {
+		const KitWall &wall = entry.second;
+		const float dx = static_cast<float>(wall.tile.x) + 0.5F - proj.pos.x;
+		const float dy = static_cast<float>(wall.tile.y) + 0.5F - proj.pos.y;
+		if (dx * dx + dy * dy > KitWallDrawRange * KitWallDrawRange)
+			continue;
+		DrawStructure(out, proj, depthBuffer, wall.st);
 	}
 }
 
@@ -3911,6 +3945,49 @@ void SetModKitEnabled(bool enabled)
 	StructuresFor = LevelKey { nullptr, -1, -1, false }; // rebuild
 }
 
+bool KitWallModel(Point tile, Point previous, bool niche, float height)
+{
+	const LandmarkMesh *mesh = KitReady ? KitMesh(niche ? "wall_concave" : "wall_door") : nullptr;
+	if (mesh == nullptr || !InDungeonBounds(tile))
+		return false;
+	const Point d { previous.x - tile.x, previous.y - tile.y };
+	if (std::abs(d.x) + std::abs(d.y) != 1)
+		return false;
+	const int key = ((tile.y * MAXDUNX + tile.x) * 4 + (d.x > 0 ? 0 : d.x < 0 ? 1 : d.y > 0 ? 2 : 3)) * 2 + (niche ? 1 : 0);
+	if (KitWalls.find(key) != KitWalls.end())
+		return true;
+	const float depth = niche ? KitWallConcaveDepth : KitWallDoorDepth;
+	const Vec2 axisU { static_cast<float>(d.x), static_cast<float>(d.y) };
+	const Vec2 axisW { -axisU.y, axisU.x };
+	// u = 1 on the face towards the room, the model's depth running back into the wall.
+	const Vec2 c { static_cast<float>(tile.x) + 0.5F + axisU.x * (0.5F - depth / 2.0F), static_cast<float>(tile.y) + 0.5F + axisU.y * (0.5F - depth / 2.0F) };
+	KitWall &wall = KitWalls[key];
+	wall.tile = tile;
+	Building &b = wall.st.art;
+	b = Building {};
+	AddKitModelOriented(b, *mesh, c, axisU, axisW, depth, 1.0F, 0.0F, height, true);
+	SetStructureFallbacks(wall.st);
+	float minX = 1e9F;
+	float minY = 1e9F;
+	float maxX = -1e9F;
+	float maxY = -1e9F;
+	for (const WorldTriangle &tri : b.mesh) {
+		for (const V3 &p : tri.p) {
+			minX = std::min(minX, p.x);
+			minY = std::min(minY, p.y);
+			maxX = std::max(maxX, p.x);
+			maxY = std::max(maxY, p.y);
+		}
+	}
+	b.x0 = minX;
+	b.y0 = minY;
+	b.x1 = maxX;
+	b.y1 = maxY;
+	b.lowestZ = 0;
+	b.highestZ = height;
+	return true;
+}
+
 bool KitDoorsActive()
 {
 	return KitSurfacesActive() && KitMesh("door") != nullptr;
@@ -3966,6 +4043,7 @@ void DrawStructures(const Surface &out, const Projection &proj, std::vector<floa
 	DrawObjectBoxes(out, proj, depthBuffer);
 	DrawDoorModels(out, proj, depthBuffer);
 	DrawCeilingVaults(out, proj, depthBuffer);
+	DrawKitWalls(out, proj, depthBuffer);
 }
 
 bool IsObjectDrawnAsMesh(int id)
