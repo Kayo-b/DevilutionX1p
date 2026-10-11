@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# Extracted models live outside the repo (their licence is unknown): see fp-tools/README.md.
+# The extracted models live outside the repo; source and terms (free, non-commercial use): assets/fp/CREDITS.md.
 FP_PLAZA_DIR = os.environ.get('FP_PLAZA_DIR', '/home/kxyx/projects/diablo-hellfire-fp/research/tristram_plaza')
 ASSETS = os.path.join(HERE, '..', '..', 'assets', 'fp')
 Image.MAX_IMAGE_PIXELS = None

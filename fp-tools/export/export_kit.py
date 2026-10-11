@@ -11,7 +11,7 @@ import os, struct
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# Extracted models live outside the repo (their licence is unknown): see fp-tools/README.md.
+# The extracted models live outside the repo; source and terms (free, non-commercial use): assets/fp/CREDITS.md.
 FP_DUNGEON_PIECES_DIR = os.environ.get('FP_DUNGEON_PIECES_DIR', '/home/kxyx/projects/diablo-hellfire-fp/research/dungeon_pieces')
 ASSETS = os.path.join(HERE, '..', '..', 'assets', 'fp')
 PIECES = ['stairs_01']

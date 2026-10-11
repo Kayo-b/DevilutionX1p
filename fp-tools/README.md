@@ -4,6 +4,10 @@ This is a first-person mod of Diablo/Hellfire built on DevilutionX. The guide co
 how to build and run it, and how each kind of change was made, so you can carry on without me. For the original
 design decisions, see `PLAN.md`.
 
+**3D assets:** the meshes come from a fan rebuild of Diablo 1's assets (Nexus Mods, mod 67266), which may only be
+used in products given away free of charge. Source, terms and credits are in `assets/fp/CREDITS.md`; keep that file
+up to date when you add models.
+
 ---
 
 ## 1. Layout
@@ -25,12 +29,12 @@ Repository: `/home/kxyx/projects/DevilutionX1p`, the fork `Kayo-b/DevilutionX1p`
 | `fp-tools/selftest/` | headless test scripts; output goes to `fp-tools/selftest/out/` (git-ignored) |
 | `fp-tools/export/` | Python scripts that turn the 3D models into `assets/fp/*.bin` |
 
-Outside the repo (not committed: big files, unknown licence):
+Outside the repo (not committed: big source files):
 
 | Path | What it is |
 |---|---|
 | `~/Downloads/devilutionX/` | game data: `DIABDAT.MPQ`, `hellfire.mpq`, `hf*.mpq` (override with `FP_DATA_DIR`) |
-| `~/projects/diablo-hellfire-fp/*.7z, *.rar` | fan-made 3D models (plaza, church, dungeon pieces, Adria's shack, hell stairs); personal use only |
+| `~/projects/diablo-hellfire-fp/*.7z, *.rar` | fan-made 3D models (plaza, church, dungeon pieces, Adria's shack, hell stairs) from Nexus Mods 67266; **free, non-commercial use only**: see `assets/fp/CREDITS.md` |
 | `~/projects/diablo-hellfire-fp/research/{tristram_plaza,church,dungeon_pieces}/` | the extracted models the export scripts read (override with `FP_PLAZA_DIR`, `FP_CHURCH_DIR`, `FP_DUNGEON_PIECES_DIR`) |
 | `~/projects/diablo-hellfire-fp/` | the old working copy (`devilutionx/`, `devilutionx-buildings/`), kept as a backup; `PLAN.md` holds the original design decisions |
 
