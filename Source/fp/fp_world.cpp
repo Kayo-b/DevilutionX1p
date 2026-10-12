@@ -276,23 +276,35 @@ void CollectCorpses(Vec2 viewerPos, std::vector<Entity> &entities)
 	}
 }
 
+} // namespace
+
+bool IsPropTile(Point tile)
+{
+	if (!InDungeonBounds(tile))
+		return false;
+	const bool town = leveltype == DTYPE_TOWN;
+	const PieceTextures &textures = GetPieceTextures(dPiece[tile.x][tile.y]);
+	if (!textures.hasTallArt || (!town && !textures.isFreeStanding))
+		return false;
+	if (!town && (IsStructureTile(tile) || IsArchPillarTile(tile)))
+		return false; // drawn as a mesh, or as an open wall
+	if (town && BuildingsEnabled() && IsBuildingTile(tile))
+		return false; // drawn as part of a reconstructed building
+	return true;
+}
+
+namespace {
+
 /** @brief Town buildings, trees and rocks: each tile with tall art becomes a billboard of its own iso column. */
 void CollectProps(Vec2 viewerPos, std::vector<Entity> &entities)
 {
-	const bool town = leveltype == DTYPE_TOWN;
 	const Point center { static_cast<int>(viewerPos.x), static_cast<int>(viewerPos.y) };
 	for (int y = center.y - PropSearchRadius; y <= center.y + PropSearchRadius; y++) {
 		for (int x = center.x - PropSearchRadius; x <= center.x + PropSearchRadius; x++) {
 			const Point tile { x, y };
-			if (!InDungeonBounds(tile))
+			if (!IsPropTile(tile))
 				continue;
 			const PieceTextures &textures = GetPieceTextures(dPiece[x][y]);
-			if (!textures.hasTallArt || (!town && !textures.isFreeStanding))
-				continue;
-			if (!town && (IsStructureTile(tile) || IsArchPillarTile(tile)))
-				continue; // drawn as a mesh, or as an open wall
-			if (town && BuildingsEnabled() && IsBuildingTile(tile))
-				continue; // drawn as part of a reconstructed building
 			Entity entity {};
 			entity.kind = EntityKind::Prop;
 			entity.id = -1;

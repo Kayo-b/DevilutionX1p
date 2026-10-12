@@ -48,6 +48,7 @@ set(devilutionx_assets
   fp/housemesh.bin
   fp/landmarks.bin
   fp/houses.bin
+  fp/sky.bin
   ASSETS_VERSION
   arena/church.dun
   arena/circle_of_death.dun

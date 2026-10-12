@@ -14,6 +14,7 @@
 #include "fp/fp_buildings.hpp"
 #include "fp/fp_controls.hpp"
 #include "fp/fp_raycast.hpp"
+#include "fp/fp_sky.hpp"
 #include "fp/fp_textures.hpp"
 #include "fp/fp_view.hpp"
 #include "fp/fp_weapon.hpp"
@@ -222,6 +223,52 @@ std::string DebugCmdFpDumpPiece(int x, int y, std::string path)
 	return "Dumped.";
 }
 
+std::string DebugCmdFpProps(std::optional<std::string> path)
+{
+	// Every tile still drawn as a billboard of its own art (a "cardboard"), with what its art looks like.
+	FILE *f = path ? std::fopen(path->c_str(), "w") : nullptr;
+	int count = 0;
+	std::string first;
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			if (!fp::IsPropTile({ x, y }))
+				continue;
+			const fp::PieceTextures &t = fp::GetPieceTextures(dPiece[x][y]);
+			const int rows = static_cast<int>(t.column.size() / fp::ColumnWidth);
+			int opaque = 0;
+			int top = rows;
+			long r = 0;
+			long g = 0;
+			long b = 0;
+			for (int i = 0; i < (rows - 32) * fp::ColumnWidth; i++) {
+				if (t.column[i] <= 0)
+					continue;
+				const SDL_Color c = logical_palette[t.column[i]];
+				r += c.r;
+				g += c.g;
+				b += c.b;
+				opaque++;
+				top = std::min(top, i / fp::ColumnWidth);
+			}
+			if (f != nullptr)
+				std::fprintf(f, "%d %d %d %d %d %d %d %ld %ld %ld\n", x, y, dPiece[x][y], IsTileSolid({ x, y }) ? 1 : 0, t.isStructure ? 1 : 0, opaque, rows - 32 - top,
+				    opaque > 0 ? r / opaque : 0, opaque > 0 ? g / opaque : 0, opaque > 0 ? b / opaque : 0);
+			if (count < 8)
+				StrAppend(first, " ", x, ",", y);
+			count++;
+		}
+	}
+	if (f != nullptr)
+		std::fclose(f);
+	return StrCat("prop billboards: ", count, first);
+}
+
+std::string DebugCmdFpSky(bool enabled)
+{
+	fp::SetSkyEnabled(enabled);
+	return enabled ? "Night sky on." : "Night sky off (flat colour).";
+}
+
 std::string DebugCmdFpLowWalls()
 {
 	int count = 0;
@@ -426,6 +473,8 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "killmonsters", "()", "Kill every active monster (to look at corpses).", &DebugCmdFpKillMonsters);
 	LuaSetDocFn(table, "monsterstate", "()", "Describe monsters near the player and count corpse tiles.", &DebugCmdFpMonsterState);
 	LuaSetDocFn(table, "dumppiece", "(x: number, y: number, path: string)", "Dump the iso column art of the piece at a tile (PPM).", &DebugCmdFpDumpPiece);
+	LuaSetDocFn(table, "props", "(path: string = nil)", "Count the tiles still drawn as billboards of their own art (props); with a path, list them (x y piece solid structure opaque rows r g b).", &DebugCmdFpProps);
+	LuaSetDocFn(table, "sky", "(enabled: boolean)", "Draw the town's night skybox (default) or a flat sky colour.", &DebugCmdFpSky);
 	LuaSetDocFn(table, "lowwalls", "()", "Count solid tiles whose wall art is lower than a full wall.", &DebugCmdFpLowWalls);
 	LuaSetDocFn(table, "housemodels", "(enabled: boolean)", "Draw town houses with the voxel models from the Tristram plaza reference (default) or as fitted boxes.", &DebugCmdFpHouseModels);
 	LuaSetDocFn(table, "housetextures", "(enabled: boolean)", "Texture the voxel houses with walls and thatch cut out of their own iso art (default) or ranked palette colours.", &DebugCmdFpHouseTextures);

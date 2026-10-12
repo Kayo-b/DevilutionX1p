@@ -29,6 +29,7 @@
 #include "objects.h"
 #include "utils/log.hpp"
 #include "fp/fp_raycast.hpp"
+#include "fp/fp_sky.hpp"
 #include "fp/fp_textures.hpp"
 #include "fp/fp_weapon.hpp"
 #include "fp/fp_world.hpp"
@@ -159,7 +160,10 @@ void DrawFog(const Surface &out, const Projection &proj, const std::vector<float
 	for (int y = 0; y < proj.height; y++) {
 		uint8_t *dst = out.at(0, y);
 		const float *depth = &depthBuffer[static_cast<size_t>(y) * proj.width];
+		const bool skyRow = y <= proj.horizon;
 		for (int x = 0; x < proj.width; x++) {
+			if (skyRow && std::isinf(depth[x]))
+				continue; // the sky
 			// The ground stores its depth a little farther (FloorDepthBias): a few percent is no matter here.
 			const int step = FogStep(depth[x]);
 			if (step > 0)
@@ -939,6 +943,7 @@ void DrawFirstPersonView(const Surface &out)
 		DrawBuildings(out, proj, zBuffer, depthBuffer);
 	else
 		DrawStructures(out, proj, depthBuffer);
+	DrawSky(out, proj, depthBuffer);
 	DrawFog(out, proj, depthBuffer);
 	lap(2);
 	DrawEntities(out, proj, zBuffer, &depthBuffer);

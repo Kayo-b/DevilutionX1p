@@ -61,6 +61,9 @@ void DecodeClx(ClxSprite sprite, std::vector<int16_t> &pixels);
 /** @brief Light table index of a tile (LightsMax outside the dungeon). */
 [[nodiscard]] uint8_t LightAt(Point tile);
 
+/** @brief Whether a tile's tall art is drawn as a billboard of its own iso column (a prop: what no mesh replaces). */
+[[nodiscard]] bool IsPropTile(Point tile);
+
 /** @brief Collects all billboard entities that can currently be seen (walls are not considered here). */
 void CollectEntities(Vec2 viewerPos, std::vector<Entity> &entities);
 
