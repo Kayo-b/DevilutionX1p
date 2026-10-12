@@ -54,11 +54,9 @@ std::string TileMap(int x0, int y0, int x1, int y1);
 
 /**
  * @brief Whether the global mod-kit surfaces (walls, floors, ceilings, columns, and arcade pillars) are enabled and
- * ready for this level. Door, entrance-stair, and sarcophagus models are independent of this setting.
+ * ready for this level. Entrance-stair and sarcophagus models are independent of this setting.
  */
 [[nodiscard]] bool KitSurfacesActive();
-/** @brief Whether closed doors use the kit model independently of the global mod-kit setting. */
-[[nodiscard]] bool KitDoorsActive();
 /**
  * @brief Makes sure the wall face of `tile` that the ray reached from `previous` is drawn as the kit's niche (or
  * doorway) wall model, `height` high. False if the kit has no such model: the face is then drawn from its art.

@@ -11,6 +11,7 @@
 #include <cmath>
 
 #include "fp/fp_controls.hpp"
+#include "fp/fp_doors.hpp"
 #include "fp/fp_textures.hpp"
 #include "levels/dun_tile_data.hpp"
 #include "levels/gendung.h"
@@ -21,12 +22,12 @@ namespace devilution::fp {
 
 float VerticalScale()
 {
-	return leveltype == DTYPE_TOWN ? 1.0F : 1.25F;
+	return leveltype == DTYPE_TOWN ? 1.0F : 1.5F;
 }
 
 float WallHeight()
 {
-	return static_cast<float>(LevelWallRows()) / SpritePixelsPerTileY;
+	return static_cast<float>(WallShownRows(LevelWallRows())) / SpritePixelsPerTileY;
 }
 
 Projection GetProjection()
@@ -49,7 +50,12 @@ bool IsOpaque(Point tile)
 	if (!InDungeonBounds(tile))
 		return true;
 	// Town has no walls: its buildings and trees are drawn as billboards (see CollectProps) and the rest is ground.
-	if (leveltype == DTYPE_TOWN || !IsTileSolid(tile))
+	if (leveltype == DTYPE_TOWN)
+		return false;
+	// A doorway stays a wall with an opening when its door is open (and walkable).
+	if (IsDoorwayTile(tile))
+		return true;
+	if (!IsTileSolid(tile))
 		return false;
 	// Free-standing columns and the stairs down are drawn as meshes (or billboards), so rays pass them.
 	if (IsArchPillarTile(tile))
@@ -106,6 +112,8 @@ bool IsHoleAt(const RayHit &hit, float height)
 {
 	if (!InDungeonBounds(hit.tile) || height < 0.0F)
 		return false;
+	if (DoorwaySpanAt(hit.tile).door != nullptr && IsDoorwayHole(hit, height))
+		return true;
 	const PieceTextures &textures = GetPieceTextures(dPiece[hit.tile.x][hit.tile.y]);
 	const bool wantX = hit.xSide;
 	const bool ownUsable = wantX ? textures.faceXUsable : textures.faceYUsable;
@@ -117,7 +125,7 @@ bool IsHoleAt(const RayHit &hit, float height)
 	float along = hit.xSide ? hit.point.y - static_cast<float>(hit.tile.y) : hit.point.x - static_cast<float>(hit.tile.x);
 	const int u = std::clamp(static_cast<int>(along * FaceTextureWidth), 0, FaceTextureWidth - 1);
 	const int faceHeight = FaceTextureHeight();
-	const int row = faceHeight - 1 - static_cast<int>(height / VerticalScale() * SpritePixelsPerTileY);
+	const int row = WallArtRow(height / VerticalScale());
 	if (row < 0 || row >= faceHeight)
 		return false;
 	return holes[static_cast<size_t>(row) * FaceTextureWidth + u] != 0;

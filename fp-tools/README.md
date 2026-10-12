@@ -46,6 +46,7 @@ All first-person code lives in `Source/fp/` of each checkout:
 | `fp_view.cpp` | the frame: floor/ceiling pass, wall raycaster (with recesses and doors), sprite pass, phase timers |
 | `fp_raycast.cpp/.hpp` | camera projection, `CastRay`, what counts as a wall (`IsOpaque`), `WallHeight()`, `VerticalScale()` |
 | `fp_textures.cpp/.hpp` | turns each tile piece's iso art into wall-face, floor and column textures; detects pillars, lava and recesses; supplies the filler wall pair |
+| `fp_doors.cpp/.hpp` | doorways (the door tile stays a wall with an opening through it) and the door leaf's swing |
 | `fp_buildings.cpp/.hpp` | **all 3D meshes**: town houses (voxel/mesh), landmarks (smithy, tavern, church), dungeon structures (columns, stairs, arcades, sarcophagus boxes), the triangle rasterizer |
 | `fp_world.cpp/.hpp` | collects the sprites to draw (monsters, NPCs, objects, items, missiles, corpses, props); sizes and grounding |
 | `fp_controls.cpp` | movement, mouse/gamepad look, pitch limit, taking over click-to-walk |
@@ -121,7 +122,7 @@ Open the console with the backtick key, then run `dev = require('devilutionx.dev
 | `dev.fp.walkto(x,y)`, `dev.fp.where()` | test click-walks; print the camera position |
 | `dev.fp.operate(x, y)` | operate the object at a tile as a click would (open a sarcophagus, a door, a chest) |
 | `dev.fp.weapon(file, record, frame)` | show one Daggerfall weapon frame (`WEAPON<file>.CIF`; record 0 rest, 1-6 strikes); no arguments to follow the player again |
-| `dev.fp.modkit(bool)` | global kit walls, floors, ceilings, columns, and arcade pillars (default off); kit doors, entrance stairs, and sarcophagus remain on |
+| `dev.fp.modkit(bool)` | global kit walls, floors, ceilings, columns, and arcade pillars (default off); entrance stairs and sarcophagus remain on |
 | `dev.fp.modeltextures(bool)` | town buildings with the 3D models' own textures (default) or their projected iso art |
 | `dev.fp.sarcophagus(bool)` | use the 3D mod-kit sarcophagus model independently of `dev.fp.modkit` (default on) |
 | `dev.level.warp.dungeon(0)` | go to town (any `n` for dungeon level `n`) |
@@ -194,14 +195,29 @@ Known test spots:
 - Faces the iso camera never drew use the **filler pair**: two neighbouring faces from the level's most common
   straight wall, alternated so their arches stay whole (`GetFallbackFace(parity)`). Hell has no plain wall, so it
   uses each tile's own sparse art with the gaps left open.
-- **Recesses:** blind arches and niches are found from the dark run in the art (`FindRecess`). They are drawn as a
-  second plane behind the wall, with lit side reveals (in `DrawWalls`). Deep niches use `NicheDepth` and plain blind
-  arches `BlindArchDepth`.
-- **Doors:** closed doors use the kit's door model by default, independently of the global kit surfaces (`BuildDoorModel`, drawn by `DrawDoorModels`; the wall pass leaves the panel open). Otherwise closed door tiles (`IsClosedDoorTile`) get a shallow recess and a brightened panel. Tune them with
-  `DoorDepth` and `DoorBrightening` in `fp_view.cpp`; the colour boost (`* 1.7F`) is in `DoorColor`.
+- **Wall foot and cap:** a Diablo wall stands on the middle of its tile, half a tile in front of the tile's edge: in iso its
+  face reaches 16 rows below the edge line (`FaceBaseRows`), where the plinths and column bases are, and the top of its
+  thickness shows as a lit band above it (the cap; `WallCapRows` measures it on the plain wall pair: 16 rows in the
+  cathedral, 21 in the catacombs, none in caves and hell). Faces are read down to that foot and drawn without the cap,
+  at the art's own proportions (`WallArtScale` is 1). The far end of a face's foot lies outside the piece's diamond and
+  is drawn by the next tile along the wall: each piece keeps that part of the previous tile's face (`spillX`/`spillY`,
+  `cutX`/`cutY`), and the wall pass takes it from the neighbour. `WallArtRow`/`WallArtHeight` map a height to a face row;
+  use them wherever wall art is sampled.
+- **Recesses:** blind arches and niches are found by `FindArchOutline`: below the cornice, the first run of dark
+  texels in each column (the shadow under the arch's ring), shaped into an arch. They are drawn as a second plane
+  behind the wall, with side reveals (in `DrawWalls`). The filler walls carry the plain pair's arch too
+  (`GetFallbackRecess`). Deep niches use `NicheDepth` and plain blind arches `BlindArchDepth`.
+- **Doors** (`fp_doors.cpp`): the door tile is a wall with an opening through its whole thickness, open or shut, so
+  an opened door stays a doorway (`IsOpaque` keeps it; rays inside the opening carry on, and where they meet its sides
+  inside the wall they draw the jambs and soffit, faced with the plain wall's stone read across the wall's thickness and up the side or along the top). The cathedral paints a door across two tiles, the door tile and its
+  partner at -x or -y: the doorway is drawn on the door tile from both halves of the *closed* art joined and centred on
+  it, and the partner's face is plain wall. The opening is `FindArchOutline` on that art (`DefaultOpening` if none).
+  The leaf (`BuildDoorLeaf`, drawn by `DrawDoorLeaves`) is a low-poly slab whose top follows the arch, hinged on a jamb
+  in the middle of the wall, textured with the kit's door-wood texture (or the closed door's art without the kit), its brightness mapped by `DoorLeafColor` onto the palette's brown ramp using wood colours measured from Daggerfall's `TEXTURE.074` "Door Set" (measured once, nothing read from Daggerfall at run time). When the door's state
+  changes it swings (`DoorSwing`: `OpenAngle`, `SwingMilliseconds`) away from the camera's side, and stays open.
 - **Mod-kit walls (experiment, too heavy: off by default):** within `KitWallModelRange` the wall pass skips each face and `KitWallModel` registers the kit's `wall_concave` (or `wall_door` for faces with openings) in its place; Off by default: `FP_KITWALLS=1` turns it on. About +35 ms per frame in a room.
 - **Mod-kit ceiling:** `BuildCeilingVaults` lays the kit's groin vault (the `vault` model, a 6x6 resample of `ceiling_big_master` made by `export_kit.py`) over each open tile at the wall tops, flat-shaded (`MeshSolid`), drawn only within `VaultDrawRange`. Off by default (flat ceiling): `FP_VAULT=1` turns it on.
-- **Heights:** `VerticalScale()` (1.25 in the dungeon) stretches walls, ceiling, structures and tile-art sprites. Art
+- **Heights:** `VerticalScale()` (1.5 in the dungeon) stretches walls, ceiling, structures and tile-art sprites. Art
   heights stay in art units (`SpritePixelsPerTileY` = 39.2 px per unit), and the stretch is applied only when drawing.
 - Lava and water count as solid, but they are drawn as floor (`isFlatSolid`). The ceiling is the plain ground
   texture. Hell has no ceiling.
@@ -222,6 +238,20 @@ Known test spots:
   the coverage crosses one half, colours are blended in RGB and mapped back to the palette by `NearestColor` (a cache
   of 32768 entries, rebuilt on palette changes; colours 1-31 are left out because the caves and hell cycle them).
   Smaller sprites keep plain nearest sampling.
+
+### 5.2.2 Upscaled textures up close
+- Where the art is blown up (fewer than `UpscaleBelow` = 0.6 texels per screen pixel), walls, recesses, floors and
+  ceilings, arches, wall-face and arcade meshes, and structure art are drawn from a copy at `TextureUpscale` (4) times
+  the resolution (`UpscaledTexture`, `fp_textures.cpp`): xBR level 1 applied twice (`Xbr2x`). Where an edge runs
+  diagonally across a texel's corner, the corner takes half the colour across it, so outlines and shapes come out
+  smooth while the texels in between stay sharp. Dithering (checkerboards) is left as it is, by design.
+- Mixed colours stay on the palette and keep their hue (`ComputeMixColor`): the middle of the ramp if both colours
+  share one, else the nearest colour of either's ramp. Distances and mixes for all colour pairs are tabled once per
+  level (`GetColorPairs`).
+- Copies are made on first use and cached per level, keyed by the texture's storage (`ForgetUpscaledTexture` when it
+  is freed: `BuildStructures` does it for the structure art). Structure art is only upscaled in town, the cathedral
+  and the catacombs (`FineCanvas`): the caves and hell cycle their palettes, which rebuilds their structures every
+  frame. Cost: about 3 ms a frame at 1280x720 in a close cathedral view.
 
 ### 5.3 Controls
 `fp_controls.cpp`:
@@ -286,7 +316,8 @@ All in `fp_buildings.cpp`, built per level in `BuildStructures`:
 | Structure | How it's made | Code |
 |---|---|---|
 | **Free-standing columns / torch stands** | shape read off the art row by row (the widest pixels give the size at each height; square or round) and turned into a lathe mesh with the art projected onto it, clamped at the ceiling | `ColumnProfile`, `BuildColumn` |
-| **Arcade pillars** | a shaft from the symmetric lower art; neighbouring pillars joined by **arch walls** wearing the filler wall pair, with the painted arch cut open and an underside added | `BuildArcadePillar`, `AddArcadeWall`, `MeshArcade` shader |
+| **Arcade pillars** | a shaft from the symmetric lower art; neighbouring pillars joined by **arch walls** wearing the filler wall pair, the painted arch stretched to spring from the capitals and span the gap (`FitArcade`), cut open and an underside added | `BuildArcadePillar`, `AddArcadeWall`, `MeshArcade` shader |
+| **Arches over walkable tiles** (cathedral arcades) | Diablo draws them with special cels on the tiles between pillars (`dSpecial`): each cel holds the half arch rising from the pillar after the tile; the pillar before it draws the other half. Both are read on the arch's plane (`SampleArchPlane`, `GetSpecialArch`, `PieceArchFace`) into one face spanning pillar centre to pillar centre (moved, with the slab, to where the pillars' axes are in the art: the cathedral's arcade pillars stand 7.5 px right of their tiles' middles, as their 3D columns do), built as a solid slab as thick as the capitals are wide (`ArchSlab::half`, measured from the art), with its underside along the opening (textured with the ring's lowest rows across its thickness) and the capitals' undersides closed. Over the pillars only what is above the springing is drawn (the springing is measured on the cel, ignoring art in the plinth rows), and the pillars' meshes are clipped there (`ClipTriangleBelow`). Where the art is empty above the opening the slab wears the plain wall, so it is never hollow; where an arcade ends on a pillar the capital block is completed past the pillar's middle and closed with an end face; surfaces over a pillar's (solid, unlit) tile take the light of the walkable tiles around it. Levels with these arches skip the arch walls above | `BuildSpecialArches`, `MeshArch` shader |
 | **Stairs down (between levels)** | built by hand from measurements of the art; the floor is cut open over the pit (the exported kit currently has no down-stair mesh) | `BuildStairsDown`, `FloorHoles` |
 | **Stairs up / main entrance** | the kit's `stairs_01` mesh fitted over the stair tiles by default, independently of the global kit surfaces | `BuildStairsUp` |
 | **Sarcophagus** | a box measured from its first (closed) frame; while it opens, the kit's body plus its lid slid off, turned and tipped over the edge, following the object's animation frame (`sarcophagus_body`, `sarcophagus_lid`, exported in the closed sarcophagus's frame); the 3D mod-kit model can be toggled independently with `dev.fp.sarcophagus(bool)`, even while `dev.fp.modkit(false)` is active | `BuildObjectBox` |

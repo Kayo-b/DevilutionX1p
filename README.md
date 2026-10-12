@@ -77,6 +77,82 @@ Without it, everything works except that no weapon is drawn.
 | **T** | spell book (the Speedbook; its usual key `S` is now used for walking) |
 | Inventory, character, quest and spell keys | as usual. While a panel is open, the mouse cursor comes back so you can use it |
 
+## Console commands
+
+With a `DEBUG=ON` build, the **`` ` ``** key (grave/backtick, rebindable) opens a Lua console. Type a command and
+press Enter, for example `dev.player.god(true)`. Esc closes it. Arguments shown with `= …` are optional; a toggle
+called without an argument flips the current state.
+
+### Player
+
+| Command | Does |
+|---|---|
+| `dev.player.god(on)` | god mode: no damage, spells cost no mana |
+| `dev.player.invisible(on)` | freezes every monster (they stop acting) |
+| `dev.player.info(id = 0)` | show the player's info |
+| `dev.player.arrow('normal'\|'fire'\|'lightning'\|'explosion')` | effect of your arrows |
+| `dev.player.gold.give(amount = max)` / `dev.player.gold.take(amount = max)` | add or remove gold |
+| `dev.player.spells.setLevel(level)` | set every spell to a level |
+| `dev.player.stats.levelUp(amount = 1)` | gain character levels |
+| `dev.player.stats.rejuvenate()` | refill life and mana |
+| `dev.player.stats.adjustHealth(amount)` / `adjustMana(amount)` | change life or mana (can be negative) |
+| `dev.player.stats.setAttrToMax()` / `setAttrToMin()` | Strength, Magic, Dexterity and Vitality to maximum or minimum |
+| `dev.player.trn.plr(name)` / `trn.mon(name)` / `trn.clear()` | recolour the player with a `plrgfx\` or `monsters\` TRN, or undo it |
+
+### Items, monsters, NPCs and quests
+
+| Command | Does |
+|---|---|
+| `dev.items.spawn(name)` / `dev.items.spawnUnique(name)` | create an item, or a unique item, by name |
+| `dev.items.info()` / `dev.items.get()` | describe the held item or the one under the cursor, or return it to Lua |
+| `dev.monsters.spawn(name, count = 1)` / `spawnUnique(name, count = 1)` | spawn monsters next to you |
+| `dev.towners.visit(name)` / `dev.towners.talk(name)` | teleport to a town NPC, or talk to them |
+| `dev.quests.all()` / `dev.quests.info(id)` | quest information |
+| `dev.quests.activate(id)` / `dev.quests.activateAll()` | turn on one quest, or every available one |
+| `dev.search.monster(name)` / `item(name)` / `object(name)` / `clear()` | mark matches on the map, or clear the marks |
+
+### Levels
+
+| Command | Does |
+|---|---|
+| `dev.level.warp.dungeon(n)` | go to dungeon level `n` (0 is town) |
+| `dev.level.warp.quest(n)` | go to quest level `n` |
+| `dev.level.warp.map(path, dunType, x, y)` | load a custom `.dun` map |
+| `dev.level.reset(n, seed = nil)` | regenerate level `n`, optionally with a fixed seed |
+| `dev.level.seed(level = current)` | print a level's seed |
+| `dev.level.map.reveal()` / `hide()` | reveal or hide the automap |
+| `dev.level.exportDun()` | save the current level as a `.dun` file |
+
+### Display
+
+| Command | Does |
+|---|---|
+| `dev.display.fps()` | frame-rate counter |
+| `dev.display.fullbright(on)` | turn light shading off |
+| `dev.display.grid(on)` / `path(on)` / `vision(on)` | tile grid, path finding and vision overlays (isometric view) |
+| `dev.display.tileData(name)` | show a tile data layer (`dPiece`, `dLight`, `dMonster`, `coords`, …) |
+| `dev.display.scrollView(on)` | scroll the isometric view with Shift + mouse |
+
+### First person
+
+| Command | Does |
+|---|---|
+| `dev.fp.on(enabled)` | first person on or off (same as F4) |
+| `dev.fp.teleport(x, y)` | move to a tile (the HUD shows your tile) |
+| `dev.fp.walkto(x, y)` | walk to a tile the way a click does |
+| `dev.fp.view(yawDegrees, pitch)` | set the view angle (0 = +x, 90 = +y) |
+| `dev.fp.where()` / `dev.fp.info(radius = 8)` | camera position; camera and nearby sprites |
+| `dev.fp.operate(x, y)` | operate the object at a tile (sarcophagus, door, chest) |
+| `dev.fp.killmonsters()` / `dev.fp.monsterstate()` | kill every monster (to look at corpses); describe nearby monsters |
+| `dev.fp.weapon(file, record, frame)` | show one Daggerfall weapon frame; no arguments to go back to the held weapon |
+| `dev.fp.buildings(enabled)` | town houses as 3D models (default) or flat sprites |
+| `dev.fp.housemodels` / `housemeshes` / `housetextures` / `modeltextures(enabled)` | switch parts of the town house rendering, to compare |
+| `dev.fp.recesses(enabled)` | carved arches and niches in walls (default) or flat walls |
+| `dev.fp.modkit(enabled)` | 3D kit walls, floors, ceilings and columns (default off) |
+| `dev.fp.sarcophagus(enabled)` | 3D sarcophagus model, independent of `modkit` (default on) |
+| `dev.fp.map(radius)`, `tilemap(x0, y0, x1, y1)`, `features()`, `lowwalls()` | text maps and lists of tiles, stairs, doors and objects |
+| `dev.fp.dumpiso`, `dumppiece`, `dumppieces`, `dumpfaces` | save original art as PPM images (see the modders' guide) |
+
 ## Recommended settings
 
 The bottom control panel is a fixed 640 × 128 pixels, so its share of the screen depends on the game's render

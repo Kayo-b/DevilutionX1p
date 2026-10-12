@@ -21,6 +21,12 @@ constexpr int ColumnWidth = 64;
 constexpr int ColumnPixelHeight = 256; // MicroTileLen / 2 rows of 32px micros
 /** @brief Size of a floor texture (a tile is a 64x32 diamond in iso). */
 constexpr int FloorTextureSize = 32;
+/**
+ * @brief Face rows below the edge line of the tile: a wall stands on the middle of its tile, half a tile in front of
+ * the edge (16 rows lower in iso, the depth of the wall's lit top, its cap), with the plinths and column bases at its
+ * foot. Faces carry them as their bottom rows; the bottom row is on the floor.
+ */
+constexpr int FaceBaseRows = 16;
 /** @brief Texture pixel that has no art (shows the fallback texture instead). */
 constexpr int16_t NoPixel = -1;
 
@@ -32,6 +38,15 @@ struct PieceTextures {
 	/** Per face texel: 1 where the art has an opening (no pixel, but art above it), e.g. inside an arch. */
 	std::vector<uint8_t> holesX;
 	std::vector<uint8_t> holesY;
+	/**
+	 * Per base texel (FaceBaseRows x FaceTextureWidth, row 0 = just below the foot): 1 where the foot of the face lies
+	 * outside the piece's diamond, so the next tile along the wall draws it (in its spill).
+	 */
+	std::vector<uint8_t> cutX;
+	std::vector<uint8_t> cutY;
+	/** The cut base texels of the previous tile along the wall, as this piece draws them (NoPixel: floor). */
+	std::vector<int16_t> spillX;
+	std::vector<int16_t> spillY;
 	std::vector<int16_t> floor;
 	bool faceXUsable;
 	bool faceYUsable;
@@ -43,7 +58,7 @@ struct PieceTextures {
 	std::vector<int> recessY;
 	float recessDepthX = 0; // how deep the recess goes, in tiles
 	float recessDepthY = 0;
-	/** Rows from the base of the face to its highest opaque pixel (the wall height the art shows), 0 if empty. */
+	/** Rows from the bottom of the face (FaceBaseRows below the foot of the wall) to its highest opaque pixel, 0 if empty. */
 	int faceXRows;
 	int faceYRows;
 	/** The whole iso column (ColumnWidth x ColumnHeight, row 0 = top), for drawing the piece as a billboard. */
@@ -96,6 +111,75 @@ bool GetPlainWallPair(uint16_t &first, uint16_t &second, bool &useX);
  * The iso art of a wall is only this tall; scaling walls beyond it leaves a band of filler at the top.
  */
 [[nodiscard]] int LevelWallRows();
+
+/**
+ * @brief Face rows at the top of the level's wall art that show the top of the wall (lit, seen from above in iso), 0
+ * if it has none. First person cuts them off.
+ */
+[[nodiscard]] int WallCapRows();
+/** @brief Face rows a wall whose art is `rows` rows tall shows: its art less the cap (tall walls only). */
+[[nodiscard]] int WallShownRows(int rows);
+/** @brief Face rows shown per row of the wall's own height for a wall whose art is `rows` rows tall (1: unscaled). */
+[[nodiscard]] float WallArtScale(int rows);
+/** @brief Face row at a height (tiles, before VerticalScale) on a wall whose art is `rows` rows tall, without its cap. */
+[[nodiscard]] int WallArtRow(float height, int rows = LevelWallRows());
+/** @brief The height (tiles, before VerticalScale) of a face row on such a wall: the inverse of WallArtRow. */
+[[nodiscard]] float WallArtHeight(int row, int rows = LevelWallRows());
+
+/**
+ * @brief Finds the outline of an arch (blind arch, niche, doorway) in a face `width` texels wide whose wall art is
+ * `rows` rows tall: per column, the first face row inside it (FaceTextureHeight() if the column is not), shaped to
+ * rise to the arch's crown and fall to both sides. False if there is none.
+ */
+bool FindArchOutline(const std::vector<int16_t> &face, int width, int rows, std::vector<int> &top);
+
+/** @brief How many times finer UpscaledTexture is than the art, each way. */
+constexpr int TextureUpscale = 4;
+/** @brief Art texels per screen pixel below which the art is drawn from its UpscaledTexture (it is blown up). */
+constexpr float UpscaleBelow = 0.6F;
+/**
+ * @brief A texture (`width` texels wide, row 0 = top) at TextureUpscale times the resolution, its edges smoothed by xBR
+ * (no blur), for drawing up close. Cached per level by the texture's storage, which must outlive the level.
+ */
+[[nodiscard]] const std::vector<int16_t> &UpscaledTexture(const std::vector<int16_t> &texture, int width);
+/** @brief Drops a texture's UpscaledTexture (call before its storage is freed or changed). */
+void ForgetUpscaledTexture(const std::vector<int16_t> &texture);
+
+/** @brief The recess (see PieceTextures::recessX) of the filler face GetFallbackFace(parity), null if it has none. */
+[[nodiscard]] const std::vector<int> *GetFallbackRecess(int parity, float &depth);
+
+/** @brief Width of an arch face: from the middle of the tile before the arch's tile to the middle of the one after. */
+constexpr int ArchFaceWidth = 2 * FaceTextureWidth;
+
+/**
+ * @brief An arch over a walkable tile (Diablo's special arch cels, dSpecial): its art read on the plane the arch
+ * stands on (the middle of the tile, like the walls), ArchFaceWidth x FaceTextureHeight(), row 0 = top, NoPixel where
+ * it is open. Column u is at (u + 0.5) / FaceTextureWidth - 0.5 tiles along the arch from the tile's start.
+ */
+struct SpecialArch {
+	std::vector<int16_t> face;
+	std::vector<int16_t> column; // the cel as drawn (ColumnWidth x ColumnHeight()), for resampling (SpecialArchFace)
+	bool alongX = true; // runs along world x (the iso right edge), else along y
+	bool ok = false;
+};
+
+/**
+ * @brief The arch drawn by special cel `special` (dSpecial's 1-based value), cached per level. The cel draws the half
+ * of the arch rising from the pillar after the tile; the pillar before it draws the other half.
+ */
+[[nodiscard]] const SpecialArch &GetSpecialArch(int special);
+/**
+ * @brief The cel's art on a plane `shiftPx` screen pixels right of the one SpecialArch::face is read on: where the
+ * arch is when its pillars stand off their tiles' middles (an axis that far right in the art).
+ */
+[[nodiscard]] std::vector<int16_t> SpecialArchFace(const SpecialArch &arch, float shiftPx);
+/**
+ * @brief A piece's art on an arch's plane (see SpecialArch), shifted `sOffset` tiles (1: the piece of the tile before,
+ * -1: the one after) and `shiftPx` screen pixels right (see SpecialArchFace).
+ */
+[[nodiscard]] std::vector<int16_t> PieceArchFace(uint16_t pieceId, bool alongX, float sOffset, float shiftPx = 0);
+/** @brief Per arch face column: the row of the arch's underside (the first art above the opening), -1 where the art reaches the floor or is empty. */
+[[nodiscard]] std::vector<int> ArchUnderside(const std::vector<int16_t> &face);
 
 /** @brief Floor of the level's most common walkable piece, used where a piece has no ground art of its own. */
 [[nodiscard]] const std::vector<int16_t> &GetGroundFloor();

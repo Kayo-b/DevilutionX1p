@@ -10,6 +10,8 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <optional>
+#include <tuple>
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
@@ -20,6 +22,7 @@
 
 #include "engine/light_tables.hpp"
 #include "engine/palette.h"
+#include "fp/fp_doors.hpp"
 #include "fp/fp_textures.hpp"
 #include "fp/fp_world.hpp"
 #include "levels/gendung.h"
@@ -122,6 +125,8 @@ struct WorldTriangle {
 	uint8_t textureDarkness = 0;     // shading of the textured surface by the sun
 	float texelDensity = 0;          // full-size texels of the model texture per world unit (for the mip level)
 	V3 unitNormal { 0, 0, 0 };       // for the mip level: surfaces seen at a slant cover more texels per pixel
+	float arcSpring = 0; // MeshArcade: the arch wall's springing height
+	int16_t arch = -1;   // MeshArch: index into ArchSlabs
 	uint8_t fallback;   // colour where the art has no pixel
 };
 
@@ -137,6 +142,7 @@ enum : uint8_t {
 	MeshWallFace,   // a wall face texture of the tile at (mirrorX, mirrorY) (faceX picks which), open where it has no art
 	MeshFloorArt,   // the floor art under the point (what the art paints on the floor, raised into 3D: the stairs' fan)
 	MeshSolid,      // one colour (fallback) for the whole triangle, shaded by its darkness: the kit's ceiling vaults
+	MeshArch,       // an arch over a walkable tile (ArchSlabs[arch]): its face art, open where it has none; faceX: its underside or top
 };
 
 struct Building {
@@ -314,9 +320,46 @@ uint8_t ShadeColor(uint8_t color, int darkness)
 	return table[std::min<size_t>(darkness, SurfaceShade.size() - 1)][color];
 }
 
+/** World size of a screen pixel at the point being shaded (set by RasterizeTriangles). */
+float ShadePixelWorld = 0;
+/**
+ * @brief Whether SampleArt may read the art's UpscaledTexture up close: not on levels that cycle their palettes, whose
+ * structures (and art) are rebuilt every frame.
+ */
+bool FineCanvas()
+{
+	return leveltype == DTYPE_TOWN || leveltype == DTYPE_CATHEDRAL || leveltype == DTYPE_CATACOMBS;
+}
+
+/** @brief Whether art with `texelsPerWorld` texels per tile is blown up enough at the point being shaded to use its UpscaledTexture. */
+bool ShadeFine(float texelsPerWorld)
+{
+	return ShadePixelWorld * texelsPerWorld < UpscaleBelow;
+}
+
+/** @brief A face texel up close: from the face's UpscaledTexture at (u, v) in texels of the face, `width` wide. */
+int16_t FineFaceTexel(const std::vector<int16_t> &face, int width, float u, float v)
+{
+	const std::vector<int16_t> &fine = UpscaledTexture(face, width);
+	const int fineWidth = width * TextureUpscale;
+	const int fineHeight = static_cast<int>(fine.size()) / fineWidth;
+	const int x = std::clamp(static_cast<int>(u * TextureUpscale), 0, fineWidth - 1);
+	const int y = std::clamp(static_cast<int>(v * TextureUpscale), 0, fineHeight - 1);
+	return fine[static_cast<size_t>(y) * fineWidth + x];
+}
+
 /** @brief Iso art pixel at the screen position of a world point, searching a few pixels around for opaque art. */
 int16_t SampleArt(const Building &b, float wx, float wy, float wz)
 {
+	if (FineCanvas() && ShadeFine(32.0F) && !b.canvas.empty()) {
+		const float fx = (wx - wy) * 32.0F - static_cast<float>(b.originX);
+		const float fy = (wx + wy) * 16.0F - wz * HeightPixels - static_cast<float>(b.originY);
+		if (fx >= 0 && fy >= 0 && fx < static_cast<float>(b.canvasWidth) && fy < static_cast<float>(b.canvasHeight)) {
+			const int16_t pixel = FineFaceTexel(b.canvas, b.canvasWidth, fx, fy);
+			if (pixel > 0)
+				return pixel;
+		}
+	}
 	const int px = static_cast<int>(std::floor((wx - wy) * 32.0F)) - b.originX;
 	const int py = static_cast<int>(std::floor((wx + wy) * 16.0F - wz * HeightPixels)) - b.originY;
 	for (int radius = 0; radius <= 2; radius++) {
@@ -2111,7 +2154,6 @@ void DrawHouseModel(const Surface &out, const Projection &proj, std::vector<floa
 
 /** The eye of the view being rasterized, and the world size of a screen pixel at the pixel being shaded. */
 V3 ShadeEye { 0, 0, 0 };
-float ShadePixelWorld = 0;
 /** MeshColor's texels per world unit for the triangle it last shaded, taking its slant into account. */
 const WorldTriangle *SlantFor = nullptr;
 float SlantTexelsPerWorld = 0;
@@ -2997,15 +3039,21 @@ bool BuildArcadePillar(Structure &st, Point tile, float &spring)
 	return true;
 }
 
-/** @brief The level's plain wall pair and where its painted arch is centred, for arch walls (cached per level). */
+/** @brief The level's plain wall pair and its painted arch, for arch walls (cached per level). */
 struct ArcadeArt {
 	bool ok = false;
 	bool hasRecess = false;
 	uint16_t pairA = 0;
 	uint16_t pairB = 0;
 	bool useX = false;
-	float centre = 1.0F; // tiles from the start of the first face
+	float centre = 1.0F;    // tiles from the start of the first face
+	float halfWidth = 0.5F; // of the painted arch's opening, tiles
+	float crown = 1.5F;     // height of the painted arch's crown and of its springing (tiles, before VerticalScale)
+	float spring = 1.0F;
 };
+
+/** Half the width of an arcade's pier, left standing beside each arch between pillars (tiles). */
+constexpr float ArcadePierHalf = 0.12F;
 
 const ArcadeArt &GetArcadeArt()
 {
@@ -3024,44 +3072,90 @@ const ArcadeArt &GetArcadeArt()
 		const int faceHeight = FaceTextureHeight();
 		int sum = 0;
 		int n = 0;
+		int first = -1;
+		int last = -1;
+		int crownRow = faceHeight;
 		for (int u = 0; u < 2 * FaceTextureWidth; u++) {
 			const std::vector<int> &r = u < FaceTextureWidth ? ra : rb;
 			if (!r.empty() && r[u % FaceTextureWidth] < faceHeight) {
 				sum += u;
 				n++;
+				if (first < 0)
+					first = u;
+				last = u;
+				crownRow = std::min(crownRow, r[u % FaceTextureWidth]);
 			}
 		}
 		art.centre = n > 0 ? (static_cast<float>(sum) / static_cast<float>(n) + 0.5F) / FaceTextureWidth : 1.0F;
 		art.hasRecess = n > 0;
+		if (art.hasRecess) {
+			auto rowAt = [&](int u) { return (u < FaceTextureWidth ? ra : rb)[u % FaceTextureWidth]; };
+			art.halfWidth = static_cast<float>(last - first + 1) / 2.0F / FaceTextureWidth;
+			art.crown = WallArtHeight(crownRow);
+			art.spring = WallArtHeight(std::max(rowAt(first), rowAt(last)));
+			art.hasRecess = art.crown > art.spring + 0.1F && art.halfWidth > 0.2F;
+		}
 	}
 	return art;
 }
 
-/** @brief Where an arch wall's texture is at a point along its span: which face of the pair, and its column. */
-void ArcadeTexel(const ArcadeArt &art, float along, float span, bool &second, int &u)
+/**
+ * @brief How the painted arch is laid on an arch wall: stretched so it springs from the pillars' capitals and spans
+ * the gap between them (less the piers).
+ */
+struct ArcadeFit {
+	float span;
+	float spring;  // the wall's springing height
+	float scaleH;  // art tiles per tile along the wall
+	float scaleV;  // art tiles per tile up the wall, from the springing
+};
+
+ArcadeFit FitArcade(const ArcadeArt &art, float span, float spring)
 {
-	const float t = along - span / 2.0F + art.centre;
-	const float wrapped = t - 2.0F * std::floor(t / 2.0F);
+	ArcadeFit fit { span, spring, 1.0F, 1.0F };
+	if (!art.hasRecess)
+		return fit;
+	const float radius = std::max(0.2F, span / 2.0F - ArcadePierHalf);
+	fit.scaleH = art.halfWidth / radius;
+	const float crown = std::min(spring + (art.crown - art.spring) / fit.scaleH, WallHeight() - 0.2F);
+	fit.scaleV = (art.crown - art.spring) / std::max(crown - spring, 0.1F);
+	return fit;
+}
+
+/** @brief The point of the art (along the plain wall pair, height) shown at a point of an arch wall. */
+void ArcadeArtPoint(const ArcadeArt &art, const ArcadeFit &fit, float along, float z, float &artAlong, float &artZ)
+{
+	artAlong = art.centre + (along - fit.span / 2.0F) * fit.scaleH;
+	artZ = art.hasRecess ? art.spring + (z - fit.spring) * fit.scaleV : z;
+}
+
+/** @brief Where an arch wall's texture is at a point of the art along the plain wall pair: which face, and its column. */
+void ArcadeTexel(float artAlong, bool &second, int &u)
+{
+	const float wrapped = artAlong - 2.0F * std::floor(artAlong / 2.0F);
 	second = wrapped >= 1.0F;
 	u = std::clamp(static_cast<int>((wrapped - (second ? 1.0F : 0.0F)) * FaceTextureWidth), 0, FaceTextureWidth - 1);
 }
 
 /** @brief Height of the top of an arch wall's opening at a point along its span; 0 where it is closed. */
-float ArcadeOpeningTop(const ArcadeArt &art, float along, float span)
+float ArcadeOpeningTop(const ArcadeArt &art, const ArcadeFit &fit, float along)
 {
 	if (art.ok && art.hasRecess) {
+		float artAlong;
+		float artZ;
+		ArcadeArtPoint(art, fit, along, 0.0F, artAlong, artZ);
 		bool second;
 		int u;
-		ArcadeTexel(art, along, span, second, u);
+		ArcadeTexel(artAlong, second, u);
 		const PieceTextures &tex = GetPieceTextures(second ? art.pairB : art.pairA);
 		const std::vector<int> &recess = art.useX ? tex.recessX : tex.recessY;
 		const int faceHeight = FaceTextureHeight();
-		if (recess.empty() || recess[u] >= faceHeight)
+		if (recess.empty() || recess[u] >= faceHeight || std::abs(along - fit.span / 2.0F) >= fit.span / 2.0F - ArcadePierHalf)
 			return 0.0F;
-		return static_cast<float>(faceHeight - 1 - recess[u]) / SpritePixelsPerTileY;
+		return fit.spring + (WallArtHeight(recess[u]) - art.spring) / fit.scaleV;
 	}
-	const float radius = span / 2.0F - 0.2F;
-	const float offset = along - span / 2.0F;
+	const float radius = fit.span / 2.0F - 0.2F;
+	const float offset = along - fit.span / 2.0F;
 	return std::abs(offset) < radius ? 1.0F + std::sqrt(radius * radius - offset * offset) * 0.8F : 0.0F;
 }
 
@@ -3100,6 +3194,7 @@ void AddArcadeWall(Building &b, Vec2 from, Vec2 to, float spring)
 			tri.downX = dir.x;
 			tri.downY = dir.y;
 			tri.slopeScale = length; // the span, for centring the arch
+			tri.arcSpring = spring;
 		}
 	};
 	for (const float s : { 1.0F, -1.0F }) {
@@ -3109,8 +3204,9 @@ void AddArcadeWall(Building &b, Vec2 from, Vec2 to, float spring)
 	// The underside of the arch (its intrados) between the two faces, following the opening, so the wall has its
 	// thickness seen from below and from the side.
 	const ArcadeArt &art = GetArcadeArt();
+	const ArcadeFit fit = FitArcade(art, length, spring);
 	const int samples = std::max(4, static_cast<int>(length * 16.0F));
-	auto top = [&](int i) { return std::max(z0, ArcadeOpeningTop(art, length * static_cast<float>(i) / static_cast<float>(samples), length)); };
+	auto top = [&](int i) { return std::max(z0, ArcadeOpeningTop(art, fit, length * static_cast<float>(i) / static_cast<float>(samples))); };
 	float prev = top(0);
 	for (int i = 0; i < samples; i++) {
 		const float next = top(i + 1);
@@ -3468,52 +3564,178 @@ std::unordered_map<int, KitWall> KitWalls;
 constexpr float KitWallConcaveDepth = 0.42F; // tiles: the niche's depth over the slab, as the model's proportions give
 constexpr float KitWallDoorDepth = 0.075F;
 
-/** @brief A closed door drawn as the kit's door model, set in its doorway; rebuilt when its tile changes. */
-struct DoorModel {
-	Point tile { -1, -1 };
-	Structure st;
+/** @brief A door's leaf as a low-poly slab hinged in its doorway, rebuilt whenever its swing changes. */
+struct DoorLeaf {
+	float angle = -1.0F;
+	int side = 0;
+	Vec2 hinge { 0, 0 };
+	Vec2 direction { 0, 0 }; // from the hinge along the leaf
+	float alongStart = 0;    // door-relative position along the wall where the leaf starts (see Doorway)
+	float width = 0;
+	float height = 0;        // of the leaf at its highest
+	std::vector<WorldTriangle> mesh;
 };
 
-std::unordered_map<int, DoorModel> DoorModels;
+std::unordered_map<int, DoorLeaf> DoorLeaves; // by object id
 
-/** Door width (of a tile) and thickness, in tiles; the model's height follows its proportions. */
-constexpr float DoorModelWidth = 0.92F;
-constexpr float DoorModelThickness = 0.14F;
+/** Gap between the leaf and its frame, the leaf's thickness, and how many slices follow its arched top (tiles). */
+constexpr float DoorLeafGap = 0.012F;
+constexpr float DoorLeafThickness = 0.07F;
+constexpr int DoorLeafSlices = 10;
+/** The wood texture repeats every this many tiles across and up the leaf. */
+constexpr float DoorWoodRepeat = 0.8F;
 
-bool BuildDoorModel(DoorModel &door, const Object &object)
+/** @brief The kit's door texture (wood planks), -1 if the kit is not loaded. */
+int DoorWoodTexture()
 {
 	const LandmarkMesh *mesh = KitMesh("door");
 	if (mesh == nullptr)
-		return false;
-	const Point tile = object.position;
-	// The wall runs along x if the tiles either side of the doorway in x are solid, else along y.
-	const bool alongX = IsTileSolid({ tile.x - 1, tile.y }) && IsTileSolid({ tile.x + 1, tile.y });
-	const float width = DoorModelWidth;
-	// The door model is 1.35 wide and 2.48 high (x thin): its height keeps those proportions.
-	const float height = width * 2.48F / 1.35F;
-	Building &b = door.st.art;
-	b = Building {};
-	b.canvasWidth = 0;
-	b.canvasHeight = 0;
-	const Vec2 c { static_cast<float>(tile.x) + 0.5F, static_cast<float>(tile.y) + 0.5F };
-	if (alongX)
-		AddKitModel(b, *mesh, c, width, DoorModelThickness, 0.0F, height, true);
-	else
-		AddKitModel(b, *mesh, c, DoorModelThickness, width, 0.0F, height, false);
-	SetStructureFallbacks(door.st);
-	b.x0 = c.x - (alongX ? width : DoorModelThickness) / 2.0F;
-	b.x1 = c.x + (alongX ? width : DoorModelThickness) / 2.0F;
-	b.y0 = c.y - (alongX ? DoorModelThickness : width) / 2.0F;
-	b.y1 = c.y + (alongX ? DoorModelThickness : width) / 2.0F;
-	b.lowestZ = 0;
-	b.highestZ = height;
-	door.tile = tile;
-	return !b.mesh.empty();
+		return -1;
+	for (const int16_t texture : mesh->textures)
+		if (texture >= 0)
+			return texture;
+	return -1;
 }
 
-bool IsClosedDoor(const Object &object)
+void BuildDoorLeaf(DoorLeaf &leaf, const Doorway &door, float angle, int side)
 {
-	return object.isDoor() && object._oVar4 == 0; // DOOR_CLOSED (objects.cpp)
+	leaf.angle = angle;
+	leaf.side = side;
+	leaf.mesh.clear();
+	const Vec2 along = door.alongX ? Vec2 { 1, 0 } : Vec2 { 0, 1 };
+	const Vec2 across = door.alongX ? Vec2 { 0, 1 } : Vec2 { 1, 0 };
+	const float s = static_cast<float>(side);
+	const Vec2 d { along.x * std::cos(angle) + across.x * s * std::sin(angle), along.y * std::cos(angle) + across.y * s * std::sin(angle) };
+	const Vec2 m { across.x * std::cos(angle) - along.x * s * std::sin(angle), across.y * std::cos(angle) - along.y * s * std::sin(angle) };
+	leaf.alongStart = door.openFrom + DoorLeafGap;
+	leaf.width = door.openTo - door.openFrom - 2.0F * DoorLeafGap;
+	// The hinge stands on the doorway's jamb, in the middle of the wall's thickness.
+	const Vec2 tile { static_cast<float>(door.tile.x), static_cast<float>(door.tile.y) };
+	leaf.hinge = { tile.x + along.x * leaf.alongStart + across.x * 0.5F, tile.y + along.y * leaf.alongStart + across.y * 0.5F };
+	leaf.direction = d;
+	if (leaf.width <= 0.05F)
+		return;
+	// The top of the leaf follows the opening's arch, a little below it.
+	std::array<float, DoorLeafSlices + 1> offsets;
+	std::array<float, DoorLeafSlices + 1> heights;
+	const int faceHeight = FaceTextureHeight();
+	leaf.height = 0;
+	for (int i = 0; i <= DoorLeafSlices; i++) {
+		offsets[i] = leaf.width * static_cast<float>(i) / DoorLeafSlices;
+		const float at = std::clamp(leaf.alongStart + offsets[i], door.openFrom, door.openTo - 0.001F);
+		const int u = std::max(DoorFaceColumn(door, at), 0);
+		int row = door.opening[u];
+		// Columns at the very edge of the opening may be closed: use the nearest open one.
+		for (int k = 1; row >= faceHeight && k < FaceTextureWidth; k++) {
+			const int left = std::max(u - k, 0);
+			const int right = std::min(u + k, FaceTextureWidth - 1);
+			row = std::min(door.opening[left], door.opening[right]);
+		}
+		heights[i] = std::max(0.1F, WallArtHeight(row) - DoorLeafGap);
+		leaf.height = std::max(leaf.height, heights[i]);
+	}
+	const int wood = DoorWoodTexture();
+	auto point = [&](float offset, float t, float z) {
+		return V3 { leaf.hinge.x + d.x * offset + m.x * t, leaf.hinge.y + d.y * offset + m.y * t, z };
+	};
+	// `corners` as (offset along the leaf, offset through it, height); the wood is laid on by offset along and height.
+	auto add = [&](std::initializer_list<std::array<float, 3>> corners, V3 normal, uint8_t darkness) {
+		std::vector<std::array<float, 3>> c(corners);
+		Building b {};
+		AddStructureFace(b, { point(c[0][0], c[0][1], c[0][2]), point(c[1][0], c[1][1], c[1][2]), point(c[2][0], c[2][1], c[2][2]), point(c[3][0], c[3][1], c[3][2]) },
+		    normal, leaf.hinge, MeshSolid, darkness);
+		for (size_t t = 0; t < b.mesh.size(); t++) {
+			WorldTriangle &tri = b.mesh[t];
+			tri.darkness = darkness; // no extra shade for faces turned from the iso camera
+			if (wood >= 0) {
+				// AddStructureFace fans the polygon from its first corner: (0, 1, 2), (0, 2, 3).
+				const std::array<size_t, 3> k { 0, t + 1, t + 2 };
+				for (size_t v = 0; v < 3; v++) {
+					tri.uv[v * 2] = (c[k[v]][0] + c[k[v]][1]) / DoorWoodRepeat;
+					tri.uv[v * 2 + 1] = c[k[v]][2] / DoorWoodRepeat;
+				}
+				tri.texture = static_cast<int16_t>(wood);
+				PrepareUvLookup(tri);
+			}
+			leaf.mesh.push_back(tri);
+		}
+	};
+	const float half = DoorLeafThickness / 2.0F;
+	for (int i = 0; i < DoorLeafSlices; i++) {
+		const float a = offsets[i];
+		const float b = offsets[i + 1];
+		const float ha = heights[i];
+		const float hb = heights[i + 1];
+		add({ { a, half, 0 }, { b, half, 0 }, { b, half, hb }, { a, half, ha } }, { m.x, m.y, 0 }, 0);
+		add({ { a, -half, 0 }, { a, -half, ha }, { b, -half, hb }, { b, -half, 0 } }, { -m.x, -m.y, 0 }, 0);
+		// The top edge, facing up and out along the slope of the arch.
+		const float rise = hb - ha;
+		const float run = b - a;
+		add({ { a, -half, ha }, { a, half, ha }, { b, half, hb }, { b, -half, hb } }, { -d.x * rise, -d.y * rise, run }, 1);
+	}
+	const float w = leaf.width;
+	add({ { 0, -half, 0 }, { 0, half, 0 }, { 0, half, heights[0] }, { 0, -half, heights[0] } }, { -d.x, -d.y, 0 }, 2);
+	add({ { w, -half, 0 }, { w, -half, heights[DoorLeafSlices] }, { w, half, heights[DoorLeafSlices] }, { w, half, 0 } }, { d.x, d.y, 0 }, 2);
+}
+
+/**
+ * @brief A door leaf's colour: the texel's brightness (lifted a little) mapped onto the wood ramp measured from
+ * Daggerfall's own door textures (TEXTURE.074, "Door Set"), then matched to the nearest palette colour.
+ */
+uint8_t DoorLeafColor(uint8_t color)
+{
+	struct Stop {
+		float luma, r, g, b;
+	};
+	static constexpr std::array<Stop, 8> Wood { {
+	    { 18, 25, 20, 15 }, { 48, 51, 44, 34 }, { 70, 89, 64, 41 }, { 86, 123, 75, 42 },
+	    { 100, 123, 92, 60 }, { 120, 151, 110, 69 }, { 160, 210, 148, 84 }, { 235, 251, 214, 150 } } };
+	static std::array<uint8_t, 256> table {};
+	static uint32_t readyFor = 0;
+	if (readyFor != PaletteVersion()) {
+		readyFor = PaletteVersion();
+		// Matching colour by colour speckles (the palette has no true brown): use the one 16-colour ramp that fits the wood best.
+		int woodRamp = 0;
+		float woodFit = 1e30F;
+		for (int ramp = 128; ramp < 256; ramp += 16) { // 128 and up are the same on every level
+			float fit = 0;
+			for (const Stop &stop : Wood) {
+				float nearest = 1e30F;
+				for (int j = ramp; j < ramp + 16; j++) {
+					const SDL_Color o = logical_palette[j];
+					nearest = std::min(nearest, (o.r - stop.r) * (o.r - stop.r) * 6 + (o.g - stop.g) * (o.g - stop.g) * 3 + (o.b - stop.b) * (o.b - stop.b) * 2);
+				}
+				fit += nearest;
+			}
+			if (fit < woodFit) {
+				woodFit = fit;
+				woodRamp = ramp;
+			}
+		}
+		for (int i = 0; i < 256; i++) {
+			const SDL_Color c = logical_palette[i];
+			const float luma = std::min(235.0F, (0.3F * c.r + 0.59F * c.g + 0.11F * c.b) * 2.2F + 20.0F);
+			size_t k = 1;
+			while (k + 1 < Wood.size() && Wood[k].luma < luma)
+				k++;
+			const float t = std::clamp((luma - Wood[k - 1].luma) / (Wood[k].luma - Wood[k - 1].luma), 0.0F, 1.0F);
+			constexpr float Dim = 0.85F; // the doors sit in the dark: Daggerfall's ramp, toned down
+			const float r = Dim * (Wood[k - 1].r + (Wood[k].r - Wood[k - 1].r) * t);
+			const float g = Dim * (Wood[k - 1].g + (Wood[k].g - Wood[k - 1].g) * t);
+			const float b = Dim * (Wood[k - 1].b + (Wood[k].b - Wood[k - 1].b) * t);
+			float best = 1e30F;
+			table[i] = static_cast<uint8_t>(i);
+			for (int j = woodRamp; j < woodRamp + 16; j++) {
+				const SDL_Color o = logical_palette[j];
+				const float dist = (o.r - r) * (o.r - r) * 3 + (o.g - g) * (o.g - g) * 6 + (o.b - b) * (o.b - b);
+				if (dist < best) {
+					best = dist;
+					table[i] = static_cast<uint8_t>(j);
+				}
+			}
+		}
+	}
+	return table[color];
 }
 
 struct VaultChunk {
@@ -3584,12 +3806,288 @@ void BuildCeilingVaults()
 	}
 }
 
+/**
+ * @brief Adds the part of a triangle at or below height `top` to `out` (none, the triangle, or one or two pieces of
+ * it), its texture coordinates carried along.
+ */
+void ClipTriangleBelow(const WorldTriangle &tri, float top, std::vector<WorldTriangle> &out)
+{
+	struct Vertex {
+		V3 p;
+		float u, v;
+	};
+	std::array<Vertex, 3> in;
+	int below = 0;
+	for (int k = 0; k < 3; k++) {
+		in[k] = { tri.p[k], tri.uv[k * 2], tri.uv[k * 2 + 1] };
+		if (tri.p[k].z <= top)
+			below++;
+	}
+	if (below == 3) {
+		out.push_back(tri);
+		return;
+	}
+	if (below == 0)
+		return;
+	std::array<Vertex, 4> kept;
+	int n = 0;
+	for (int k = 0; k < 3; k++) {
+		const Vertex &a = in[k];
+		const Vertex &b = in[(k + 1) % 3];
+		if (a.p.z <= top)
+			kept[n++] = a;
+		if ((a.p.z <= top) != (b.p.z <= top)) {
+			const float t = (top - a.p.z) / (b.p.z - a.p.z);
+			kept[n++] = { { a.p.x + (b.p.x - a.p.x) * t, a.p.y + (b.p.y - a.p.y) * t, top }, a.u + (b.u - a.u) * t, a.v + (b.v - a.v) * t };
+		}
+	}
+	for (int k = 1; k + 1 < n; k++) {
+		WorldTriangle piece = tri;
+		for (const auto &[slot, vertex] : { std::pair { 0, kept[0] }, std::pair { 1, kept[k] }, std::pair { 2, kept[k + 1] } }) {
+			piece.p[slot] = vertex.p;
+			piece.uv[slot * 2] = vertex.u;
+			piece.uv[slot * 2 + 1] = vertex.v;
+		}
+		if (piece.texture >= 0)
+			PrepareUvLookup(piece);
+		piece.bakeN = 0;
+		out.push_back(piece);
+	}
+}
+
+/** @brief An arch over a walkable tile, from the middle of the tile before it to the middle of the one after. */
+struct ArchSlab {
+	bool alongX;
+	Vec2 start; // the arch's plane at its start (the middle of the tile before)
+	std::vector<int16_t> face; // ArchFaceWidth x FaceTextureHeight() (see SpecialArch)
+	std::vector<int> underside;
+	// Over the pillars (or walls) at its ends only what is above the springing is drawn: below it is the pillar.
+	float springBefore = 0;
+	float springAfter = 0;
+	float length = 0; // tiles along (ArchFaceWidth / FaceTextureWidth)
+	float half = 0;   // half its thickness (tiles): as deep as the capitals it rests on are wide
+	Vec2 side;        // across it (horizontal unit vector)
+};
+std::vector<ArchSlab> ArchSlabs;
+
+/** @brief Height above the floor (tiles, before VerticalScale) of an arch face row. */
+float ArchRowHeight(int row)
+{
+	return static_cast<float>(FaceTextureHeight() - 1 - row) / SpritePixelsPerTileY;
+}
+
+/**
+ * @brief The arches Diablo draws over walkable tiles between pillars (special cels, dSpecial): each a slab on the
+ * middle of its tile wearing the cel's half arch and, for the other half, the art of the pillar before it.
+ */
+void BuildSpecialArches()
+{
+	ArchSlabs.clear();
+	if (leveltype == DTYPE_TOWN)
+		return;
+	const int faceHeight = FaceTextureHeight();
+	// How far right of its tile's middle a pillar's axis is in the art (screen px): the 3D column stands there
+	// (BuildColumnSlices), so the arch it carries is moved there too.
+	std::unordered_map<uint16_t, float> axisShift;
+	auto pillarShift = [&](Point pillar) -> std::optional<float> {
+		if (!InDungeonBounds(pillar) || !GetPieceTextures(dPiece[pillar.x][pillar.y]).isFreeStanding)
+			return std::nullopt;
+		const uint16_t piece = dPiece[pillar.x][pillar.y];
+		if (const auto it = axisShift.find(piece); it != axisShift.end())
+			return it->second;
+		int axisTwice = ColumnWidth;
+		if (ColumnProfile(GetPieceTextures(piece), axisTwice).empty())
+			axisTwice = ColumnWidth;
+		const float shift = static_cast<float>(axisTwice - ColumnWidth) / 2.0F;
+		axisShift[piece] = shift;
+		return shift;
+	};
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			const Point tile { x, y };
+			if (dSpecial[x][y] <= 0 || IsTileSolid(tile) || IsDoorwayTile(tile))
+				continue;
+			const SpecialArch &cel = GetSpecialArch(dSpecial[x][y]);
+			if (!cel.ok)
+				continue;
+			const Point before = cel.alongX ? Point { x - 1, y } : Point { x, y - 1 };
+			const Point after = cel.alongX ? Point { x + 1, y } : Point { x, y + 1 };
+			const std::optional<float> afterShift = pillarShift(after);
+			const std::optional<float> beforeShift = pillarShift(before);
+			const float shiftPx = afterShift.value_or(beforeShift.value_or(0.0F));
+			ArchSlab slab;
+			slab.alongX = cel.alongX;
+			slab.face = SpecialArchFace(cel, shiftPx);
+			// The springing, where the cel's half arch leaves the pillar after the tile: the arch is symmetric, so the
+			// same height at the pillar before.
+			const std::vector<int> celUnderside = ArchUnderside(slab.face);
+			for (int u = ArchFaceWidth - 1; u >= 0; u--) {
+				// Art in the bottom rows (the plinths' height) is the pillar's foot showing past it, not the arch.
+				if (celUnderside[u] >= 0 && celUnderside[u] < faceHeight - FaceBaseRows) {
+					slab.springAfter = ArchRowHeight(celUnderside[u]);
+					break;
+				}
+			}
+			slab.springBefore = slab.springAfter;
+			const int springRow = faceHeight - 1 - static_cast<int>(slab.springAfter * SpritePixelsPerTileY);
+			if (afterShift) {
+				// The rest of the capital the arch lands on, which the pillar after draws.
+				const std::vector<int16_t> other = PieceArchFace(dPiece[after.x][after.y], cel.alongX, -1.0F, shiftPx);
+				for (int row = 0; row <= springRow; row++)
+					for (int u = ArchFaceWidth - FaceTextureWidth / 2; u < ArchFaceWidth; u++) {
+						const size_t at = static_cast<size_t>(row) * ArchFaceWidth + u;
+						if (slab.face[at] == NoPixel)
+							slab.face[at] = other[at];
+					}
+			}
+			if (beforeShift) {
+				// The other half arch, as the pillar before draws it (above the springing: below is the pillar itself).
+				const std::vector<int16_t> other = PieceArchFace(dPiece[before.x][before.y], cel.alongX, 1.0F, shiftPx);
+				for (int row = 0; row <= springRow; row++)
+					for (int u = 0; u < ArchFaceWidth; u++) {
+						const size_t at = static_cast<size_t>(row) * ArchFaceWidth + u;
+						if (slab.face[at] == NoPixel)
+							slab.face[at] = other[at];
+					}
+			} else {
+				// Springing from a wall: the wall's art is no arch on this plane. Mirror the cel's half.
+				for (int row = 0; row < faceHeight; row++) {
+					int16_t *line = &slab.face[static_cast<size_t>(row) * ArchFaceWidth];
+					for (int u = 0; u < ArchFaceWidth / 2; u++)
+						if (line[u] == NoPixel)
+							line[u] = line[ArchFaceWidth - 1 - u];
+				}
+			}
+			slab.underside = ArchUnderside(slab.face);
+			// Stray art low in the opening (below the springing) is not the arch: its underside is the lowest art above.
+			for (int u = 0; u < ArchFaceWidth; u++) {
+				if (slab.underside[u] <= springRow + 2)
+					continue;
+				slab.underside[u] = -1;
+				for (int row = springRow + 2; row >= 0; row--) {
+					if (slab.face[static_cast<size_t>(row) * ArchFaceWidth + u] != NoPixel) {
+						slab.underside[u] = row;
+						break;
+					}
+				}
+			}
+			// The capitals: the stretch at each end whose underside is the springing. The arch is as thick as they are
+			// wide (they are square), so that they are blocks from every side.
+			auto capitalWidth = [&](int from, int step) {
+				int n = 0;
+				for (int u = from; u >= 0 && u < ArchFaceWidth && slab.underside[u] >= springRow - 3; u += step)
+					n++;
+				return n;
+			};
+			slab.half = std::clamp(static_cast<float>(std::max(capitalWidth(0, 1), capitalWidth(ArchFaceWidth - 1, -1))) / FaceTextureWidth, 0.12F, 0.32F);
+			// A shift right on screen is along x and against y alike (as the columns are moved).
+			const float off = shiftPx / 64.0F;
+			slab.start = cel.alongX ? Vec2 { static_cast<float>(x) - 0.5F + off, static_cast<float>(y) + 0.5F - off } : Vec2 { static_cast<float>(x) + 0.5F + off, static_cast<float>(y) - 0.5F - off };
+			const Vec2 dir = cel.alongX ? Vec2 { 1, 0 } : Vec2 { 0, 1 };
+			const Vec2 side { -dir.y, dir.x };
+			const float length = static_cast<float>(ArchFaceWidth) / FaceTextureWidth;
+			slab.length = length;
+			slab.side = side;
+			const float half = slab.half;
+			const float capital = std::min(half, 0.5F);
+			const float z1 = WallHeight();
+			const int16_t index = static_cast<int16_t>(ArchSlabs.size());
+			Structure st;
+			BuildCanvas(st.art, { tile }, {});
+			const Vec2 middle { slab.start.x + dir.x * length / 2.0F, slab.start.y + dir.y * length / 2.0F };
+			auto corner = [&](float along, float across, float z) { return V3 { slab.start.x + dir.x * along + side.x * across, slab.start.y + dir.y * along + side.y * across, z }; };
+			auto addFace = [&](std::initializer_list<V3> corners, V3 normal, bool underside, uint8_t darkness, bool end = false) {
+				const size_t first = st.art.mesh.size();
+				AddStructureFace(st.art, corners, normal, middle, MeshArch, darkness);
+				for (size_t t = first; t < st.art.mesh.size(); t++) {
+					st.art.mesh[t].arch = index;
+					st.art.mesh[t].faceX = underside;
+					st.art.mesh[t].mirrored = end;
+				}
+			};
+			// The faces, in strips from the underside up (the opening below is not drawn at all).
+			constexpr int Strip = 4;
+			for (int u = 0; u < ArchFaceWidth; u += Strip) {
+				const float a0 = static_cast<float>(u) / FaceTextureWidth;
+				const float a1 = static_cast<float>(u + Strip) / FaceTextureWidth;
+				float low = z1;
+				for (int k = u; k < u + Strip; k++) {
+					const bool pier = slab.face[static_cast<size_t>(faceHeight - 1) * ArchFaceWidth + k] != NoPixel;
+					low = std::min(low, slab.underside[k] >= 0 ? ArchRowHeight(slab.underside[k]) - 1.0F / SpritePixelsPerTileY : (pier ? 0.0F : z1));
+				}
+				if (a0 < 0.5F)
+					low = std::max(low, slab.springBefore);
+				if (a1 > length - 0.5F)
+					low = std::max(low, slab.springAfter);
+				low = std::max(low, 0.0F);
+				if (low >= z1)
+					continue;
+				for (const float k : { 1.0F, -1.0F }) {
+					const float a = k * half;
+					addFace({ corner(a0, a, low), corner(a1, a, low), corner(a1, a, z1), corner(a0, a, z1) }, { side.x * k, side.y * k, 0 }, false, 0);
+				}
+			}
+			// The underside, following the opening, so the arch has its thickness seen from below.
+			constexpr int Step = 2;
+			for (int u = 0; u + Step <= ArchFaceWidth; u += Step) {
+				const int r0 = slab.underside[u];
+				const int r1 = slab.underside[std::min(u + Step, ArchFaceWidth - 1)];
+				if (r0 < 0 || r1 < 0)
+					continue;
+				const float a0 = static_cast<float>(u) / FaceTextureWidth;
+				const float a1 = static_cast<float>(u + Step) / FaceTextureWidth;
+				const float z0 = ArchRowHeight(r0) - 1.0F / SpritePixelsPerTileY;
+				const float zNext = ArchRowHeight(r1) - 1.0F / SpritePixelsPerTileY;
+				if ((a0 < 0.5F && z0 < slab.springBefore - 0.05F) || (a1 > length - 0.5F && zNext < slab.springAfter - 0.05F))
+					continue; // below the springing, over a pillar
+				addFace({ corner(a0, -half, z0), corner(a1, -half, zNext), corner(a1, half, zNext), corner(a0, half, z0) },
+				    { dir.x * (zNext - z0), dir.y * (zNext - z0), -(a1 - a0) }, true, 1);
+			}
+			addFace({ corner(0, -half, z1), corner(length, -half, z1), corner(length, half, z1), corner(0, half, z1) }, { 0, 0, 1 }, true, 0);
+			// The capitals' undersides, around the pillars' tops.
+			for (const auto &[from, to, spring] : { std::tuple { 0.0F, capital, slab.springBefore }, std::tuple { length - capital, length, slab.springAfter } })
+				addFace({ corner(from, half, spring), corner(to, half, spring), corner(to, -half, spring), corner(from, -half, spring) }, { 0, 0, -1 }, true, 1);
+			// Where the arcade ends on a pillar, the rest of its capital and the wall above it, out past the pillar's
+			// middle, closed by an end face (the art read across, the capital being square).
+			auto continues = [&](Point next) {
+				return InDungeonBounds(next) && dSpecial[next.x][next.y] > 0 && !IsTileSolid(next) && !IsDoorwayTile(next)
+				    && GetSpecialArch(dSpecial[next.x][next.y]).ok && GetSpecialArch(dSpecial[next.x][next.y]).alongX == cel.alongX;
+			};
+			const Displacement step = cel.alongX ? Displacement { 1, 0 } : Displacement { 0, 1 };
+			for (const bool atStart : { true, false }) {
+				const bool pillar = atStart ? beforeShift.has_value() : afterShift.has_value();
+				if (!pillar || continues(atStart ? before - step : after + step))
+					continue;
+				const float spring = atStart ? slab.springBefore : slab.springAfter;
+				const float inner = atStart ? 0.0F : length;
+				const float outer = atStart ? -capital : length + capital;
+				const float out = atStart ? -1.0F : 1.0F;
+				for (const float k : { 1.0F, -1.0F })
+					addFace({ corner(inner, k * half, spring), corner(outer, k * half, spring), corner(outer, k * half, z1), corner(inner, k * half, z1) }, { side.x * k, side.y * k, 0 }, false, 0);
+				addFace({ corner(outer, -half, spring), corner(outer, half, spring), corner(outer, half, z1), corner(outer, -half, z1) }, { dir.x * out, dir.y * out, 0 }, false, 0, true);
+				addFace({ corner(inner, half, spring), corner(outer, half, spring), corner(outer, -half, spring), corner(inner, -half, spring) }, { 0, 0, -1 }, true, 1);
+				addFace({ corner(inner, -half, z1), corner(outer, -half, z1), corner(outer, half, z1), corner(inner, half, z1) }, { 0, 0, 1 }, true, 0);
+			}
+			ArchSlabs.push_back(std::move(slab));
+			SetStructureFallbacks(st);
+			Structures.push_back(std::move(st));
+		}
+	}
+	LogInfo("fp: {} arches", ArchSlabs.size());
+}
+
 void BuildStructures()
 {
 	PrepareKitSurfaces();
+	for (const Structure &st : Structures)
+		ForgetUpscaledTexture(st.art.canvas);
+	for (const auto &entry : KitWalls)
+		ForgetUpscaledTexture(entry.second.st.art.canvas);
+	for (const VaultChunk &chunk : VaultChunks)
+		ForgetUpscaledTexture(chunk.st.art.canvas);
 	Structures.clear();
 	ObjectBoxes.clear();
-	DoorModels.clear();
+	DoorLeaves.clear();
 	KitWalls.clear();
 	FloorHoles.clear();
 	StructureTiles.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY, 0);
@@ -3615,6 +4113,7 @@ void BuildStructures()
 		}
 	}
 	std::vector<ArcadePillar> pillars;
+	std::unordered_map<int, size_t> columnStructures; // free-standing column tile (y * MAXDUNX + x) -> its structure
 	for (int y = 0; y < MAXDUNY; y++) {
 		for (int x = 0; x < MAXDUNX; x++) {
 			if (StructureTiles[static_cast<size_t>(y) * MAXDUNX + x] != 0 || !GetPieceTextures(dPiece[x][y]).isFreeStanding)
@@ -3628,10 +4127,30 @@ void BuildStructures()
 			}
 			SetStructureFallbacks(st);
 			StructureTiles[static_cast<size_t>(y) * MAXDUNX + x] = 1;
+			columnStructures[y * MAXDUNX + x] = Structures.size();
 			Structures.push_back(std::move(st));
 		}
 	}
-	// Arch walls between neighbouring pillars of an arcade, and from end pillars to the wall they meet.
+	BuildSpecialArches();
+	// A pillar carrying arches ends at their springing: above it the arches' art draws its capital block.
+	for (const ArchSlab &slab : ArchSlabs) {
+		const Point tile { static_cast<int>(std::floor(slab.start.x)), static_cast<int>(std::floor(slab.start.y)) };
+		const Point after = slab.alongX ? Point { tile.x + 2, tile.y } : Point { tile.x, tile.y + 2 };
+		for (const auto &[pillar, spring] : { std::pair { tile, slab.springBefore }, std::pair { after, slab.springAfter } }) {
+			const auto it = columnStructures.find(pillar.y * MAXDUNX + pillar.x);
+			if (it == columnStructures.end() || spring <= 0.3F)
+				continue;
+			std::vector<WorldTriangle> &mesh = Structures[it->second].art.mesh;
+			std::vector<WorldTriangle> clipped;
+			for (const WorldTriangle &tri : mesh)
+				ClipTriangleBelow(tri, spring, clipped);
+			mesh = std::move(clipped);
+		}
+	}
+	// Arch walls between neighbouring pillars of an arcade, and from end pillars to the wall they meet (levels whose
+	// arches are not special cels).
+	if (!ArchSlabs.empty())
+		pillars.clear();
 	auto pillarAt = [&](Point t) -> const ArcadePillar * {
 		for (const ArcadePillar &p : pillars)
 			if (p.tile == t)
@@ -3738,8 +4257,13 @@ uint8_t StructureColor(const Structure &st, const WorldTriangle &tri, float wx, 
 		const int faceHeight = FaceTextureHeight();
 		const float along = std::abs(tri.normalX) > std::abs(tri.normalY) ? wy : wx;
 		const int u = std::clamp(static_cast<int>((along - std::floor(along)) * FaceTextureWidth), 0, FaceTextureWidth - 1);
-		const int v = std::clamp(faceHeight - 1 - static_cast<int>(wz * SpritePixelsPerTileY), 0, faceHeight - 1);
-		const int16_t texel = face[static_cast<size_t>(v) * FaceTextureWidth + u];
+		const int v = std::clamp(WallArtRow(wz), 0, faceHeight - 1);
+		int16_t texel = face[static_cast<size_t>(v) * FaceTextureWidth + u];
+		if (texel > 0 && ShadeFine(SpritePixelsPerTileY)) {
+			const float fv = static_cast<float>(faceHeight) - wz * SpritePixelsPerTileY * WallArtScale(LevelWallRows());
+			if (const int16_t fine = FineFaceTexel(face, FaceTextureWidth, (along - std::floor(along)) * FaceTextureWidth, fv); fine > 0)
+				texel = fine;
+		}
 		if (texel > 0)
 			return PatchColor(texel);
 	}
@@ -3769,15 +4293,85 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 				return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(static_cast<uint8_t>(kitColor), tri.darkness)]);
 			}
 		}
+		if (tri.mapping == MeshArch) {
+			const ArchSlab &slab = ArchSlabs[tri.arch];
+			float along = slab.alongX ? wx - slab.start.x : wy - slab.start.y;
+			// Past the ends (a capital out past an arcade's last pillar): the art mirrored about the pillar's middle.
+			if (along < 0)
+				along = -along;
+			else if (along > slab.length)
+				along = 2.0F * slab.length - along;
+			if (tri.mirrored) {
+				// An end face: the art read across the arch from the pillar's middle (the capital is square).
+				const float across = std::abs((wx - slab.start.x) * slab.side.x + (wy - slab.start.y) * slab.side.y);
+				along = along < slab.length / 2.0F ? across : slab.length - across;
+			}
+			const int u = std::clamp(static_cast<int>(along * FaceTextureWidth), 0, ArchFaceWidth - 1);
+			const int faceHeight = FaceTextureHeight();
+			int row;
+			if (tri.faceX) {
+				// Underside and top: the art just above the opening (the arch's ring), else the top of the face. Across
+				// the arch's thickness the ring's lowest rows are read in turn (its stones, as on the face), so the
+				// underside is not one row of art drawn out flat.
+				const float across = std::abs((wx - slab.start.x) * slab.side.x + (wy - slab.start.y) * slab.side.y);
+				constexpr int RingRows = 8;
+				const int up = std::clamp(static_cast<int>((1.0F - across / std::max(slab.half, 0.01F)) * RingRows), 0, RingRows - 1);
+				row = slab.underside[u] >= 0 ? slab.underside[u] - up : faceHeight - 1 - static_cast<int>(wz * SpritePixelsPerTileY);
+			} else {
+				if ((along < 0.5F && wz < slab.springBefore) || (along > static_cast<float>(ArchFaceWidth) / FaceTextureWidth - 0.5F && wz < slab.springAfter))
+					return -1; // the pillar below the springing
+				row = faceHeight - 1 - static_cast<int>(wz * SpritePixelsPerTileY);
+			}
+			if (row < 0 || row >= faceHeight)
+				return -1;
+			int16_t texel = slab.face[static_cast<size_t>(row) * ArchFaceWidth + u];
+			// Above the opening, where the art has nothing (over the capitals, up to the ceiling), the arch is still
+			// solid: the level's plain wall.
+			const bool aboveOpening = slab.underside[u] >= 0 && row <= slab.underside[u]
+			    && ArchRowHeight(slab.underside[u]) >= std::min(slab.springBefore, slab.springAfter) - 0.1F; // not stray art low in the opening
+			if (texel == NoPixel && (aboveOpening || tri.faceX)) {
+				// The plain wall's art stops at the wall's shown height (its cap is cut off): stay inside it.
+				const int wallRow = std::max(row, faceHeight - WallShownRows(LevelWallRows()));
+				texel = GetFallbackFace()[static_cast<size_t>(wallRow) * FaceTextureWidth + u % FaceTextureWidth];
+				if (texel <= 0)
+					texel = tri.fallback;
+			}
+			if (!tri.faceX && texel != NoPixel && ShadeFine(SpritePixelsPerTileY)) {
+				const int16_t fine = FineFaceTexel(slab.face, ArchFaceWidth, along * FaceTextureWidth, static_cast<float>(faceHeight) - wz * SpritePixelsPerTileY);
+				if (fine != NoPixel)
+					texel = fine;
+			}
+			if (tri.faceX) {
+				// Underside and top: the nearest art below.
+				for (int r = row + 1; texel == NoPixel && r < faceHeight; r++)
+					texel = slab.face[static_cast<size_t>(r) * ArchFaceWidth + u];
+				if (texel == NoPixel)
+					texel = tri.fallback;
+			} else if (texel == NoPixel) {
+				return -1; // the opening
+			}
+			const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
+			uint8_t level = InDungeonBounds(lit) ? LightAt(lit) : LightsMax;
+			if (InDungeonBounds(lit) && IsTileSolid(lit)) {
+				// Over a pillar's tile (solid, so never lit): as lit as the walkable tiles around it.
+				for (const Displacement d : { Displacement { 1, 0 }, Displacement { -1, 0 }, Displacement { 0, 1 }, Displacement { 0, -1 } })
+					if (InDungeonBounds(lit + d) && !IsTileSolid(lit + d))
+						level = std::min(level, LightAt(lit + d));
+			}
+			return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(PatchColor(texel), tri.darkness)]);
+		}
 		if (tri.mapping == MeshArcade) {
 			const float along = (wx - tri.mirrorX) * tri.downX + (wy - tri.mirrorY) * tri.downY;
-			const float span = tri.slopeScale;
+			const ArcadeFit fit = FitArcade(arcade, tri.slopeScale, tri.arcSpring);
+			float artAlong;
+			float artZ;
+			ArcadeArtPoint(arcade, fit, along, wz, artAlong, artZ);
 			bool second;
 			int u;
-			ArcadeTexel(arcade, along, span, second, u);
+			ArcadeTexel(artAlong, second, u);
 			const int faceHeight = FaceTextureHeight();
-			const int row = std::clamp(faceHeight - 1 - static_cast<int>(wz * SpritePixelsPerTileY), 0, faceHeight - 1);
-			if (!tri.faceX && wz < ArcadeOpeningTop(arcade, along, span))
+			const int row = std::clamp(WallArtRow(artZ), faceHeight - LevelWallRows() + WallCapRows(), faceHeight - 1);
+			if (!tri.faceX && wz < ArcadeOpeningTop(arcade, fit, along))
 				return -1; // inside the arch
 			int16_t texel = 0;
 			if (arcade.ok) {
@@ -3786,6 +4380,13 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 			}
 			if (texel <= 0)
 				texel = GetFallbackFace()[static_cast<size_t>(row) * FaceTextureWidth + u];
+			else if (ShadeFine(SpritePixelsPerTileY)) {
+				const PieceTextures &tex = GetPieceTextures(second ? arcade.pairB : arcade.pairA);
+				const float fu = (artAlong - std::floor(artAlong)) * FaceTextureWidth;
+				const float fv = static_cast<float>(faceHeight) - artZ * SpritePixelsPerTileY * WallArtScale(LevelWallRows());
+				if (const int16_t fine = FineFaceTexel(arcade.useX ? tex.faceX : tex.faceY, FaceTextureWidth, fu, fv); fine > 0)
+					texel = fine;
+			}
 			const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
 			const uint8_t level = InDungeonBounds(lit) ? LightAt(lit) : LightsMax;
 			return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(PatchColor(texel), tri.darkness)]);
@@ -3802,9 +4403,15 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 			const int py = static_cast<int>(std::floor((x + y) * 16.0F - wz * HeightPixels)) - st.art.originY;
 			if (px < 0 || py < 0 || px >= st.art.canvasWidth || py >= st.art.canvasHeight)
 				return -1;
-			const int16_t art = st.art.canvas[static_cast<size_t>(py) * st.art.canvasWidth + px];
+			int16_t art = st.art.canvas[static_cast<size_t>(py) * st.art.canvasWidth + px];
 			if (art <= 0)
 				return -1;
+			if (FineCanvas() && ShadeFine(32.0F)) {
+				const float fx = (x - y) * 32.0F - static_cast<float>(st.art.originX);
+				const float fy = (x + y) * 16.0F - wz * HeightPixels - static_cast<float>(st.art.originY);
+				if (const int16_t fine = FineFaceTexel(st.art.canvas, st.art.canvasWidth, fx, fy); fine > 0)
+					art = fine;
+			}
 			const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
 			const uint8_t level = InDungeonBounds(lit) ? LightAt(lit) : LightsMax;
 			return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(PatchColor(art), tri.darkness)]);
@@ -3816,7 +4423,7 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 			const float along = tri.faceX ? wy - tri.mirrorY : wx - tri.mirrorX;
 			const int faceHeight = FaceTextureHeight();
 			const int u = std::clamp(static_cast<int>(along * FaceTextureWidth), 0, FaceTextureWidth - 1);
-			const int v = faceHeight - 1 - static_cast<int>(wz * SpritePixelsPerTileY);
+			const int v = WallArtRow(wz);
 			if (v < 0 || v >= faceHeight)
 				return -1;
 			const int16_t texel = face[static_cast<size_t>(v) * FaceTextureWidth + u];
@@ -3866,19 +4473,55 @@ void DrawKitWalls(const Surface &out, const Projection &proj, std::vector<float>
 	}
 }
 
-void DrawDoorModels(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer)
+/** Iron straps across a door leaf: their middles as shares of the leaf's height, and their half height (tiles). */
+constexpr std::array<float, 2> DoorStraps { 0.22F, 0.72F };
+constexpr float DoorStrapHalf = 0.035F;
+constexpr uint8_t DoorStrapDarkness = 4;
+/** Planks across a leaf, and the share of a plank's width its dark seam takes. */
+constexpr int DoorPlanks = 5;
+constexpr float DoorSeamShare = 0.08F;
+constexpr uint8_t DoorSeamDarkness = 3;
+
+/** @brief Draws every door's leaf in its doorway, shut, swinging or open. */
+void DrawDoorLeaves(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer)
 {
-	if (!KitDoorsActive())
-		return;
 	for (int i = 0; i < ActiveObjectCount; i++) {
 		const int id = ActiveObjects[i];
-		const Object &object = Objects[id];
-		if (!IsClosedDoor(object) || !InDungeonBounds(object.position) || LightAt(object.position) >= LightsMax)
+		const DoorwaySpan span = DoorwaySpanAt(Objects[id].position);
+		if (span.door == nullptr || span.offset != 0 || span.door->object != id)
 			continue;
-		DoorModel &door = DoorModels[id];
-		if (door.tile != object.position && !BuildDoorModel(door, object))
+		const Doorway &door = *span.door;
+		int side;
+		const float angle = DoorSwing(door, side);
+		if (LightAt(door.tile) >= LightsMax)
 			continue;
-		DrawStructure(out, proj, depthBuffer, door.st, 1.0F);
+		DoorLeaf &leaf = DoorLeaves[id];
+		if (leaf.angle != angle || leaf.side != side)
+			BuildDoorLeaf(leaf, door, angle, side);
+		const int faceHeight = FaceTextureHeight();
+		RasterizeTriangles(out, proj, depthBuffer, leaf.mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
+			uint8_t darkness = tri.darkness;
+			const float offset = (wx - leaf.hinge.x) * leaf.direction.x + (wy - leaf.hinge.y) * leaf.direction.y;
+			const float plank = offset / leaf.width * DoorPlanks;
+			if (plank - std::floor(plank) < DoorSeamShare && tri.darkness == 0)
+				darkness = DoorSeamDarkness;
+			for (const float strap : DoorStraps)
+				if (std::abs(wz - strap * leaf.height) < DoorStrapHalf)
+					darkness = std::max(darkness, DoorStrapDarkness);
+			int color = tri.texture >= 0 ? KitMeshColor(tri, wx, wy, wz) : -1;
+			if (color >= 0) {
+				color = DoorLeafColor(static_cast<uint8_t>(color)); // the kit's grey planks, in Daggerfall's wood colours
+			} else {
+				// No kit: the closed door's art over the leaf, wherever it has swung.
+				const int u = std::max(DoorFaceColumn(door, leaf.alongStart + offset), 0);
+				const int row = std::clamp(WallArtRow(wz), 0, faceHeight - 1);
+				const int16_t texel = door.face[static_cast<size_t>(row) * FaceTextureWidth + u];
+				color = DoorLeafColor(texel > 0 ? PatchColor(texel) : uint8_t { 0 });
+			}
+			const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
+			const uint8_t level = InDungeonBounds(lit) ? LightAt(lit) : LightsMax;
+			return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(static_cast<uint8_t>(color), darkness)]);
+		}, VerticalScale());
 	}
 }
 
@@ -4140,14 +4783,6 @@ bool KitWallModel(Point tile, Point previous, bool niche, float height)
 	return true;
 }
 
-bool KitDoorsActive()
-{
-	if (leveltype == DTYPE_TOWN)
-		return false;
-	EnsureStructures();
-	return KitMesh("door") != nullptr;
-}
-
 bool IsStructureTile(Point tile)
 {
 	if (leveltype == DTYPE_TOWN || !InDungeonBounds(tile))
@@ -4196,7 +4831,7 @@ void DrawStructures(const Surface &out, const Projection &proj, std::vector<floa
 	for (const Structure &st : Structures)
 		DrawStructure(out, proj, depthBuffer, st);
 	DrawObjectBoxes(out, proj, depthBuffer);
-	DrawDoorModels(out, proj, depthBuffer);
+	DrawDoorLeaves(out, proj, depthBuffer);
 	DrawCeilingVaults(out, proj, depthBuffer);
 	DrawKitWalls(out, proj, depthBuffer);
 }

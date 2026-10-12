@@ -78,7 +78,7 @@ struct RayHit {
 [[nodiscard]] RayHit CastRay(Vec2 origin, Vec2 ray, int skip = 0);
 
 /** @brief Walls with openings (arches) are looked through at most this many layers deep. */
-constexpr int MaxWallLayers = 4;
+constexpr int MaxWallLayers = 6;
 
 /** @brief Whether the wall face at the hit is an opening (no art) at the given height above the floor. */
 [[nodiscard]] bool IsHoleAt(const RayHit &hit, float height);
