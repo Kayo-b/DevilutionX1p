@@ -129,6 +129,7 @@ Open the console with the backtick key, then run `dev = require('devilutionx.dev
 | `dev.fp.dumpfile(gamePath, outPath)` | copy a file out of the game data (a palette: `levels/l1data/l1_1.pal`), for offline tools |
 | `dev.quests.activateAll()` | activate every quest: a level and seed then always give the same layout (a new game picks its quests at random, and they change the levels' set pieces) |
 | `dev.fp.walkto(x,y)`, `dev.fp.where()` | test click-walks; print the camera position |
+| `dev.fp.pick()` | what the crosshair aims at (a monster, a door, an object, an item), as a click there takes it |
 | `dev.fp.operate(x, y)` | operate the object at a tile as a click would (open a sarcophagus, a door, a chest) |
 | `dev.fp.weapon(file, record, frame)` | show one Daggerfall weapon frame (`WEAPON<file>.CIF`; record 0 rest, 1-6 strikes); no arguments to follow the player again |
 | `dev.fp.modeltextures(bool)` | town buildings with the 3D models' own textures (default) or their projected iso art |
@@ -320,7 +321,9 @@ The caves (levels 9-12, and the Poisoned Water Supply) are the clean dungeon's f
   (`Fence*`), along their fence neighbours, the rails reaching into the rock or the gates they meet. Rays pass them.
 - **Gates** (`CleanDoorwaysAreGates`): the caves' doors stand in their fences. A doorway there is no wall
   (`IsOpaque`): a frame of two posts and a lintel (`Gate*`) round the door leaf (fp_doors), whose opening is
-  flat-topped (`CleanOpening::flat`).
+  flat-topped (`CleanOpening::flat`). With no wall face to aim at, `PickAt` (fp_pick.cpp) selects a gate where the
+  crosshair's ray crosses the line through its tile's middle below its top; an open gate only when nothing else is
+  aimed at (what is seen through it comes first).
 - **Shoring:** the megatiles of timber propping a cliff (121-129, 150-152; their pieces alternate timber and rock
   along the cliff, so all are drawn as rock): posts and two beams along the rock's open faces (`Shoring*`).
 - **Colours:** the levels draw one of four palettes at random (red-brown, green, ...). The rock and the floor take

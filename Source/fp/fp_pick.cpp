@@ -12,6 +12,8 @@
 #include <vector>
 
 #include "engine/render/clx_render.hpp"
+#include "fp/fp_doors.hpp"
+#include "fp/fp_dungeon.hpp"
 #include "fp/fp_raycast.hpp"
 #include "levels/dun_tile_data.hpp"
 #include "monster.h"
@@ -101,6 +103,48 @@ Pick PickAt(Point screenPosition, bool ignoreMonsters)
 			bestDepth = wallDepth;
 		}
 	}
+	// The caves' gates stand in their fences with no wall round them: aiming at a gate (the line through its tile's
+	// middle, up to its top) selects its door. An open one only if nothing else is aimed at, as what is seen through it
+	// comes first.
+	Pick openGate {};
+	openGate.hasTarget = false;
+	float openGateDepth = std::numeric_limits<float>::infinity();
+	if (IsCleanDungeon() && CleanDoorwaysAreGates()) {
+		const float gateTop = CleanDoorOpening().spring;
+		for (int i = 0; i < ActiveObjectCount; i++) {
+			Object &object = Objects[ActiveObjects[i]];
+			if (!object.isDoor() || !object.canInteractWith())
+				continue;
+			const DoorwaySpan span = DoorwaySpanAt(object.position);
+			if (span.door == nullptr || span.offset != 0)
+				continue;
+			const Point tile = object.position;
+			const bool alongX = span.door->alongX;
+			const float across = alongX ? ray.y : ray.x;
+			if (std::abs(across) < 1e-6F)
+				continue;
+			const float line = static_cast<float>(alongX ? tile.y : tile.x) + 0.5F;
+			const float depth = (line - (alongX ? proj.pos.y : proj.pos.x)) / across;
+			if (depth <= 0.0F || depth >= bestDepth)
+				continue;
+			const float along = alongX ? proj.pos.x + ray.x * depth : proj.pos.y + ray.y * depth;
+			const float from = static_cast<float>(alongX ? tile.x : tile.y);
+			const float height = EyeHeight + slope * depth;
+			if (along < from || along >= from + 1.0F || height < 0.0F || height > gateTop)
+				continue;
+			const Displacement back = alongX ? Displacement { 0, across > 0 ? -1 : 1 } : Displacement { across > 0 ? -1 : 1, 0 };
+			const Pick gate { true, EntityKind::Object, static_cast<int>(object.GetId()), tile, tile + back };
+			if (object._oVar4 != 0) { // DOOR_CLOSED is 0
+				if (depth < openGateDepth) {
+					openGate = gate;
+					openGateDepth = depth;
+				}
+				continue;
+			}
+			pick = gate;
+			bestDepth = depth;
+		}
+	}
 
 	static std::vector<Entity> entities;
 	CollectEntities(proj.pos, entities);
@@ -121,6 +165,8 @@ Pick PickAt(Point screenPosition, bool ignoreMonsters)
 		bestDepth = rect.depth;
 	}
 
+	if (!pick.hasTarget && openGate.hasTarget)
+		pick = openGate;
 	if (!pick.hasTarget) {
 		if (floorDepth <= surfaceDepth) {
 			pick.groundTile = TileAt(floorPoint);

@@ -14,6 +14,7 @@
 #include "fp/fp_buildings.hpp"
 #include "fp/fp_controls.hpp"
 #include "fp/fp_dungeon.hpp"
+#include "fp/fp_pick.hpp"
 #include "fp/fp_raycast.hpp"
 #include "fp/fp_textures.hpp"
 #include "fp/fp_view.hpp"
@@ -402,6 +403,23 @@ std::string DebugCmdFpWhere()
 	return StrCat("tile ", MyPlayer->position.tile.x, ",", MyPlayer->position.tile.y, " view ", static_cast<int>(view.x * 100), ",", static_cast<int>(view.y * 100));
 }
 
+std::string DebugCmdFpPick()
+{
+	// What the crosshair (the middle of the view) aims at, as a click there would take it.
+	const fp::Projection proj = fp::GetProjection();
+	const fp::Pick pick = fp::PickAt({ proj.width / 2, proj.horizon }, false);
+	if (!pick.hasTarget)
+		return StrCat("nothing (ground ", pick.groundTile.x, ",", pick.groundTile.y, ")");
+	std::string what = "something";
+	switch (pick.kind) {
+	case fp::EntityKind::Monster: what = "monster"; break;
+	case fp::EntityKind::Object: what = Objects[pick.id].isDoor() ? "door" : "object"; break;
+	case fp::EntityKind::Item: what = "item"; break;
+	default: break;
+	}
+	return StrCat(what, " ", pick.id, " at ", pick.tile.x, ",", pick.tile.y);
+}
+
 std::string DebugCmdFpModelTextures(bool enabled)
 {
 	fp::SetModelTexturesEnabled(enabled);
@@ -454,6 +472,7 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "recesses", "(enabled: boolean)", "Carve blind arches and niches into the walls (default) or draw them flat.", &DebugCmdFpRecesses);
 	LuaSetDocFn(table, "walkto", "(x: number, y: number)", "Walk to a tile the way a click does (path finding).", &DebugCmdFpWalkTo);
 	LuaSetDocFn(table, "where", "()", "Player tile and camera position (x100).", &DebugCmdFpWhere);
+	LuaSetDocFn(table, "pick", "()", "What the crosshair aims at (a monster, a door, an object, an item).", &DebugCmdFpPick);
 	LuaSetDocFn(table, "modeltextures", "(enabled: boolean)", "Texture town buildings with the 3D models' own textures (default) or their projected iso art.", &DebugCmdFpModelTextures);
 	LuaSetDocFn(table, "dumpfile", "(gamePath: string, outPath: string)", "Copy a file from the game data (a palette, a .dun) to disk.", &DebugCmdFpDumpFile);
 	LuaSetDocFn(table, "sarcophagus", "(enabled: boolean)", "Use the dungeon kit's 3D sarcophagus model (default), or a box of its sprite.", &DebugCmdFpSarcophagus);
