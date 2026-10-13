@@ -53,9 +53,10 @@ bool IsOpaque(Point tile)
 	// Town has no walls: its buildings and trees are drawn as billboards (see CollectProps) and the rest is ground.
 	if (leveltype == DTYPE_TOWN)
 		return false;
-	// A doorway stays a wall with an opening when its door is open (and walkable).
+	// A doorway stays a wall with an opening when its door is open (and walkable); the caves' gates stand in their
+	// fences, meshes.
 	if (IsDoorwayTile(tile))
-		return true;
+		return !CleanDoorwaysAreGates();
 	if (!IsTileSolid(tile))
 		return false;
 	if (IsCleanDungeon()) {

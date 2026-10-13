@@ -3915,7 +3915,11 @@ void BuildCleanStructures()
 		// Meshes are kept in art units, stretched up when drawn: so are the normals (for culling).
 		const auto at = [&](int k) { return V3 { quad.p[k][0], quad.p[k][1], quad.p[k][2] / stretch }; };
 		const size_t first = b.mesh.size();
-		AddStructureFace(b, { at(0), at(1), at(2), at(3) }, { quad.normal[0], quad.normal[1], quad.normal[2] * stretch }, { 0, 0 }, MeshClean);
+		const V3 normal { quad.normal[0], quad.normal[1], quad.normal[2] * stretch };
+		if (quad.triangle)
+			AddStructureFace(b, { at(0), at(1), at(2) }, normal, { 0, 0 }, MeshClean);
+		else
+			AddStructureFace(b, { at(0), at(1), at(2), at(3) }, normal, { 0, 0 }, MeshClean);
 		for (size_t t = first; t < b.mesh.size(); t++) {
 			WorldTriangle &tri = b.mesh[t];
 			// AddStructureFace fans the quad from its first corner: (0, 1, 2), then (0, 2, 3).
@@ -3932,7 +3936,7 @@ void BuildCleanStructures()
 	}
 	for (int y = 0; y < MAXDUNY; y++)
 		for (int x = 0; x < MAXDUNX; x++)
-			if (CleanKindAt({ x, y }) == CleanKind::Pillar)
+			if (IsAnyOf(CleanKindAt({ x, y }), CleanKind::Pillar, CleanKind::Fence))
 				StructureTiles[static_cast<size_t>(y) * MAXDUNX + x] = 1;
 }
 
@@ -3954,8 +3958,8 @@ void BuildStructures()
 		LogInfo("fp: {} dungeon structures drawn as meshes (clean dungeon)", Structures.size());
 		return;
 	}
-	// The caves and hell: free-standing columns (and torch stands) read off their art, or else arcade pillars joined
-	// by arch walls.
+	// Hell (and the caves, before they were drawn clean): free-standing columns (and torch stands) read off their art,
+	// or else arcade pillars joined by arch walls.
 	std::vector<ArcadePillar> pillars;
 	for (int y = 0; y < MAXDUNY; y++) {
 		for (int x = 0; x < MAXDUNX; x++) {

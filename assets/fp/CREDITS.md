@@ -41,20 +41,21 @@ their creators, who made them available free of charge:
 
 # Dungeon texture credits (`dungeontex.bin`)
 
-`dungeontex.bin` holds the texture sets of the first-person dungeon: the cathedral (levels 1-4), the catacombs (5-8)
-and Hellfire's crypt (21-24). Walls, floors, ceilings, pillars, the inside of arches and doorways, and the door leaves
+`dungeontex.bin` holds the texture sets of the first-person dungeon: the cathedral (levels 1-4), the catacombs (5-8),
+the caves (9-12) and Hellfire's crypt (21-24). Walls, floors, ceilings, pillars, the inside of arches and doorways, and the door leaves
 wear them instead of the original game's art. They are (but for the four below) the textures of the same release's dungeon kit
 (`Dungeon Pieces-67266-.7z`), under the terms above: its stone blocks (`Modern-Cream-Blocks_seamless`, with its
 normal and specular maps), church pavement (`Pavement_01_UV_H_CM_1`), Diablo marble (`marble_diablo`), column-head
 stone (`d_column_extr`), door planks (`door_diff`, with its normal map), steel (`Steel_02_UV_H_CM_1`), black marble
-(`Black marble seamless`), white marble (`marble_06`), yellow stone (`yellow stone seamless`) and the carving of its
-sarcophagus lid (`capac_bump`). They were scaled, lit by their normal and relief maps and colour graded to the
+(`Black marble seamless`), white marble (`marble_06`), yellow stone (`yellow stone seamless`), weathered beams
+(`grinda_02`: the caves' fences, gate frames and shoring) and the carving of its sarcophagus lid (`capac_bump`). They were scaled, lit by their normal and relief maps and colour graded to the
 original tilesets' colours (measured on the original art, none of which is copied into the file) by
 `fp-tools/export/export_dungeon_textures.py`; their creators are the ones credited under Textures above.
 
 Two pairs of the cathedral's textures are not the kit's: the sarcophagus's stone (`marble`, `marble2`) and the torch
 stands' bases (`ivory`, `ivory2`) are Screaming Brain Studios' "Tiny Texture Pack 2" (`Elements_11`, `Elements_12`,
 `Stone_07`, `Stone_08`, 512 x 512), released under CC0 1.0 (public domain, credit optional), graded by the same
-script.
+script. So are the caves' rock and ground: their walls, the inside of their stairwells and their stalagmites
+(`Stone_13`), the crest along their walls' tops (`Stone_14`), their floor (`Dirt_05`) and their steps (`Dirt_06`).
 
 No Daggerfall data and no original Diablo art is in this file.

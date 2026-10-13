@@ -2,7 +2,8 @@
  * @file fp/fp_dungeon.cpp
  *
  * The clean dungeon (see fp_dungeon.hpp): tile kinds, texture sets, the floor, ceiling and wall passes, and the
- * geometry of pillars and arches handed to the mesh pass.
+ * geometry of pillars and arches (and the caves' crests, stalagmites, fences, gates and shoring) handed to the mesh
+ * pass.
  */
 #include "fp/fp_dungeon.hpp"
 
@@ -111,6 +112,70 @@ constexpr float BlindArchBackShift = 0.0625F;
 /** Light levels added to the sloping sides of a pillar's stone block (they face a little down; brick ones go on into their arches unshaded). */
 constexpr float FlareDarkness = 0.5F;
 
+/**
+ * The caves' crest: the ragged rim of darker rock along the top of every rock face, jutting out over it (the original
+ * draws its cliffs' tops so). Each point along a face (CrestSegments to a tile) takes its shape from where it is
+ * (CaveNoise), so faces meeting at a corner share their corner point and the rim runs on round it unbroken: how far it
+ * juts out, how far its lip hangs below the wall's top, how far it rises above it into the dark, and how much further
+ * out its middle bulges. Its underside meets the face CrestUndercut (of how far it juts out) above its lip. Over a
+ * stairwell's opening its lip hangs no lower than CrestOverOpening. Light levels added to its lower front, which the
+ * bulge shades, and to its underside (besides the half level every underside gets).
+ */
+constexpr int CrestSegments = 3;
+constexpr float CrestOutMin = 0.08F;
+constexpr float CrestOutMax = 0.3F;
+constexpr float CrestDropMin = 0.25F;
+constexpr float CrestDropMax = 0.9F;
+constexpr float CrestRiseMax = 0.45F;
+constexpr float CrestBulgeMax = 0.1F;
+constexpr float CrestUndercut = 0.6F;
+constexpr float CrestOverOpening = 0.15F;
+constexpr float CrestLowerDarkness = 0.5F;
+constexpr float CrestUndersideDarkness = 0.5F;
+/**
+ * The caves' walls: how high they stand (drawn tiles; their art's 104 rows would make them four tiles high, and the
+ * crest out of sight from a few tiles off), and the shade the crest casts on the face under it: light levels added at
+ * the wall's top, fading out CaveTopShadowDrop below it.
+ */
+constexpr float CaveWallHeight = 2.5F;
+/**
+ * The caves' rock is laid on each way a face can look (towards +x, -x, +y, -y) this far along (tiles), so the two faces
+ * of an inner corner, or the two sides of a passage, do not mirror each other.
+ */
+constexpr std::array<float, 4> CaveFaceShifts { 0.0F, 1.13F, 0.61F, 1.74F };
+constexpr float CaveTopShadow = 1.5F;
+constexpr float CaveTopShadowDrop = 1.0F;
+
+/** The caves' stalagmites (their lone rock tiles): the base radius, the height (a share of the walls' height, from Min to Max), sides, rings. */
+constexpr float StalagmiteRadius = 0.34F;
+constexpr float StalagmiteMin = 0.4F;
+constexpr float StalagmiteMax = 0.7F;
+constexpr int StalagmiteSides = 7;
+constexpr int StalagmiteRings = 4;
+
+/**
+ * The caves' fences: posts (half width) on the line through their tiles' middles, one at each tile's middle and one at
+ * its edge, two rails between them (heights, half thickness); the gates: the leaf's height, and a frame of two posts
+ * and a lintel round it (CleanDoorOpening). Drawn tiles.
+ */
+constexpr float FencePostHalf = 0.05F;
+constexpr float FenceHeight = 1.3F;
+constexpr std::array<float, 2> FenceRails { 0.5F, 1.05F };
+constexpr float FenceRailHalf = 0.035F;
+constexpr float GateHeight = 1.6F;
+constexpr float GateLintel = 0.12F;
+/** How far the gates' lintel reaches down past the opening's top: the leaf comes out that much lower (its height is read back off the face's art rows). */
+constexpr float GateLintelOverlap = 0.1F;
+/** A solid piece of a fence's megatile whose art above the floor is drawn over less than this share is fence, not the rock a fence runs into (theirs 0-29%, the rock's 31-40%). */
+constexpr float FenceArtDensity = 0.3F;
+/**
+ * The caves' shoring, timber propping a cliff: posts (two a tile) and two beams along the rock's face, standing this
+ * far out from it (their middle line); the posts' height and the beams'.
+ */
+constexpr float ShoringOut = 0.08F;
+constexpr float ShoringHeight = 1.9F;
+constexpr std::array<float, 2> ShoringBeams { 0.9F, 1.78F };
+
 // --- Ordered dither ------------------------------------------------------------------------------------------------
 
 /** A 4 x 4 Bayer matrix: thresholds 0..15 in a pattern without clumps. */
@@ -215,12 +280,13 @@ const char *SetName(dungeon_type type)
 {
 	switch (type) {
 	case DTYPE_CATACOMBS: return "catacombs";
+	case DTYPE_CAVES: return "caves";
 	case DTYPE_CRYPT: return "crypt";
 	default: return "cathedral";
 	}
 }
 
-constexpr std::array<const char *, static_cast<size_t>(CleanSurface::Count)> SlotNames { "wall", "base", "top", "floor", "ceiling", "pillar", "stone", "arch", "door", "marble", "lid", "iron", "ivory", "marble2", "ivory2", "band" };
+constexpr std::array<const char *, static_cast<size_t>(CleanSurface::Count)> SlotNames { "wall", "base", "top", "floor", "ceiling", "pillar", "stone", "arch", "door", "marble", "lid", "iron", "ivory", "marble2", "ivory2", "band", "crest", "wood" };
 
 /** The palette colours textures may use: the level's ramps (not the near-blacks 112-127, nor colours the level cycles) and the shared ramps 160-254. */
 bool IsAllowedColor(int index)
@@ -229,8 +295,8 @@ bool IsAllowedColor(int index)
 		return false;
 	if (index >= 112 && index < 160)
 		return false; // near-blacks that light to red, then the bright UI ramps
-	if (leveltype == DTYPE_CRYPT && index < 32)
-		return false; // lava, colour cycled
+	if (IsCycledColor(index))
+		return false; // lava and water, colour cycled
 	return true;
 }
 
@@ -350,12 +416,53 @@ SourceTexture PlainTexture(CleanSurface surface)
 	return tex;
 }
 
-void BuildTexture(CleanTexture &out, const SourceTexture &source, Quantizer &quantize, const std::array<float, NumLightingLevels> &factors)
+/**
+ * @brief The hue of some of the level's art (RGB over luminance, fully lit, its cycled colours left out): the caves'
+ * rock and floor are as red, green or purple as the palette the level drew (one of four, at random).
+ */
+std::array<float, 3> ArtHue(const std::vector<int16_t> &art)
+{
+	double r = 0;
+	double g = 0;
+	double b = 0;
+	int count = 0;
+	for (const int16_t texel : art) {
+		if (texel <= 0 || IsCycledColor(texel))
+			continue;
+		const SDL_Color c = logical_palette[texel];
+		r += c.r;
+		g += c.g;
+		b += c.b;
+		count++;
+	}
+	const double luma = count > 0 ? (0.30 * r + 0.59 * g + 0.11 * b) / count : 0.0;
+	if (luma < 4.0)
+		return { 1.0F, 1.0F, 1.0F };
+	return { static_cast<float>(r / count / luma), static_cast<float>(g / count / luma), static_cast<float>(b / count / luma) };
+}
+
+/** Of a texture's own colour, the share kept round the hue of the art it takes on (ArtHue). */
+constexpr float OwnChroma = 0.25F;
+
+void BuildTexture(CleanTexture &out, const SourceTexture &source, Quantizer &quantize, const std::array<float, NumLightingLevels> &factors, const std::array<float, 3> *hue = nullptr)
 {
 	out.texelsPerTileU = static_cast<float>(source.width) / source.tilesAcross;
 	out.texelsPerTileV = static_cast<float>(source.height) / source.tilesDown;
 	out.mips.clear();
 	CleanTexture::Mip first { source.width, source.height, source.rgb, {} };
+	if (hue != nullptr) {
+		// Each texel as light as it was, in the art's hue, with a little of its own colour.
+		for (size_t i = 0; i + 2 < first.rgb.size(); i += 3) {
+			const float r = first.rgb[i];
+			const float g = first.rgb[i + 1];
+			const float b = first.rgb[i + 2];
+			const float luma = 0.30F * r + 0.59F * g + 0.11F * b;
+			for (int c = 0; c < 3; c++) {
+				const float own = c == 0 ? r : (c == 1 ? g : b);
+				first.rgb[i + c] = static_cast<uint8_t>(std::clamp(luma * (*hue)[c] + OwnChroma * (own - luma), 0.0F, 255.0F) + 0.5F);
+			}
+		}
+	}
 	out.mips.push_back(std::move(first));
 	// Detail levels: each the average of 2 x 2 texels of the one before, down to 4 texels a side.
 	while (out.mips.back().width > 4 && out.mips.back().height > 4 && out.mips.size() < 7) {
@@ -404,6 +511,12 @@ void EnsureTextures()
 	const std::array<float, NumLightingLevels> factors = LightFactors();
 	LogInfo("fp: light factors {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f}", factors[0], factors[1], factors[2], factors[3], factors[4], factors[5], factors[6], factors[7], factors[8], factors[9], factors[10], factors[11], factors[12], factors[13], factors[14]);
 	const std::string set = SetName(leveltype);
+	// The caves take their rock's and floor's hue from the level's art (its palette is one of four).
+	const bool caves = leveltype == DTYPE_CAVES;
+	const std::array<float, 3> rockHue = caves ? ArtHue(GetFallbackFace()) : std::array<float, 3> {};
+	const std::array<float, 3> floorHue = caves ? ArtHue(GetGroundFloor()) : std::array<float, 3> {};
+	if (caves)
+		LogInfo("fp: caves' hues: rock {:.2f} {:.2f} {:.2f}, floor {:.2f} {:.2f} {:.2f}", rockHue[0], rockHue[1], rockHue[2], floorHue[0], floorHue[1], floorHue[2]);
 	for (size_t slot = 0; slot < SlotNames.size(); slot++) {
 		const auto surface = static_cast<CleanSurface>(slot);
 		const auto find = [&](const char *name) -> const SourceTexture * {
@@ -423,12 +536,19 @@ void EnsureTextures()
 			source = find("marble");
 		if (source == nullptr && surface == CleanSurface::IvoryAlt)
 			source = find("ivory");
+		if (source == nullptr && surface == CleanSurface::Wood)
+			source = find("door");
 		if (source == nullptr && (surface == CleanSurface::Stone || surface == CleanSurface::Marble || surface == CleanSurface::Lid || surface == CleanSurface::Ivory || surface == CleanSurface::MarbleAlt || surface == CleanSurface::IvoryAlt))
 			source = find("pillar");
 		if (source == nullptr && surface != CleanSurface::Base && surface != CleanSurface::Top)
 			source = find("wall");
 		const SourceTexture plain = PlainTexture(surface);
-		BuildTexture(Textures.surfaces[slot], source != nullptr ? *source : plain, quantize, factors);
+		const std::array<float, 3> *hue = nullptr;
+		if (caves && IsAnyOf(surface, CleanSurface::Wall, CleanSurface::Arch, CleanSurface::Pillar, CleanSurface::Crest, CleanSurface::Stone))
+			hue = &rockHue;
+		else if (caves && surface == CleanSurface::Floor)
+			hue = &floorHue;
+		BuildTexture(Textures.surfaces[slot], source != nullptr ? *source : plain, quantize, factors, hue);
 	}
 	LogInfo("fp: clean dungeon textures ready ({} set)", set);
 }
@@ -521,6 +641,100 @@ bool HasLightObject(Point tile)
 	if (id <= 0)
 		return false;
 	return Objects[id - 1]._otype == OBJ_L1LIGHT;
+}
+
+/** @brief A hash of a point of a grid and a salt, 0..1. */
+float Hash01(int x, int y, uint32_t salt)
+{
+	uint32_t h = static_cast<uint32_t>(x) * 73856093U ^ static_cast<uint32_t>(y) * 19349663U ^ (salt + 1U) * 83492791U;
+	h ^= h >> 13;
+	h *= 0x5bd1e995U;
+	h ^= h >> 15;
+	return static_cast<float>(h & 0xFFFFU) / 65535.0F;
+}
+
+/**
+ * @brief 0..1 over the floor plan, for the caves' uneven rock: smooth over whole tiles, plus a finer grain of a value
+ * per CrestSegments of a tile. The same at the same point whatever asks (two faces meeting at a corner).
+ */
+float CaveNoise(float x, float y, uint32_t salt)
+{
+	const float fx = std::floor(x);
+	const float fy = std::floor(y);
+	const int ix = static_cast<int>(fx);
+	const int iy = static_cast<int>(fy);
+	auto smooth = [](float t) { return t * t * (3.0F - 2.0F * t); };
+	const float tx = smooth(x - fx);
+	const float ty = smooth(y - fy);
+	const float a = Hash01(ix, iy, salt) + (Hash01(ix + 1, iy, salt) - Hash01(ix, iy, salt)) * tx;
+	const float b = Hash01(ix, iy + 1, salt) + (Hash01(ix + 1, iy + 1, salt) - Hash01(ix, iy + 1, salt)) * tx;
+	const float fine = Hash01(static_cast<int>(std::lround(x * CrestSegments)), static_cast<int>(std::lround(y * CrestSegments)), salt + 101U);
+	return (a + (b - a) * ty) * 0.5F + fine * 0.5F;
+}
+
+/** @brief Whether a piece's floor art is lava or water: a good part of it in the colours the level cycles. */
+bool IsCycledFloor(const PieceTextures &textures)
+{
+	int drawn = 0;
+	int cycled = 0;
+	for (const int16_t texel : textures.floor) {
+		if (texel <= 0)
+			continue;
+		drawn++;
+		if (IsCycledColor(texel))
+			cycled++;
+	}
+	return drawn > 0 && cycled * 6 > drawn;
+}
+
+/** @brief How much of a piece's art above its floor diamond is drawn (0..1): little for posts and rails, most for rock. */
+float ArtDensity(const PieceTextures &textures)
+{
+	const size_t rows = textures.column.size() / ColumnWidth;
+	if (rows <= static_cast<size_t>(FloorTextureSize))
+		return 0.0F;
+	const size_t upper = (rows - FloorTextureSize) * ColumnWidth;
+	size_t drawn = 0;
+	for (size_t i = 0; i < upper; i++)
+		if (textures.column[i] > 0)
+			drawn++;
+	return static_cast<float>(drawn) / static_cast<float>(upper);
+}
+
+/** @brief The megatile (the generator's tile, 2 x 2 pieces) a tile is part of, 0 if none. */
+uint8_t MegatileAt(Point tile)
+{
+	if (tile.x < 16 || tile.y < 16)
+		return 0;
+	const int mx = (tile.x - 16) / 2;
+	const int my = (tile.y - 16) / 2;
+	if (mx >= DMAXX || my >= DMAXY)
+		return 0;
+	return dungeon[mx][my];
+}
+
+/**
+ * @brief Whether a tile is part of one of the caves' megatiles of timber shoring (drlg_l3.cpp, Fence: 121-129, and
+ * 150-152): posts and beams against a cliff (its pieces alternate timber and rock along the cliff's line: all are
+ * drawn as rock, the timber in front of it).
+ */
+bool IsShoringMegatile(Point tile)
+{
+	const uint8_t mega = MegatileAt(tile);
+	return (mega >= 121 && mega <= 129) || (mega >= 150 && mega <= 152);
+}
+
+/**
+ * @brief Whether a solid tile of the caves is part of a wooden fence: a piece of the megatiles their generator lays
+ * fences with (drlg_l3.cpp, Fence: 130-140, and 146 and 147 round the gates) whose art is sparse, posts and rails with
+ * the dark between them (a fence's end shares its megatile with the rock it runs into).
+ */
+bool IsFencePiece(Point tile)
+{
+	const uint8_t mega = MegatileAt(tile);
+	if (!((mega >= 130 && mega <= 140) || mega == 146 || mega == 147))
+		return false;
+	return ArtDensity(GetPieceTextures(dPiece[tile.x][tile.y])) < FenceArtDensity;
 }
 
 std::vector<CleanStairs> Stairs;
@@ -663,6 +877,7 @@ void ClassifyTiles()
 	const float ceiling = CleanCeiling();
 	const int levelRows = LevelWallRows();
 	auto solid = [](Point p) { return !InDungeonBounds(p) || IsTileSolid(p); };
+	const bool caves = leveltype == DTYPE_CAVES;
 	int counts[8] {};
 	for (int y = 0; y < MAXDUNY; y++) {
 		for (int x = 0; x < MAXDUNX; x++) {
@@ -679,6 +894,10 @@ void ClassifyTiles()
 				const bool besideFloor = !solid(tile + Displacement { 1, 0 }) || !solid(tile + Displacement { -1, 0 }) || !solid(tile + Displacement { 0, 1 }) || !solid(tile + Displacement { 0, -1 });
 				if (textures.isFlatSolid && besideFloor && leveltype == DTYPE_CRYPT)
 					kind = CleanKind::Flat;
+				else if (caves && (textures.isFlatSolid || !textures.hasTallArt) && IsCycledFloor(textures))
+					kind = CleanKind::Flat; // the caves' lava (and the Poisoned Water Supply's water), whole pools of it
+				else if (caves && IsFencePiece(tile))
+					kind = CleanKind::Fence;
 				else if (lone && HasLightObject(tile))
 					kind = CleanKind::Stand;
 				else if (lone)
@@ -700,7 +919,7 @@ void ClassifyTiles()
 	}
 	FindStairs();
 	FindBlindArches();
-	LogInfo("fp: clean dungeon tiles: {} walls, {} pillars, {} torch stands, {} doorways, {} stairs, {} blind arches", counts[1], counts[2], counts[3], counts[4], Stairs.size(), BlindArches.size());
+	LogInfo("fp: clean dungeon tiles: {} walls, {} pillars, {} torch stands, {} doorways, {} stairs, {} lava or water, {} fences, {} blind arches", counts[1], counts[2], counts[3], counts[4], Stairs.size(), counts[6], counts[7], BlindArches.size());
 }
 
 void EnsureKinds()
@@ -802,11 +1021,23 @@ struct ColumnSamplers {
 
 bool IsCleanDungeon()
 {
-	return IsAnyOf(leveltype, DTYPE_CATHEDRAL, DTYPE_CATACOMBS, DTYPE_CRYPT);
+	return IsAnyOf(leveltype, DTYPE_CATHEDRAL, DTYPE_CATACOMBS, DTYPE_CAVES, DTYPE_CRYPT);
+}
+
+bool CleanHasCeiling()
+{
+	return leveltype != DTYPE_CAVES;
+}
+
+bool CleanDoorwaysAreGates()
+{
+	return leveltype == DTYPE_CAVES;
 }
 
 float CleanCeiling()
 {
+	if (leveltype == DTYPE_CAVES)
+		return CaveWallHeight;
 	return WallHeight() * VerticalScale();
 }
 
@@ -850,6 +1081,8 @@ const std::vector<CleanStairs> &CleanStairsList()
 
 CleanOpening CleanDoorOpening()
 {
+	if (CleanDoorwaysAreGates())
+		return { DoorHalfWidth, GateHeight, true };
 	const float crown = std::min(DoorCrown, CleanCeiling() - 0.45F);
 	return { DoorHalfWidth, crown - DoorHalfWidth };
 }
@@ -859,6 +1092,8 @@ float CleanOpeningTop(const CleanOpening &opening, float along)
 	const float a = along - 0.5F;
 	if (std::abs(a) >= opening.halfWidth)
 		return 0.0F;
+	if (opening.flat)
+		return opening.spring;
 	return opening.spring + std::sqrt(opening.halfWidth * opening.halfWidth - a * a);
 }
 
@@ -906,9 +1141,14 @@ void DrawCleanFloorAndCeiling(const Surface &out, const Projection &proj, std::v
 	const bool holes = HasFloorHoles();
 	const CleanTexture &floorTex = Textures.surfaces[static_cast<size_t>(CleanSurface::Floor)];
 	const CleanTexture &ceilingTex = Textures.surfaces[static_cast<size_t>(CleanSurface::Ceiling)];
+	const bool hasCeiling = CleanHasCeiling();
 	for (int y = 0; y < proj.height; y++) {
 		const bool isFloor = y > proj.horizon;
 		uint8_t *dst = out.at(0, y);
+		if (!isFloor && !hasCeiling) {
+			std::fill_n(dst, proj.width, 0); // the dark over the caves
+			continue;
+		}
 		const int rowsFromHorizon = isFloor ? y - proj.horizon : proj.horizon - y;
 		if (rowsFromHorizon == 0) {
 			std::fill_n(dst, proj.width, 0);
@@ -977,7 +1217,19 @@ void DrawCleanFloorAndCeiling(const Surface &out, const Projection &proj, std::v
 					// Lava and water keep their art (and its colour cycling).
 					const int u = std::min(static_cast<int>((wx - static_cast<float>(tx)) * FloorTextureSize), FloorTextureSize - 1);
 					const int v = std::min(static_cast<int>((wy - static_cast<float>(ty)) * FloorTextureSize), FloorTextureSize - 1);
-					const int16_t texel = (*flatArt)[static_cast<size_t>(v) * FloorTextureSize + u];
+					int16_t texel = (*flatArt)[static_cast<size_t>(v) * FloorTextureSize + u];
+					// The art's diamond leaves a texel or two empty along the tile's edges: the nearest drawn one.
+					for (int r = 1; texel <= 0 && r <= 2; r++) {
+						for (const auto &[du, dv] : { std::pair { r, 0 }, std::pair { -r, 0 }, std::pair { 0, r }, std::pair { 0, -r }, std::pair { r, r }, std::pair { -r, -r }, std::pair { r, -r }, std::pair { -r, r } }) {
+							const int nu = u + du;
+							const int nv = v + dv;
+							if (nu < 0 || nv < 0 || nu >= FloorTextureSize || nv >= FloorTextureSize)
+								continue;
+							texel = (*flatArt)[static_cast<size_t>(nv) * FloorTextureSize + nu];
+							if (texel > 0)
+								break;
+						}
+					}
 					dst[x] = texel <= 0 ? 0 : LightTables[LightLevel(light, x, y)][texel];
 					continue;
 				}
@@ -1004,6 +1256,7 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 	const float ceiling = CleanCeiling();
 	const CleanOpening doorShape = CleanDoorOpening();
 	const CleanOpening stairsShape = StairsOpening();
+	const bool caves = leveltype == DTYPE_CAVES;
 	static std::vector<uint8_t> filled;
 	filled.resize(static_cast<size_t>(proj.height));
 	ColumnSamplers samplers;
@@ -1060,6 +1313,10 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 						arch = &BlindArches[slot];
 			}
 			const bool archFace = arch != nullptr;
+			// The caves' crest shades the rock under it; their rock is shifted along each way a face looks (CaveFaceShifts).
+			const bool topShadow = caves && (kind == CleanKind::Wall || kind == CleanKind::Stairs);
+			const int facing = hit.xSide ? (hit.previous.x > hit.tile.x ? 0 : 1) : (hit.previous.y > hit.tile.y ? 2 : 3);
+			const float textureAlong = caves ? worldAlong + CaveFaceShifts[facing] : worldAlong;
 			const float archHalf = archFace ? arch->halfWidth : 0.0F;
 			const float archBottom = Textures.baseBand;
 			const float archSpring = ceiling - Textures.topBand - BlindArchLintel - BlindArchRing - archHalf;
@@ -1208,7 +1465,8 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 				}
 				float v;
 				const CleanSurface band = WallBand(h, wallTop, ceiling, v);
-				*out.at(x, y) = samplers[band].At(worldAlong, v, LightLevel(light, x, y), x, y);
+				const float shade = topShadow ? CaveTopShadow * std::clamp(1.0F - (wallTop - h) / CaveTopShadowDrop, 0.0F, 1.0F) : 0.0F;
+				*out.at(x, y) = samplers[band].At(textureAlong, v, LightLevel(light + shade, x, y), x, y);
 				filled[y] = 1;
 				depthBuffer[static_cast<size_t>(y) * proj.width + x] = d;
 			}
@@ -1239,6 +1497,315 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 		}
 	}
 }
+
+namespace {
+
+/**
+ * @brief The caves' own geometry: the ragged crest along the top of every rock face (CrestSegments), the stalagmites
+ * of their lone rock tiles, and their wooden fences and the gates in them. `addTri` adds a triangle (BuildCleanGeometry).
+ */
+template <typename AddTri>
+void AddCaveGeometry(std::vector<CleanQuad> &quads, AddTri &addTri)
+{
+	using P3 = std::array<float, 3>;
+	using UV = std::array<float, 2>;
+	const float ceiling = CleanCeiling();
+	auto rock = [](Point t) {
+		const CleanKind kind = KindAt(t);
+		return kind == CleanKind::Wall || kind == CleanKind::Stairs;
+	};
+	// A quad as two triangles, each facing `outward`.
+	auto addQuad = [&](const P3 &a, const P3 &b, const P3 &c, const P3 &d, UV ua, UV ub, UV uc, UV ud, const P3 &outward, CleanSurface surface, float darkness) {
+		addTri(a, b, c, ua, ub, uc, outward, surface, darkness);
+		addTri(a, c, d, ua, uc, ud, outward, surface, darkness);
+	};
+
+	// --- The crest ---------------------------------------------------------------------------------------------------
+	// Whether a point lies on the face of a stairwell's opening: the crest hangs no lower there than over its arch.
+	auto overOpening = [](float px, float py) {
+		for (const CleanStairs &stairs : Stairs) {
+			const int fx = stairs.trigger.x - stairs.tile.x;
+			const int fy = stairs.trigger.y - stairs.tile.y;
+			const float lineAt = fx != 0 ? static_cast<float>(stairs.tile.x) + (fx > 0 ? 1.0F : 0.0F) : static_cast<float>(stairs.tile.y) + (fy > 0 ? 1.0F : 0.0F);
+			const float across = fx != 0 ? px : py;
+			const float along = fx != 0 ? py : px;
+			const float from = static_cast<float>(fx != 0 ? stairs.tile.y : stairs.tile.x);
+			if (std::abs(across - lineAt) < 1e-3F && along > from - 1e-3F && along < from + 1.0F + 1e-3F)
+				return true;
+		}
+		return false;
+	};
+	// The crest's section at a point of a face: where its underside meets the face, its lip, its bulge and its top
+	// edge, pushed out along `dir` (the face's normal, plus at a corner the other face's: the two rims meet on the
+	// diagonal).
+	struct Section {
+		P3 under;
+		P3 lip;
+		P3 bulge;
+		P3 top;
+	};
+	auto section = [&](float px, float py, float dirX, float dirY, float top) {
+		const float out = CrestOutMin + (CrestOutMax - CrestOutMin) * CaveNoise(px, py, 1);
+		float drop = CrestDropMin + (CrestDropMax - CrestDropMin) * CaveNoise(px, py, 2);
+		if (overOpening(px, py))
+			drop = std::min(drop, CrestOverOpening);
+		const float r = CaveNoise(px, py, 3);
+		const float rise = CrestRiseMax * r * r;
+		const float bulge = CrestBulgeMax * CaveNoise(px, py, 4);
+		auto at = [&](float o, float z) { return P3 { px + dirX * o, py + dirY * o, z }; };
+		return Section { at(0.0F, top - drop + CrestUndercut * out), at(out, top - drop), at(out + bulge, top - drop * 0.35F), at(out * 0.5F, top + rise) };
+	};
+	constexpr std::array<Displacement, 4> Sides { { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } } };
+	int crestFaces = 0;
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			const Point tile { x, y };
+			if (!rock(tile))
+				continue;
+			const float top = std::min(WallHeights[static_cast<size_t>(y) * MAXDUNX + x], ceiling);
+			for (const Displacement d : Sides) {
+				const Point front = tile + d;
+				if (!InDungeonBounds(front) || rock(front))
+					continue;
+				crestFaces++;
+				// The face runs along e from `start`, n its outward normal.
+				const float nx = static_cast<float>(d.deltaX);
+				const float ny = static_cast<float>(d.deltaY);
+				const float ex = -ny;
+				const float ey = nx;
+				const float sx = static_cast<float>(x) + 0.5F + 0.5F * nx - 0.5F * ex;
+				const float sy = static_cast<float>(y) + 0.5F + 0.5F * ny - 0.5F * ey;
+				// At each end: the rock goes straight on (the rim too), turns in across the floor in front (the rims meet
+				// on the inner diagonal) or ends at the tile's edge (the rim turns round its corner).
+				auto turn = [&](int sign, float &mx, float &my) {
+					const Displacement along { sign * static_cast<int>(ex), sign * static_cast<int>(ey) };
+					mx = 0.0F;
+					my = 0.0F;
+					if (rock(front + along)) {
+						mx = -static_cast<float>(along.deltaX);
+						my = -static_cast<float>(along.deltaY);
+					} else if (!rock(tile + along)) {
+						mx = static_cast<float>(along.deltaX);
+						my = static_cast<float>(along.deltaY);
+					}
+				};
+				float m0x;
+				float m0y;
+				float m1x;
+				float m1y;
+				turn(-1, m0x, m0y);
+				turn(1, m1x, m1y);
+				std::array<Section, CrestSegments + 1> sections;
+				for (int k = 0; k <= CrestSegments; k++) {
+					const float t = static_cast<float>(k) / CrestSegments;
+					const float mx = k == 0 ? m0x : (k == CrestSegments ? m1x : 0.0F);
+					const float my = k == 0 ? m0y : (k == CrestSegments ? m1y : 0.0F);
+					sections[k] = section(sx + ex * t, sy + ey * t, nx + mx, ny + my, top);
+				}
+				// Texture: along the face's axis, down from the top; the underside along and out from the face.
+				const bool xFace = d.deltaX != 0;
+				auto upright = [&](const P3 &p) { return UV { xFace ? p[1] : p[0], -p[2] }; };
+				auto flat = [&](const P3 &p) { return UV { xFace ? p[1] : p[0], (p[0] - sx) * nx + (p[1] - sy) * ny }; };
+				const P3 out { nx, ny, 0.0F };
+				const P3 down { nx * 0.5F, ny * 0.5F, -1.0F };
+				const P3 up { nx, ny, 0.3F };
+				for (int k = 0; k < CrestSegments; k++) {
+					const Section &a = sections[k];
+					const Section &b = sections[k + 1];
+					addQuad(a.under, b.under, b.lip, a.lip, flat(a.under), flat(b.under), flat(b.lip), flat(a.lip), down, CleanSurface::Crest, CrestUndersideDarkness);
+					addQuad(a.lip, b.lip, b.bulge, a.bulge, upright(a.lip), upright(b.lip), upright(b.bulge), upright(a.bulge), out, CleanSurface::Crest, CrestLowerDarkness);
+					addQuad(a.bulge, b.bulge, b.top, a.top, upright(a.bulge), upright(b.bulge), upright(b.top), upright(a.top), up, CleanSurface::Crest, 0.0F);
+				}
+			}
+		}
+	}
+
+	// --- Stalagmites -------------------------------------------------------------------------------------------------
+	// A spike of rock: rings narrowing up to a leaning tip, each point pushed in or out a little.
+	auto addSpike = [&](float cx, float cy, float radius, float height, uint32_t salt) {
+		constexpr float Pi = 3.14159265F;
+		const float leanX = (Hash01(static_cast<int>(salt), 1, 7) - 0.5F) * 0.25F * radius;
+		const float leanY = (Hash01(static_cast<int>(salt), 2, 7) - 0.5F) * 0.25F * radius;
+		std::array<std::array<P3, StalagmiteSides>, StalagmiteRings> rings;
+		std::array<float, StalagmiteSides + 1> arc {};
+		for (int j = 0; j < StalagmiteRings; j++) {
+			const float t = static_cast<float>(j) / StalagmiteRings;
+			const float r = radius * std::pow(1.0F - t, 0.8F);
+			const float ox = cx + leanX * t * t;
+			const float oy = cy + leanY * t * t;
+			for (int i = 0; i < StalagmiteSides; i++) {
+				const float angle = 2.0F * Pi * (static_cast<float>(i) + (Hash01(i, j, salt) - 0.5F) * 0.4F) / StalagmiteSides;
+				const float rr = r * (0.78F + 0.44F * Hash01(i, j, salt + 1U));
+				rings[j][i] = P3 { ox + rr * std::cos(angle), oy + rr * std::sin(angle), height * t };
+			}
+		}
+		for (int i = 0; i < StalagmiteSides; i++)
+			arc[i + 1] = arc[i] + 2.0F * Pi * radius / StalagmiteSides;
+		const P3 tip { cx + leanX, cy + leanY, height };
+		for (int i = 0; i < StalagmiteSides; i++) {
+			const int i1 = (i + 1) % StalagmiteSides;
+			const float am = 2.0F * Pi * (static_cast<float>(i) + 0.5F) / StalagmiteSides;
+			const P3 outward { std::cos(am), std::sin(am), 0.3F };
+			for (int j = 0; j + 1 < StalagmiteRings; j++) {
+				const P3 &a = rings[j][i];
+				const P3 &b = rings[j][i1];
+				const P3 &c = rings[j + 1][i1];
+				const P3 &d = rings[j + 1][i];
+				addQuad(a, b, c, d, UV { arc[i], -a[2] }, UV { arc[i + 1], -b[2] }, UV { arc[i + 1], -c[2] }, UV { arc[i], -d[2] }, outward, CleanSurface::Pillar, 0.0F);
+			}
+			const P3 &a = rings[StalagmiteRings - 1][i];
+			const P3 &b = rings[StalagmiteRings - 1][i1];
+			addTri(a, b, tip, UV { arc[i], -a[2] }, UV { arc[i + 1], -b[2] }, UV { (arc[i] + arc[i + 1]) / 2.0F, -height }, outward, CleanSurface::Pillar, 0.0F);
+		}
+	};
+	int stalagmites = 0;
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			if (Kinds[static_cast<size_t>(y) * MAXDUNX + x] != CleanKind::Pillar)
+				continue;
+			stalagmites++;
+			const uint32_t salt = static_cast<uint32_t>(y * MAXDUNX + x) * 16U;
+			const float cx = static_cast<float>(x) + 0.5F + (Hash01(x, y, 11) - 0.5F) * 0.12F;
+			const float cy = static_cast<float>(y) + 0.5F + (Hash01(x, y, 12) - 0.5F) * 0.12F;
+			const float height = ceiling * (StalagmiteMin + (StalagmiteMax - StalagmiteMin) * Hash01(x, y, 13));
+			const float radius = StalagmiteRadius * (0.85F + 0.3F * Hash01(x, y, 14));
+			addSpike(cx, cy, radius, height, salt);
+			// Most stand in a cluster: one or two smaller spikes beside the big one.
+			for (int k = 0; k < 2; k++) {
+				if (Hash01(x, y, 15 + k) < 0.4F)
+					continue;
+				const float angle = 6.2831853F * Hash01(x, y, 17 + k);
+				const float share = 0.4F + 0.25F * Hash01(x, y, 19 + k);
+				const float reach = radius * (0.75F + 0.35F * share);
+				addSpike(cx + reach * std::cos(angle), cy + reach * std::sin(angle), radius * share, height * share, salt + 4U + static_cast<uint32_t>(k) * 4U);
+			}
+		}
+	}
+
+	// --- Fences and gates --------------------------------------------------------------------------------------------
+	// A wooden beam, an axis-aligned box: its sides and top (and its underside if asked), the grain running up a post
+	// (`upright`), else along the beam.
+	auto addBeam = [&](float x0, float y0, float z0, float x1, float y1, float z1, bool upright, bool under) {
+		auto side = [&](P3 a, P3 b, P3 outward, int axis) {
+			const P3 p0 { a[0], a[1], z0 };
+			const P3 p1 { b[0], b[1], z0 };
+			const P3 p2 { b[0], b[1], z1 };
+			const P3 p3 { a[0], a[1], z1 };
+			if (upright)
+				addQuad(p0, p1, p2, p3, UV { a[axis], -z0 }, UV { b[axis], -z0 }, UV { b[axis], -z1 }, UV { a[axis], -z1 }, outward, CleanSurface::Wood, 0.0F);
+			else
+				addQuad(p0, p1, p2, p3, UV { -z0, a[axis] }, UV { -z0, b[axis] }, UV { -z1, b[axis] }, UV { -z1, a[axis] }, outward, CleanSurface::Wood, 0.0F);
+		};
+		side({ x0, y1, 0 }, { x1, y1, 0 }, { 0, 1, 0 }, 0);
+		side({ x1, y0, 0 }, { x0, y0, 0 }, { 0, -1, 0 }, 0);
+		side({ x1, y1, 0 }, { x1, y0, 0 }, { 1, 0, 0 }, 1);
+		side({ x0, y0, 0 }, { x0, y1, 0 }, { -1, 0, 0 }, 1);
+		const bool alongX = x1 - x0 >= y1 - y0;
+		auto flatUV = [&](float px, float py) { return alongX ? UV { py, px } : UV { px, py }; };
+		addQuad(P3 { x0, y0, z1 }, P3 { x1, y0, z1 }, P3 { x1, y1, z1 }, P3 { x0, y1, z1 }, flatUV(x0, y0), flatUV(x1, y0), flatUV(x1, y1), flatUV(x0, y1), P3 { 0, 0, 1 }, CleanSurface::Wood, 0.0F);
+		if (under)
+			addQuad(P3 { x0, y0, z0 }, P3 { x1, y0, z0 }, P3 { x1, y1, z0 }, P3 { x0, y1, z0 }, flatUV(x0, y0), flatUV(x1, y0), flatUV(x1, y1), flatUV(x0, y1), P3 { 0, 0, -1 }, CleanSurface::Wood, 0.0F);
+	};
+	// A beam centred on the line `across` through a tile, from `from` to `to` along it.
+	auto addRail = [&](bool alongX, float across, float from, float to, float z) {
+		const float a0 = std::min(from, to);
+		const float a1 = std::max(from, to);
+		if (alongX)
+			addBeam(a0, across - FenceRailHalf, z - FenceRailHalf * 1.4F, a1, across + FenceRailHalf, z + FenceRailHalf * 1.4F, false, false);
+		else
+			addBeam(across - FenceRailHalf, a0, z - FenceRailHalf * 1.4F, across + FenceRailHalf, a1, z + FenceRailHalf * 1.4F, false, false);
+	};
+	auto addPost = [&](float px, float py, float height) {
+		addBeam(px - FencePostHalf, py - FencePostHalf, 0.0F, px + FencePostHalf, py + FencePostHalf, height, true, false);
+	};
+	auto fenceLike = [](Point t) {
+		const CleanKind kind = KindAt(t);
+		return kind == CleanKind::Fence || kind == CleanKind::Doorway;
+	};
+	auto meets = [&](Point t) { return fenceLike(t) || rock(t) || KindAt(t) == CleanKind::Pillar; };
+	const CleanOpening gate = CleanDoorOpening();
+	int fences = 0;
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			const Point tile { x, y };
+			const CleanKind kind = KindAt(tile);
+			if (kind != CleanKind::Fence && kind != CleanKind::Doorway)
+				continue;
+			fences++;
+			const float cx = static_cast<float>(x) + 0.5F;
+			const float cy = static_cast<float>(y) + 0.5F;
+			// Which way it runs: along its fence neighbours, else across the gap between the rock either side.
+			bool runsX = fenceLike(tile + Displacement { 1, 0 }) || fenceLike(tile + Displacement { -1, 0 });
+			bool runsY = fenceLike(tile + Displacement { 0, 1 }) || fenceLike(tile + Displacement { 0, -1 });
+			if (kind == CleanKind::Doorway) {
+				const DoorwaySpan span = DoorwaySpanAt(tile);
+				runsX = span.door != nullptr ? span.door->alongX : runsX;
+				runsY = !runsX;
+			} else if (!runsX && !runsY) {
+				runsX = meets(tile + Displacement { 1, 0 }) && meets(tile + Displacement { -1, 0 });
+				runsY = !runsX;
+			}
+			for (const bool alongX : { true, false }) {
+				if (alongX ? !runsX : !runsY)
+					continue;
+				const float across = alongX ? cy : cx;
+				const float middle = alongX ? cx : cy;
+				// A gate: a post either side of its leaf, a lintel over it; the rails run from the posts.
+				const bool isGate = kind == CleanKind::Doorway;
+				const float postAt = isGate ? gate.halfWidth + FencePostHalf : 0.0F;
+				for (const int sign : { -1, 1 }) {
+					const Point next = tile + (alongX ? Displacement { sign, 0 } : Displacement { 0, sign });
+					const float post = middle + static_cast<float>(sign) * postAt;
+					if (isGate)
+						addPost(alongX ? post : across, alongX ? across : post, GateHeight + GateLintel);
+					if (!meets(next))
+						continue;
+					const float edge = middle + 0.5F * static_cast<float>(sign);
+					for (const float z : FenceRails)
+						addRail(alongX, across, post + static_cast<float>(sign) * FencePostHalf, edge, z);
+					if (sign > 0 && fenceLike(next))
+						addPost(alongX ? edge : across, alongX ? across : edge, FenceHeight);
+				}
+				if (isGate) {
+					const float half = gate.halfWidth + 2.0F * FencePostHalf;
+					const float z0 = GateHeight - GateLintelOverlap;
+					if (alongX)
+						addBeam(middle - half, across - FencePostHalf, z0, middle + half, across + FencePostHalf, GateHeight + GateLintel, false, true);
+					else
+						addBeam(across - FencePostHalf, middle - half, z0, across + FencePostHalf, middle + half, GateHeight + GateLintel, false, true);
+				}
+			}
+			if (kind == CleanKind::Fence)
+				addPost(cx, cy, FenceHeight);
+		}
+	}
+	// Shoring: posts and beams along the faces of the rock it props.
+	int shored = 0;
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			const Point tile { x, y };
+			if (!rock(tile) || !IsShoringMegatile(tile))
+				continue;
+			for (const Displacement d : Sides) {
+				const Point front = tile + d;
+				if (!InDungeonBounds(front) || rock(front) || KindAt(front) != CleanKind::Open)
+					continue;
+				shored++;
+				const bool alongX = d.deltaY != 0; // the face runs along x when it faces y
+				const float face = alongX ? static_cast<float>(y) + (d.deltaY > 0 ? 1.0F : 0.0F) : static_cast<float>(x) + (d.deltaX > 0 ? 1.0F : 0.0F);
+				const float across = face + static_cast<float>(alongX ? d.deltaY : d.deltaX) * ShoringOut;
+				const float from = static_cast<float>(alongX ? x : y);
+				for (const float z : ShoringBeams)
+					addRail(alongX, across, from, from + 1.0F, z);
+				for (const float at : { 0.25F, 0.75F })
+					addPost(alongX ? from + at : across, alongX ? across : from + at, ShoringHeight);
+			}
+		}
+	}
+	LogInfo("fp: caves: crest on {} rock faces, {} stalagmites, {} fence and gate tiles, shoring on {} faces", crestFaces, stalagmites, fences, shored);
+}
+
+} // namespace
 
 void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stands, std::vector<std::array<float, 4>> &holes)
 {
@@ -1312,6 +1879,23 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 			addFlat(x0, y0, x1, y1, z0, false, surface);
 	};
 
+	// A triangle, its normal worked out from its corners and turned to face `outward`.
+	using UV = std::array<float, 2>;
+	auto addTri = [&](P3 a, P3 b, P3 c, UV ua, UV ub, UV uc, P3 outward, CleanSurface surface, float darkness) {
+		const P3 e1 { b[0] - a[0], b[1] - a[1], b[2] - a[2] };
+		const P3 e2 { c[0] - a[0], c[1] - a[1], c[2] - a[2] };
+		P3 n { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+		const float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+		if (len < 1e-7F)
+			return;
+		if (n[0] * outward[0] + n[1] * outward[1] + n[2] * outward[2] < 0.0F) {
+			n = { -n[0], -n[1], -n[2] };
+			std::swap(b, c);
+			std::swap(ub, uc);
+		}
+		quads.push_back({ { a, b, c, c }, { n[0] / len, n[1] / len, n[2] / len }, { ua, ub, uc, uc }, surface, darkness, true });
+	};
+
 	for (int y = 0; y < MAXDUNY; y++)
 		for (int x = 0; x < MAXDUNX; x++)
 			if (Kinds[static_cast<size_t>(y) * MAXDUNX + x] == CleanKind::Stand)
@@ -1366,8 +1950,8 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 	for (int y = 0; y < MAXDUNY; y++) {
 		for (int x = 0; x < MAXDUNX; x++) {
 			const Point tile { x, y };
-			if (dSpecial[x][y] <= 0 || Kinds[static_cast<size_t>(y) * MAXDUNX + x] != CleanKind::Open || done[static_cast<size_t>(y) * MAXDUNX + x] != 0)
-				continue;
+			if (dSpecial[x][y] <= 0 || Kinds[static_cast<size_t>(y) * MAXDUNX + x] != CleanKind::Open || done[static_cast<size_t>(y) * MAXDUNX + x] != 0 || leveltype == DTYPE_CAVES)
+				continue; // (the caves have no masonry)
 			// The run along each axis: walkable tiles up to a support on both sides.
 			struct Run {
 				int from = 0;
@@ -1477,10 +2061,10 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 			arches++;
 		}
 	}
-	// The pillars, now that the arches resting on them are known.
+	// The pillars, now that the arches resting on them are known (the caves' are stalagmites, below).
 	for (int y = 0; y < MAXDUNY; y++)
 		for (int x = 0; x < MAXDUNX; x++)
-			if (Kinds[static_cast<size_t>(y) * MAXDUNX + x] == CleanKind::Pillar)
+			if (Kinds[static_cast<size_t>(y) * MAXDUNX + x] == CleanKind::Pillar && leveltype != DTYPE_CAVES)
 				addPillar(static_cast<float>(x) + 0.5F, static_cast<float>(y) + 0.5F, carrying[static_cast<size_t>(y) * MAXDUNX + x]);
 	// Stairwells: steps inside the opening beside each stairs trigger, down into a pit or up into the dark.
 	for (const CleanStairs &stairs : Stairs) {
@@ -1543,6 +2127,8 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 			holes.push_back({ std::min(c0[0], c1[0]), std::min(c0[1], c1[1]), std::max(c0[0], c1[0]), std::max(c0[1], c1[1]) });
 		}
 	}
+	if (leveltype == DTYPE_CAVES)
+		AddCaveGeometry(quads, addTri);
 	LogInfo("fp: clean dungeon geometry: {} quads, {} arches ({} pillars carrying them), {} torch stands, {} stairs", quads.size(), arches, carriers, stands.size(), Stairs.size());
 }
 
@@ -1550,8 +2136,8 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 std::string CleanTileMap(int x0, int y0, int x1, int y1)
 {
 	PrepareCleanDungeon();
-	// '#' wall, 'l' low wall, 'o' pillar, 't' torch stand, 'D' doorway, 'S' stairs, '~' lava or water, '^' an
-	// arch over the tile, '.' floor.
+	// '#' wall, 'l' low wall, 'o' pillar, 't' torch stand, 'D' doorway, 'S' stairs, '~' lava or water, 'f' fence,
+	// '^' an arch over the tile, '.' floor.
 	std::string map = StrCat("x ", x0, "..", x1, ", y ", y0, "..", y1, "\n");
 	for (int y = y0; y <= y1; y++) {
 		map += StrCat(y < 10 ? " " : "", y, " ");
@@ -1569,6 +2155,7 @@ std::string CleanTileMap(int x0, int y0, int x1, int y1)
 			case CleanKind::Doorway: c = 'D'; break;
 			case CleanKind::Stairs: c = 'S'; break;
 			case CleanKind::Flat: c = '~'; break;
+			case CleanKind::Fence: c = 'f'; break;
 			default: c = dSpecial[x][y] > 0 ? '^' : '.'; break;
 			}
 			map += c;
