@@ -265,17 +265,50 @@ def blocks(variation, seed, depth=0.55, rough=None):
     return rgb
 
 
+def joint_middles(is_joint):
+    """The middles of the runs of joint lines (rows or columns) in a mask along one axis."""
+    lines = np.flatnonzero(is_joint)
+    starts = [lines[0]] + [r for p, r in zip(lines, lines[1:]) if r != p + 1]
+    ends = [p for p, r in zip(lines, lines[1:]) if r != p + 1] + [lines[-1]]
+    return [(a + b) // 2 for a, b in zip(starts, ends)]
+
+
 def course_band(rgb, courses=1):
     """`courses` whole courses of a block texture (from the top of its first full course), all the way across."""
     joints = joint_mask(load('Modern-Cream-Blocks_seamless_spec.tga'))
-    row_joint = joints.mean(axis=1) > 0.5
-    rows = np.flatnonzero(row_joint)
-    # The joint rows group into joints; take the first joint's end and the end of the joint `courses` later.
-    starts = [rows[0]] + [r for p, r in zip(rows, rows[1:]) if r != p + 1]
-    ends = [p for p, r in zip(rows, rows[1:]) if r != p + 1] + [rows[-1]]
-    top = (starts[0] + ends[0]) // 2
-    bottom = (starts[courses] + ends[courses]) // 2
-    return rgb[top:bottom]
+    middles = joint_middles(joints.mean(axis=1) > 0.5)
+    return rgb[middles[0]:middles[courses]]
+
+
+def soldier_course(variation, seed, depth=0.55):
+    """The kit's wall blocks stood on end (the ring of the blind arches): one course of `blocks` (its arguments),
+    cut at its joints, each block turned upright, side by side; its normal map turned with it, so the light from above
+    is baked in as on the wall. As tall as a block is long; as wide as a course is high times its blocks (four)."""
+    albedo = load('Modern-Cream-Blocks_seamless.tga')
+    normal = load('Modern-Cream-Blocks_seamless_nrm.tga')
+    joints = joint_mask(load('Modern-Cream-Blocks_seamless_spec.tga'))
+    albedo = albedo * block_tones(joints, variation, seed)[..., None]
+    rows = joint_middles(joints.mean(axis=1) > 0.5)
+    top, bottom = rows[0], rows[1]
+    course = [a[top:bottom] for a in (albedo, normal, joints)]
+    # Its blocks, from the middle of one joint to the next (rolled round so the first starts at a joint).
+    cuts = joint_middles(course[2].mean(axis=0) > 0.3)  # (some of the kit's joints are faint across a course)
+    course = [np.roll(a, -cuts[0], axis=1) for a in course]
+    cuts = [c - cuts[0] for c in cuts] + [course[0].shape[1]]
+    # Each block brought to their common length (they differ by a texel or so), then stood up.
+    length = int(round(np.mean(np.diff(cuts))))
+    height = course[0].shape[0]
+    parts = [[], [], []]
+    for x0, x1 in zip(cuts, cuts[1:]):
+        for k, a in enumerate(course):
+            block = a[:, x0:x1]
+            block = resize(block, length, height) if block.ndim == 3 else resize(np.repeat(block[..., None] * 255.0, 3, axis=2), length, height)[..., 0] / 255.0
+            parts[k].append(np.rot90(block, 1))
+    rgb, nrm, jnt = (np.concatenate(p, axis=1) for p in parts)
+    # Turned a quarter anticlockwise: what faced right faces up, what faced down faces right (red right, green down).
+    nrm = np.stack([nrm[..., 1], 255.0 - nrm[..., 0], nrm[..., 2]], axis=2)
+    rgb = relief(rgb, nrm, 0.8)
+    return rgb * (1.0 - depth * jnt)[..., None]
 
 
 def carving(stone, width, height):
@@ -336,8 +369,9 @@ def sized(rgb, texels_across, texels_down=None):
 # stone: pillar plinths and capitals, the tops of low walls, the treads of steps), arch (the inside of arches and
 # doorways), door (a door leaf: stretched over the whole leaf, not tiled), marble, lid and iron (the sarcophagus: its
 # stone, its bronze lid with the carving stretched over its top, its handles), ivory (the bases of the torch stands);
-# marble2 and ivory2 are second versions of those, each sarcophagus or stand wearing one or the other. Every size is a
-# power of two (the game wraps textures with bit masks).
+# marble2 and ivory2 are second versions of those, each sarcophagus or stand wearing one or the other; band (the
+# cathedral's blind arches' ring: the wall's bricks stood on end, set round the arch). Every size is a power of two
+# (the game wraps textures with bit masks).
 #
 # The colours (R, G, B) and spreads are the original art's, fully lit:
 #   cathedral: walls (77, 62, 62) +-26 (luminance 66: the brightness its walls keep in the floor's colours),
@@ -362,6 +396,9 @@ def cathedral():
     out['ceiling'] = (blur(recolor(sized(wall, 128), grey, 51, 16), 0.5), 1.0, 1.0)
     coping = course_band(blocks(0.06, 2))
     out['top'] = (blur(recolor(resize(coping, 256, 32), grey, 76, 18), 0.4), 2.0, 0.25)
+    # The ring of the walls' blind arches: the wall's bricks stood on end, at the wall's scale (half a tile across, four
+    # bricks; a brick's length, a quarter tile, high), in the wall's colours; the game sets them round the arch.
+    out['band'] = (blur(recolor(resize(soldier_course(0.08, 1), 128, 64), grey, 66, 22), 0.4), 0.5, 0.25)
     # The kit's Diablo marble in the original's marble colours on the pillar shafts. The sarcophagus as the original
     # paints it: grey stone (mottled, two versions), the kit's carving on its bronze lid, the kit's iron handles. The
     # torch stands' bases in pale grey worn stone (two versions).

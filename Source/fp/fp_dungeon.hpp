@@ -80,6 +80,7 @@ enum class CleanSurface : uint8_t {
 	Ivory,   // the bases of the torch stands (falls back to Pillar)
 	MarbleAlt, // a second version of Marble, for every other sarcophagus (falls back to Marble)
 	IvoryAlt,  // a second version of Ivory, for every other torch stand (falls back to Ivory)
+	Band,      // the cathedral's blind arches' ring: four bricks stood on end across, one brick long down (falls back to Wall)
 	Count
 };
 

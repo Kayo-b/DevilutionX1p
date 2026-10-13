@@ -122,7 +122,7 @@ Open the console with the backtick key, then run `dev = require('devilutionx.dev
 | `dev.fp.tilemap(x0,y0,x1,y1)` | ASCII map: `#` solid with tall art, `s` solid flat, `a` tall art, `B` building |
 | `dev.fp.dumpiso(x0,y0,x1,y1,path)` | save the **original iso art** of a tile rectangle as a PPM image |
 | `dev.fp.dumppiece(x,y,path)` / `dev.fp.dumpfaces(...)` | one tile's iso column, or its extracted wall faces (openings in red) |
-| `dev.fp.buildings / housemodels / housemeshes / housetextures / recesses (bool)` | switch individual features off to compare (recesses: caves and hell) |
+| `dev.fp.buildings / housemodels / housemeshes / housetextures / recesses (bool)` | switch individual features off to compare (recesses: the caves' and hell's, and the cathedral's blind arches) |
 | `dev.fp.cleanmap(x0,y0,x1,y1)` | ASCII map of the clean dungeon's tile kinds: `#` wall, `l` low wall, `o` pillar, `t` torch stand, `D` doorway, `S` stairwell, `~` lava, `^` arch over the tile |
 | `dev.fp.dumpfile(gamePath, outPath)` | copy a file out of the game data (a palette: `levels/l1data/l1_1.pal`), for offline tools |
 | `dev.quests.activateAll()` | activate every quest: a level and seed then always give the same layout (a new game picks its quests at random, and they change the levels' set pieces) |
@@ -219,6 +219,16 @@ geometry. The art is only read to tell what a tile is.
 - **Walls** (`DrawCleanWalls`): one ray per column; a face's texture runs along the world axis, so the courses carry on
   from tile to tile. Bands: the texture set's `base` (plinth) at the foot and `top` (frieze) under the ceiling, the
   `wall` texture tiled between. Low walls are looked over, their tops drawn.
+- **Blind arches** (the cathedral; `FindBlindArches`, drawn in `DrawCleanWalls`, constants `BlindArch*`): as its art
+  draws them along every wall (one every two tiles there, 1.4 wide, the crown about 2.6 up), every stretch of
+  full-height wall face with open floor in front, on either side of a wall, has a row of round-topped arches spread
+  evenly about `BlindArchSpacing` (1.7) apart, so they come out whole at its ends, each 1.02 wide (narrower where a
+  short stretch leaves too little wall between them), from the top of the base band up, ringed with the wall's bricks
+  set on end like voussoirs (the set's `band`: `soldier_course` in the exporter; as many whole bricks as fit round it). They are drawn flat on the face and shaded to look sunk in: a
+  rim of `arch` stone just inside the outline, a `stone` sill, a back a light level darker with its bricks shifted off
+  the wall's, darker still under the top. Drawn as real 3D recesses (rays followed into them) they cost about 2 ms with
+  a wall of them on screen; flat, about 1 ms, the ring's place on its band worked out every `RingStep` rows and drawn
+  straight in between. `dev.fp.recesses(false)` turns them off.
 - **Openings** (doorways, stairwells): a straight-sided round arch centred on the tile (`CleanOpening`; doors
   `CleanDoorOpening`: `DoorHalfWidth`, `DoorCrown`). A ray entering one is followed through the wall's thickness, solved
   exactly: it leaves through a jamb, the arched soffit (both faced with the `arch` texture), the floor, or the back (a

@@ -86,6 +86,28 @@ PillarStyle PillarStyleFor(dungeon_type type)
 	}
 }
 
+/**
+ * Blind arches: in the cathedral every stretch of full-height wall with open floor in front has a row of them, as its
+ * art draws them along every wall: round-topped, from the top of the base band up, ringed with bricks set on end like
+ * voussoirs (the set's `band`), spread evenly along the stretch about `BlindArchSpacing` apart, so they come out whole
+ * (FindBlindArches). Drawn flat on the face (cheap), shaded to look sunk in: a rim of arch stone just inside the
+ * outline (the sides and the underside of the top one would see), a stone sill, and a back a light level darker, its
+ * bricks shifted off the wall's, darker still in the shadow under the top. The spacing; the half width (less where a
+ * short stretch leaves too little wall between them: `BlindArchMinPier`); the wall left between the ring and the
+ * frieze; the ring's thickness; the rim's and the sill's width; the back's darkness, the shadow's extra darkness at the
+ * top and how far down it fades (light levels, drawn tiles); the shift of the back's bricks (tiles).
+ */
+constexpr float BlindArchSpacing = 1.7F;
+constexpr float BlindArchHalfWidth = 0.51F;
+constexpr float BlindArchMinPier = 0.2F;
+constexpr float BlindArchLintel = 0.1F;
+constexpr float BlindArchRing = 0.25F;
+constexpr float BlindArchRim = 0.05F;
+constexpr float BlindArchBackDarkness = 1.0F;
+constexpr float BlindArchShadow = 2.0F;
+constexpr float BlindArchShadowDrop = 0.4F;
+constexpr float BlindArchBackShift = 0.0625F;
+
 /** Light levels added to the sloping sides of a pillar's stone block (they face a little down; brick ones go on into their arches unshaded). */
 constexpr float FlareDarkness = 0.5F;
 
@@ -180,6 +202,8 @@ struct TextureSet {
 	// The bands at the foot (plinth) and the top (frieze) of a wall, as tall as their textures (0: none).
 	float baseBand = 0;
 	float topBand = 0;
+	float bandAcross = 0; // the size of the blind arches' ring texture (`band`: four bricks across, one long down; 0: none)
+	float bandDown = 0;
 };
 
 TextureSet Textures;
@@ -196,7 +220,7 @@ const char *SetName(dungeon_type type)
 	}
 }
 
-constexpr std::array<const char *, static_cast<size_t>(CleanSurface::Count)> SlotNames { "wall", "base", "top", "floor", "ceiling", "pillar", "stone", "arch", "door", "marble", "lid", "iron", "ivory", "marble2", "ivory2" };
+constexpr std::array<const char *, static_cast<size_t>(CleanSurface::Count)> SlotNames { "wall", "base", "top", "floor", "ceiling", "pillar", "stone", "arch", "door", "marble", "lid", "iron", "ivory", "marble2", "ivory2", "band" };
 
 /** The palette colours textures may use: the level's ramps (not the near-blacks 112-127, nor colours the level cycles) and the shared ramps 160-254. */
 bool IsAllowedColor(int index)
@@ -391,6 +415,10 @@ void EnsureTextures()
 			Textures.baseBand = source != nullptr ? source->tilesDown : 0.0F;
 		if (surface == CleanSurface::Top)
 			Textures.topBand = source != nullptr ? source->tilesDown : 0.0F;
+		if (surface == CleanSurface::Band) {
+			Textures.bandAcross = source != nullptr ? source->tilesAcross : 0.0F;
+			Textures.bandDown = source != nullptr ? source->tilesDown : 0.0F;
+		}
 		if (source == nullptr && (surface == CleanSurface::Lid || surface == CleanSurface::MarbleAlt))
 			source = find("marble");
 		if (source == nullptr && surface == CleanSurface::IvoryAlt)
@@ -461,6 +489,16 @@ struct LevelKey {
 
 std::vector<CleanKind> Kinds;    // per tile, y * MAXDUNX + x
 std::vector<float> WallHeights;  // per tile: drawn height of a wall
+
+/** A blind arch on a stretch of wall (FindBlindArches): its middle along the face (world x or y) and its half width. */
+struct BlindArch {
+	float middle;
+	float halfWidth;
+};
+std::vector<BlindArch> BlindArches;
+/** Per tile and face (its +x, -x, +y, -y side), the (up to two) blind arches it carries some of: into BlindArches, -1 if none. */
+std::vector<std::array<int16_t, 2>> BlindArchIndex;
+
 LevelKey KindsFor { nullptr, -1, -1, false, -1 };
 uint32_t KindsMap = 0;
 uint32_t Version = 1;
@@ -562,6 +600,62 @@ int ArtWallRows(const PieceTextures &textures)
 	return rows;
 }
 
+/** @brief Lays out the cathedral's blind arches (see BlindArchSpacing) along every stretch of wall face with open floor in front. */
+void FindBlindArches()
+{
+	BlindArches.clear();
+	BlindArchIndex.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY * 4, { -1, -1 });
+	if (leveltype != DTYPE_CATHEDRAL)
+		return;
+	const float ceiling = CleanCeiling();
+	constexpr std::array<Displacement, 4> Fronts { { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } } };
+	for (int face = 0; face < 4; face++) {
+		const Displacement front = Fronts[face];
+		const bool xFace = front.deltaX != 0; // a face towards x runs along y
+		const int lines = xFace ? MAXDUNX : MAXDUNY;
+		const int steps = xFace ? MAXDUNY : MAXDUNX;
+		for (int line = 0; line < lines; line++) {
+			auto tileAt = [&](int step) { return xFace ? Point { line, step } : Point { step, line }; };
+			// A full-height wall with open floor in front of this face.
+			auto walled = [&](int step) {
+				const Point tile = tileAt(step);
+				const Point ahead = tile + front;
+				if (!InDungeonBounds(ahead))
+					return false;
+				const size_t at = static_cast<size_t>(tile.y) * MAXDUNX + tile.x;
+				return Kinds[at] == CleanKind::Wall && WallHeights[at] >= ceiling - 0.01F && Kinds[static_cast<size_t>(ahead.y) * MAXDUNX + ahead.x] == CleanKind::Open;
+			};
+			for (int step = 0; step < steps;) {
+				if (!walled(step)) {
+					step++;
+					continue;
+				}
+				const int start = step;
+				while (step < steps && walled(step))
+					step++;
+				const float length = static_cast<float>(step - start);
+				const int count = std::max(1, static_cast<int>(std::lround(length / BlindArchSpacing)));
+				const float spacing = length / static_cast<float>(count);
+				const float halfWidth = std::min(BlindArchHalfWidth, (spacing - BlindArchMinPier) / 2.0F);
+				if (halfWidth < 0.2F)
+					continue;
+				for (int i = 0; i < count; i++) {
+					const float middle = static_cast<float>(start) + (static_cast<float>(i) + 0.5F) * spacing;
+					const float reach = halfWidth + BlindArchRing;
+					const int first = std::max(start, static_cast<int>(std::floor(middle - reach)));
+					const int last = std::min(step - 1, static_cast<int>(std::ceil(middle + reach)) - 1);
+					for (int at = first; at <= last; at++) {
+						const Point tile = tileAt(at);
+						std::array<int16_t, 2> &slots = BlindArchIndex[(static_cast<size_t>(tile.y) * MAXDUNX + tile.x) * 4 + face];
+						(slots[0] < 0 ? slots[0] : slots[1]) = static_cast<int16_t>(BlindArches.size());
+					}
+					BlindArches.push_back({ middle, halfWidth });
+				}
+			}
+		}
+	}
+}
+
 void ClassifyTiles()
 {
 	Kinds.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY, CleanKind::Open);
@@ -605,7 +699,8 @@ void ClassifyTiles()
 		}
 	}
 	FindStairs();
-	LogInfo("fp: clean dungeon tiles: {} walls, {} pillars, {} torch stands, {} doorways, {} stairs", counts[1], counts[2], counts[3], counts[4], Stairs.size());
+	FindBlindArches();
+	LogInfo("fp: clean dungeon tiles: {} walls, {} pillars, {} torch stands, {} doorways, {} stairs, {} blind arches", counts[1], counts[2], counts[3], counts[4], Stairs.size(), BlindArches.size());
 }
 
 void EnsureKinds()
@@ -892,6 +987,18 @@ void DrawCleanFloorAndCeiling(const Surface &out, const Projection &proj, std::v
 	}
 }
 
+/** @brief atan2(y, x) for y >= 0, to within about 0.005 rad: cheap enough per pixel. */
+inline float HalfTurnAngle(float x, float y)
+{
+	const float ax = std::abs(x);
+	const float t = std::min(ax, y) / std::max({ ax, y, 1e-12F });
+	const float t2 = t * t;
+	float a = t * (0.99997726F + t2 * (-0.33262347F + t2 * (0.19354346F + t2 * (-0.11643287F + t2 * (0.05265332F - t2 * 0.01172120F)))));
+	if (y > ax)
+		a = 1.57079633F - a;
+	return x < 0.0F ? 3.14159265F - a : a;
+}
+
 void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<float> &zBuffer, std::vector<float> &depthBuffer)
 {
 	const float ceiling = CleanCeiling();
@@ -944,11 +1051,93 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 			const float rayAlong = hit.xSide ? ray.y : ray.x;
 			const float rayAcross = std::abs(hit.xSide ? ray.x : ray.y);
 			bool lookOn = low;
+			// The blind arch on this face nearest this column, if any (see BlindArchSpacing), from the base band up.
+			const BlindArch *arch = nullptr;
+			if (kind == CleanKind::Wall && !low && WallRecessesEnabled() && InDungeonBounds(hit.tile) && !BlindArchIndex.empty()) {
+				const int face = hit.xSide ? (hit.previous.x > hit.tile.x ? 0 : 1) : (hit.previous.y > hit.tile.y ? 2 : 3);
+				for (const int16_t slot : BlindArchIndex[(static_cast<size_t>(hit.tile.y) * MAXDUNX + hit.tile.x) * 4 + face])
+					if (slot >= 0 && (arch == nullptr || std::abs(worldAlong - BlindArches[slot].middle) < std::abs(worldAlong - arch->middle)))
+						arch = &BlindArches[slot];
+			}
+			const bool archFace = arch != nullptr;
+			const float archHalf = archFace ? arch->halfWidth : 0.0F;
+			const float archBottom = Textures.baseBand;
+			const float archSpring = ceiling - Textures.topBand - BlindArchLintel - BlindArchRing - archHalf;
+			const float archA = archFace ? worldAlong - arch->middle : 0.0F; // across the arch, from its middle
+			const float archR2 = archHalf * archHalf;
+			const float innerR2 = (archHalf - BlindArchRim) * (archHalf - BlindArchRim);
+			const float ringR2 = (archHalf + BlindArchRing) * (archHalf + BlindArchRing);
+			// This column's part of it, by height: the arch up to `archTopH`, its rim from `rimFromH` (a column in a side's
+			// rim is rim all the way down), the ring from `ringFromH` to `ringToH`.
+			const float aa = archA * archA;
+			const bool archColumn = archFace && aa < archR2;
+			const float archTopH = archColumn ? archSpring + std::sqrt(archR2 - aa) : 0.0F;
+			const float rimFromH = archColumn && aa < innerR2 ? archSpring + std::sqrt(innerR2 - aa) : archBottom;
+			const bool ringColumn = archFace && aa < ringR2;
+			const float ringFromH = archColumn ? archTopH : archSpring;
+			const float ringToH = ringColumn ? archSpring + std::sqrt(ringR2 - aa) : 0.0F;
+			// The ring's bricks: as many whole ones as fit round its middle line, each as wide as the band's.
+			const float bandBrick = Textures.bandAcross / 4.0F;
+			const float voussoirs = bandBrick > 0.0F ? std::max(1.0F, std::round(3.14159265F * (archHalf + BlindArchRing / 2.0F) / bandBrick)) : 0.0F;
+			// Where a point `ah` above the springing in this column is on the ring's band: along it (tiles of the band
+			// texture), and down it (0 its outer edge, 1 its inner).
+			auto ringAt = [&](float ah) {
+				const float angle = HalfTurnAngle(archA, std::max(ah, 0.0F)); // 0 at the right springing, pi at the left
+				const float r = std::sqrt(aa + ah * ah);
+				return std::pair { angle / 3.14159265F * voussoirs * bandBrick, (archHalf + BlindArchRing - r) / BlindArchRing };
+			};
+			constexpr int RingStep = 8;
+			int ringNext = -1;
+			int ringFrom = 0;
+			float ringU = 0;
+			float ringV = 0;
+			float ringDu = 0;
+			float ringDv = 0;
+			if (archFace)
+				samplers.Prepare(worldPerPixel, { CleanSurface::Arch, CleanSurface::Stone, CleanSurface::Band });
 			for (int y = top; y <= bottom; y++) {
 				if (filled[y] != 0)
 					continue;
 				const float slope = static_cast<float>(proj.horizon - y) / proj.focal;
 				const float h = EyeHeight + slope * d;
+				const float ah = h - archSpring; // above the springing
+				if (archColumn && h > archBottom && h < archTopH) {
+					// Inside the arch: its rim, its sill, or its back in the shadow under the top.
+					uint8_t color;
+					if (h >= rimFromH)
+						color = samplers[CleanSurface::Arch].At(worldAlong, -h, LightLevel(light + (ah > 0.0F ? UndersideDarkness : RevealDarkness), x, y), x, y);
+					else if (h < archBottom + BlindArchRim)
+						color = samplers[CleanSurface::Stone].At(worldAlong, -h, LightLevel(light, x, y), x, y);
+					else {
+						const float shadow = BlindArchShadow * std::max(0.0F, 1.0F - (rimFromH - h) / BlindArchShadowDrop);
+						color = samplers[CleanSurface::Wall].At(worldAlong + BlindArchBackShift, -h, LightLevel(light + BlindArchBackDarkness + shadow, x, y), x, y);
+					}
+					*out.at(x, y) = color;
+					filled[y] = 1;
+					depthBuffer[static_cast<size_t>(y) * proj.width + x] = d;
+					continue;
+				}
+				if (ringColumn && h >= ringFromH && h < ringToH && voussoirs > 0.0F) {
+					// The ring: bricks on end set round the top, each pointing at its middle. Where they are on the band
+					// is worked out every RingStep rows and drawn straight in between (over a few rows the ring is).
+					if (y >= ringNext) {
+						const float h1 = EyeHeight + static_cast<float>(proj.horizon - y - RingStep) / proj.focal * d;
+						const auto [u0, v0] = ringAt(ah);
+						const auto [u1, v1] = ringAt(h1 - archSpring);
+						ringU = u0;
+						ringV = v0;
+						ringDu = (u1 - u0) / RingStep;
+						ringDv = (v1 - v0) / RingStep;
+						ringFrom = y;
+						ringNext = y + RingStep;
+					}
+					const float step = static_cast<float>(y - ringFrom);
+					const float v = std::clamp(ringV + ringDv * step, 0.0F, 0.999F) * Textures.bandDown;
+					*out.at(x, y) = samplers[CleanSurface::Band].At(ringU + ringDu * step, v, LightLevel(light, x, y), x, y);
+					filled[y] = 1;
+					depthBuffer[static_cast<size_t>(y) * proj.width + x] = d;
+					continue;
+				}
 				if (opening != nullptr && h < openingTop && h > 0.0F) {
 					// Inside the opening: follow the ray through the wall's thickness to where it leaves the opening.
 					const float back = rayAcross > 1e-5F ? 1.0F / rayAcross : 1e9F;
