@@ -109,10 +109,10 @@ class NearestColors {
 public:
 	void Prepare()
 	{
-		if (ready_ && readyFor_ == PaletteVersion())
+		if (ready_ && readyFor_ == StablePaletteVersion())
 			return;
 		ready_ = true;
-		readyFor_ = PaletteVersion();
+		readyFor_ = StablePaletteVersion();
 		cache_.fill(Unknown);
 	}
 

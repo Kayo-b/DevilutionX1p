@@ -348,9 +348,10 @@ geometry. The art is only read to tell what a tile is.
   level (`GetColorPairs`).
 - Copies are made on first use and cached per level, keyed by the texture's storage (`ForgetUpscaledTexture` when it
   is freed: `BuildStructures` does it for the structure art). Structure art is only upscaled in town, the cathedral
-  and the catacombs (`FineCanvas`; in the clean dungeon that is only the torch stands): the caves and hell cycle their
-  palettes, which rebuilds their structures every frame. The clean dungeon's textures are not upscaled: they are
-  finer than the art to begin with, and blend up close by their dithered sampling (5.1).
+  and the catacombs (`FineCanvas`; in the clean dungeon that is only the torch stands): not in the caves, whose art
+  cycles its lava colours, which the smoothing would mix as they stand at one moment, nor in hell. The clean
+  dungeon's textures are not upscaled: they are finer than the art to begin with, and blend up close by their
+  dithered sampling (5.1).
 
 ### 5.3 Controls
 `fp_controls.cpp`:
@@ -458,6 +459,10 @@ Texturing modes for structure faces (`AddStructureFace(..., mapping)`):
   tile light level.
 - Palette entries **112–127** are special near-blacks that also turn red. Run art through `PatchColor()` before
   storing it in textures.
+- The caves (and the crypt, the hive) **cycle colours 0–31** every frame: their lava and water (`IsCycledColor`).
+  Tables and caches built from the palette check `StablePaletteVersion()`, which ignores those colours, not
+  `PaletteVersion()`, which changes every frame there: keyed on it, the caves rebuilt all their structures each
+  frame (about 400 ms a frame). `DrawFirstPersonView` notes palette changes once a frame (`NotePaletteChange`).
 
 ### 5.8 Performance tips
 - Turn on `FP_PHASE_TIMES` first to see which phase is slow.

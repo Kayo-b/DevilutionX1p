@@ -28,6 +28,7 @@
 #include "levels/dun_tile_data.hpp"
 #include "levels/gendung.h"
 #include "levels/tile_properties.hpp"
+#include "utils/is_of.hpp"
 #include "utils/log.hpp"
 
 namespace devilution::fp {
@@ -977,6 +978,8 @@ std::vector<int16_t> RenderPieceFloor(uint16_t pieceId)
 namespace {
 uint32_t PaletteHash = 0;
 uint32_t PaletteVersionNumber = 1;
+uint32_t UncycledPaletteHash = 0;
+uint32_t StablePaletteVersionNumber = 1;
 } // namespace
 
 uint32_t PaletteVersion()
@@ -984,18 +987,40 @@ uint32_t PaletteVersion()
 	return PaletteVersionNumber;
 }
 
+uint32_t StablePaletteVersion()
+{
+	return StablePaletteVersionNumber;
+}
+
+bool IsCycledColor(int index)
+{
+	// palette_update_caves turns 1-31 (the Poisoned Water Supply's level also sets 0-31 as its water clears),
+	// palette_update_crypt 1-15 and 16-31, palette_update_hive 1-8 and 9-15.
+	return index >= 0 && index < 32 && IsAnyOf(leveltype, DTYPE_CAVES, DTYPE_CRYPT, DTYPE_NEST);
+}
+
 void NotePaletteChange()
 {
 	uint32_t hash = 2166136261U;
+	uint32_t uncycled = 2166136261U;
 	for (int i = 0; i < 256; i++) {
 		const SDL_Color c = logical_palette[i];
 		hash = (hash ^ c.r) * 16777619U;
 		hash = (hash ^ c.g) * 16777619U;
 		hash = (hash ^ c.b) * 16777619U;
+		if (IsCycledColor(i))
+			continue;
+		uncycled = (uncycled ^ c.r) * 16777619U;
+		uncycled = (uncycled ^ c.g) * 16777619U;
+		uncycled = (uncycled ^ c.b) * 16777619U;
 	}
 	if (hash != PaletteHash) {
 		PaletteHash = hash;
 		PaletteVersionNumber++;
+	}
+	if (uncycled != UncycledPaletteHash) {
+		UncycledPaletteHash = uncycled;
+		StablePaletteVersionNumber++;
 	}
 }
 

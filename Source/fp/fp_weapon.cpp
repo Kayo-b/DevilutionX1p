@@ -175,10 +175,10 @@ const std::array<uint8_t, 256> &ColorMap()
 	static std::array<uint8_t, 256> map {};
 	static bool ready = false;
 	static uint32_t readyFor = 0;
-	if (ready && readyFor == PaletteVersion())
+	if (ready && readyFor == StablePaletteVersion())
 		return map;
 	ready = true;
-	readyFor = PaletteVersion();
+	readyFor = StablePaletteVersion();
 	std::vector<uint8_t> pal;
 	if (const char *dir = DaggerfallDir(); dir != nullptr)
 		pal = ReadFile(std::string(dir) + "/ART_PAL.COL");

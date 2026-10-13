@@ -266,8 +266,8 @@ uint8_t PatchColor(int16_t art)
 {
 	static std::array<uint8_t, 256> safe {};
 	static uint32_t readyFor = 0;
-	if (readyFor != PaletteVersion()) {
-		readyFor = PaletteVersion();
+	if (readyFor != StablePaletteVersion()) {
+		readyFor = StablePaletteVersion();
 		for (int i = 0; i < 256; i++) {
 			safe[i] = static_cast<uint8_t>(i);
 			if (i < 112 || i > 127)
@@ -275,7 +275,7 @@ uint8_t PatchColor(int16_t art)
 			const SDL_Color c = logical_palette[i];
 			int best = std::numeric_limits<int>::max();
 			for (int j = 1; j < 256; j++) {
-				if (j >= 112 && j <= 127)
+				if ((j >= 112 && j <= 127) || IsCycledColor(j))
 					continue;
 				const SDL_Color o = logical_palette[j];
 				const int distance = (o.r - c.r) * (o.r - c.r) + (o.g - c.g) * (o.g - c.g) + (o.b - c.b) * (o.b - c.b);
@@ -301,8 +301,8 @@ uint8_t ShadeColor(uint8_t color, int darkness)
 {
 	static std::array<std::array<uint8_t, 256>, SurfaceShade.size()> table {};
 	static uint32_t readyFor = 0;
-	if (readyFor != PaletteVersion()) {
-		readyFor = PaletteVersion();
+	if (readyFor != StablePaletteVersion()) {
+		readyFor = StablePaletteVersion();
 		for (size_t level = 0; level < SurfaceShade.size(); level++) {
 			for (int i = 0; i < 256; i++) {
 				const SDL_Color c = logical_palette[i];
@@ -333,8 +333,8 @@ float ShadePixelWorld = 0;
 int ShadeX = 0;
 int ShadeY = 0;
 /**
- * @brief Whether SampleArt may read the art's UpscaledTexture up close: not on levels that cycle their palettes, whose
- * structures (and art) are rebuilt every frame.
+ * @brief Whether SampleArt may read the art's UpscaledTexture up close: not in the caves, whose art cycles its lava
+ * colours (the smoothing would mix them as they stand at one moment), nor in hell.
  */
 bool FineCanvas()
 {
@@ -3776,8 +3776,8 @@ uint8_t DoorLeafColor(uint8_t color)
 	    { 100, 123, 92, 60 }, { 120, 151, 110, 69 }, { 160, 210, 148, 84 }, { 235, 251, 214, 150 } } };
 	static std::array<uint8_t, 256> table {};
 	static uint32_t readyFor = 0;
-	if (readyFor != PaletteVersion()) {
-		readyFor = PaletteVersion();
+	if (readyFor != StablePaletteVersion()) {
+		readyFor = StablePaletteVersion();
 		// Matching colour by colour speckles (the palette has no true brown): use the one 16-colour ramp that fits the wood best.
 		int woodRamp = 0;
 		float woodFit = 1e30F;
@@ -4037,11 +4037,11 @@ void FinishStructureBounds()
 
 void EnsureStructures()
 {
-	// The clean dungeon is rebuilt when its map changes (doors, levers) and not with the crypt's cycling lava colours.
+	// The clean dungeon is rebuilt when its map changes (doors, levers), the rest when the palette does, but neither with
+	// the colours the level cycles (lava, water): the caves turn theirs every frame. (DrawFirstPersonView notes the
+	// palette's changes once a frame.)
 	const bool clean = IsCleanDungeon();
-	if (!clean)
-		NotePaletteChange();
-	const LevelKey key { pDungeonCels.get(), currlevel, static_cast<int>(leveltype), setlevel, clean ? CleanDungeonVersion() : PaletteVersion() };
+	const LevelKey key { pDungeonCels.get(), currlevel, static_cast<int>(leveltype), setlevel, clean ? CleanDungeonVersion() : StablePaletteVersion() };
 	if (key == StructuresFor)
 		return;
 	StructuresFor = key;
