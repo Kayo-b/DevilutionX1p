@@ -1123,13 +1123,19 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 			};
 			const Run rx = runAlong(true);
 			const Run ry = runAlong(false);
+			// The axis bounded on both sides, the shorter span if both are, else the one resting on pillars (an arcade).
 			bool alongX;
+			const auto onPillars = [&](bool x) {
+				const Displacement step = x ? Displacement { 1, 0 } : Displacement { 0, 1 };
+				const Run &run = x ? rx : ry;
+				return KindAt(tile + step * (run.from - 1)) == CleanKind::Pillar || KindAt(tile + step * (run.to + 1)) == CleanKind::Pillar;
+			};
 			if (rx.bounded != ry.bounded)
 				alongX = rx.bounded;
 			else if (rx.bounded && rx.to - rx.from != ry.to - ry.from)
 				alongX = rx.to - rx.from < ry.to - ry.from;
 			else if (rx.bounded)
-				alongX = GetSpecialArch(dSpecial[x][y]).alongX;
+				alongX = onPillars(true) || !onPillars(false);
 			else
 				continue;
 			const Run run = alongX ? rx : ry;

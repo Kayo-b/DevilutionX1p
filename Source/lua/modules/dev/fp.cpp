@@ -408,12 +408,6 @@ std::string DebugCmdFpModelTextures(bool enabled)
 	return enabled ? "Model textures on." : "Model textures off (projected iso art).";
 }
 
-std::string DebugCmdFpModKit(bool enabled)
-{
-	fp::SetModKitEnabled(enabled);
-	return enabled ? "Mod-kit dungeon surfaces on." : "Mod-kit dungeon surfaces off (entrance stairs and sarcophagus remain independent).";
-}
-
 std::string DebugCmdFpDumpFile(std::string gamePath, std::string outPath)
 {
 	// Copies a file from the game data (e.g. a palette, levels\\l1data\\l1_1.pal) to disk, for offline tools.
@@ -461,9 +455,8 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "walkto", "(x: number, y: number)", "Walk to a tile the way a click does (path finding).", &DebugCmdFpWalkTo);
 	LuaSetDocFn(table, "where", "()", "Player tile and camera position (x100).", &DebugCmdFpWhere);
 	LuaSetDocFn(table, "modeltextures", "(enabled: boolean)", "Texture town buildings with the 3D models' own textures (default) or their projected iso art.", &DebugCmdFpModelTextures);
-	LuaSetDocFn(table, "modkit", "(enabled: boolean)", "Dungeon kit walls, floors, ceilings, columns, and arcade pillars (default off); entrance stairs and sarcophagus are independent.", &DebugCmdFpModKit);
 	LuaSetDocFn(table, "dumpfile", "(gamePath: string, outPath: string)", "Copy a file from the game data (a palette, a .dun) to disk.", &DebugCmdFpDumpFile);
-	LuaSetDocFn(table, "sarcophagus", "(enabled: boolean)", "Use the dungeon kit's 3D sarcophagus model, independently of the rest of the mod kit.", &DebugCmdFpSarcophagus);
+	LuaSetDocFn(table, "sarcophagus", "(enabled: boolean)", "Use the dungeon kit's 3D sarcophagus model (default), or a box of its sprite.", &DebugCmdFpSarcophagus);
 	LuaSetDocFn(table, "operate", "(x: number, y: number)", "Operate the object at a tile, as a click on it does (open a sarcophagus, a door...).", &DebugCmdFpOperate);
 	LuaSetDocFn(table, "weapon", "(file: number = nil, record: number = 0, frame: number = 0)", "Show a Daggerfall weapon frame instead of the held one; no file to go back.", &DebugCmdFpWeapon);
 	LuaSetDocFn(table, "on","(enabled: boolean)", "Switch between first-person and the original view.", &DebugCmdFpOn);

@@ -20,7 +20,6 @@
 
 #include "engine/light_tables.hpp"
 #include "engine/palette.h"
-#include "engine/render/clx_render.hpp"
 #include "engine/render/dun_render.hpp"
 #include "engine/render/light_render.hpp"
 #include "engine/surface.hpp"
@@ -570,118 +569,6 @@ const PieceTextures &GetPieceTextures(uint16_t pieceId)
 	if (textures == nullptr)
 		textures = BuildPieceTextures(pieceId);
 	return *textures;
-}
-
-namespace {
-
-/** @brief Renders special cel `index` (0-based) where a piece column of `height` sits, with the given background. */
-std::vector<uint8_t> RenderSpecialColumn(size_t index, int height, uint8_t background)
-{
-	constexpr int Pad = TILE_WIDTH;
-	OwnedSurface surface(ColumnWidth + 2 * Pad, height + 2 * Pad);
-	const Surface &out = surface;
-	for (int y = 0; y < out.h(); y++)
-		std::fill_n(out.at(0, y), out.w(), background);
-	ClxDraw(out, { Pad, Pad + height - 1 }, (*pSpecialCels)[index]);
-	std::vector<uint8_t> pixels(static_cast<size_t>(ColumnWidth) * height);
-	for (int y = 0; y < height; y++)
-		std::copy_n(out.at(Pad, Pad + y), ColumnWidth, &pixels[static_cast<size_t>(y) * ColumnWidth]);
-	return pixels;
-}
-
-/**
- * @brief Samples a column's art (ColumnWidth x `height`, NoPixel where empty) on the plane an arch or wall stands on
- * (the middle of the tile, like the walls): a point s tiles along it (from the tile's start) and v rows up from the
- * floor is at screen (16 + 32 s, top + 8 + 16 s - v) along x, mirrored along y. `sOffset` shifts s (1: the column of
- * the tile before), `shiftPx` the screen x read (the plane moved that far right, along neither axis).
- */
-std::vector<int16_t> SampleArchPlane(const std::vector<int16_t> &column, int height, bool alongX, float sOffset, float shiftPx = 0)
-{
-	const int faceHeight = FaceTextureHeight();
-	std::vector<int16_t> face(static_cast<size_t>(ArchFaceWidth) * faceHeight, NoPixel);
-	const int top = height - TILE_HEIGHT;
-	for (int u = 0; u < ArchFaceWidth; u++) {
-		const float s = (static_cast<float>(u) + 0.5F) / FaceTextureWidth - 0.5F + sOffset;
-		const int x = static_cast<int>(std::floor((alongX ? 16.0F + 32.0F * s : 48.0F - 32.0F * s) + shiftPx));
-		const int foot = static_cast<int>(std::floor(static_cast<float>(top) + 8.0F + 16.0F * s));
-		if (x < 0 || x >= ColumnWidth)
-			continue;
-		for (int v = 0; v < faceHeight; v++) {
-			const int y = foot - v;
-			if (y >= 0 && y < height)
-				face[static_cast<size_t>(faceHeight - 1 - v) * ArchFaceWidth + u] = column[static_cast<size_t>(y) * ColumnWidth + x];
-		}
-	}
-	return face;
-}
-
-SpecialArch BuildSpecialArch(int special)
-{
-	SpecialArch arch;
-	if (!pSpecialCels || special < 1 || static_cast<size_t>(special) > pSpecialCels->numSprites())
-		return arch;
-	const int height = ColumnHeight();
-	const std::vector<uint8_t> onBlack = RenderSpecialColumn(static_cast<size_t>(special - 1), height, 0);
-	const std::vector<uint8_t> onWhite = RenderSpecialColumn(static_cast<size_t>(special - 1), height, 255);
-	std::vector<int16_t> column(onBlack.size());
-	for (size_t i = 0; i < column.size(); i++)
-		column[i] = onBlack[i] == onWhite[i] ? onBlack[i] : NoPixel;
-	auto count = [](const std::vector<int16_t> &face) { return std::count_if(face.begin(), face.end(), [](int16_t t) { return t != NoPixel; }); };
-	arch.face = SampleArchPlane(column, height, true, 0.0F);
-	std::vector<int16_t> faceY = SampleArchPlane(column, height, false, 0.0F);
-	if (count(faceY) > count(arch.face)) {
-		arch.face = std::move(faceY);
-		arch.alongX = false;
-	}
-	arch.ok = count(arch.face) > 0;
-	arch.column = std::move(column);
-	return arch;
-}
-
-} // namespace
-
-const SpecialArch &GetSpecialArch(int special)
-{
-	static std::array<SpecialArch, 16> arches;
-	static LevelKey builtFor { nullptr, -1, -1, false, -1 };
-	if (!(builtFor == CurrentLevelKey())) {
-		builtFor = CurrentLevelKey();
-		arches.fill(SpecialArch {});
-	}
-	static const SpecialArch None;
-	if (special < 1 || special > static_cast<int>(arches.size()))
-		return None;
-	SpecialArch &arch = arches[special - 1];
-	if (arch.face.empty())
-		arch = BuildSpecialArch(special);
-	return arch;
-}
-
-std::vector<int16_t> SpecialArchFace(const SpecialArch &arch, float shiftPx)
-{
-	return SampleArchPlane(arch.column, ColumnHeight(), arch.alongX, 0.0F, shiftPx);
-}
-
-std::vector<int16_t> PieceArchFace(uint16_t pieceId, bool alongX, float sOffset, float shiftPx)
-{
-	return SampleArchPlane(GetPieceTextures(pieceId).column, ColumnHeight(), alongX, sOffset, shiftPx);
-}
-
-std::vector<int> ArchUnderside(const std::vector<int16_t> &face)
-{
-	const int faceHeight = FaceTextureHeight();
-	std::vector<int> underside(ArchFaceWidth, -1);
-	for (int u = 0; u < ArchFaceWidth; u++) {
-		if (face[static_cast<size_t>(faceHeight - 1) * ArchFaceWidth + u] != NoPixel)
-			continue; // the art reaches the floor: a pier
-		for (int row = faceHeight - 2; row >= 0; row--) {
-			if (face[static_cast<size_t>(row) * ArchFaceWidth + u] != NoPixel) {
-				underside[u] = row;
-				break;
-			}
-		}
-	}
-	return underside;
 }
 
 namespace {

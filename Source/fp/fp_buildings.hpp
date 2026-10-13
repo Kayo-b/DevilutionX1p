@@ -53,32 +53,15 @@ bool DumpIsoRegion(int x0, int y0, int x1, int y1, const std::string &path, bool
 std::string TileMap(int x0, int y0, int x1, int y1);
 #endif
 
-/**
- * @brief Whether the global mod-kit surfaces (walls, floors, ceilings, columns, and arcade pillars) are enabled and
- * ready for this level. Entrance-stair and sarcophagus models are independent of this setting.
- */
-[[nodiscard]] bool KitSurfacesActive();
-/**
- * @brief Makes sure the wall face of `tile` that the ray reached from `previous` is drawn as the kit's niche (or
- * doorway) wall model, `height` high. False if the kit has no such model: the face is then drawn from its art.
- */
-bool KitWallModel(Point tile, Point previous, bool niche, float height);
-/** @param u along the wall face (tiles), v height (tiles); art the original texel, for its light and dark */
-[[nodiscard]] uint8_t KitWallColor(float u, float v, int16_t art);
-[[nodiscard]] uint8_t KitFloorColor(float wx, float wy, int16_t art);
-[[nodiscard]] uint8_t KitCeilingColor(float wx, float wy);
-void SetModKitEnabled(bool enabled);
-/** @brief Enables or disables the dungeon kit's sarcophagus model, independently of the rest of the mod kit. */
+/** @brief Enables or disables the dungeon kit's sarcophagus model (on by default; off: a box of its sprite). */
 void SetSarcophagusKitEnabled(bool enabled);
 
-/** @brief Whether a dungeon tile is drawn as part of a mesh structure (a free-standing column, the stairs down) instead of a wall cube or billboard. */
-[[nodiscard]] bool IsStructureTile(Point tile);
 /**
- * @brief Whether a dungeon tile is a pillar carrying the end of an arch: drawn as a wall from its own (partial)
- * face art, the parts without art left open to look through.
+ * @brief Whether a dungeon tile is drawn as part of a mesh structure (a pillar, a torch stand, the stairs) instead of a
+ * wall cube or billboard.
  */
-[[nodiscard]] bool IsArchPillarTile(Point tile);
-/** @brief The per-tile structure kinds (MAXDUNX * MAXDUNY, index y * MAXDUNX + x; 0 none, 3 arch pillar, else a mesh), null in town. For per-pixel loops. */
+[[nodiscard]] bool IsStructureTile(Point tile);
+/** @brief The per-tile structure kinds (MAXDUNX * MAXDUNY, index y * MAXDUNX + x; 0 none, 1 a mesh, 2 a mesh over a floor hole), null in town. For per-pixel loops. */
 [[nodiscard]] const uint8_t *StructureTileMap();
 [[nodiscard]] bool HasFloorHoles();
 /** @brief Whether the floor is open at a point (the pit of the stairs down), so the floor is not drawn there. */

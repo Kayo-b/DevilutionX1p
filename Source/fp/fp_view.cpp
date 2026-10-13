@@ -184,7 +184,6 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 
 	const uint8_t *structures = StructureTileMap();
 	const uint8_t *buildings = BuildingTileMap();
-	const bool kit = KitSurfacesActive();
 	const bool holes = HasFloorHoles();
 	const std::vector<int16_t> &ground = GetGroundFloor();
 	for (int y = 0; y < proj.height; y++) {
@@ -214,7 +213,6 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 		const std::vector<int16_t> *floorArt = nullptr;
 		const std::vector<int16_t> *floorFill = nullptr;
 		uint8_t tileLight = 0;
-		bool kitTile = false;
 
 		for (int x = 0; x < proj.width; x++, wx += stepX, wy += stepY) {
 			const float fx = std::floor(wx);
@@ -237,7 +235,6 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 				floorArt = (structure != 0 && structure != 3) || !isFloor || (buildings != nullptr && buildings[static_cast<size_t>(tile.y) * MAXDUNX + tile.x] != 0) ? &ground : &piece.floor;
 				floorFill = isTown ? &ground : nullptr; // baked shadows and holes in town ground
 				fineFloor = fineRow && floorArt->size() == static_cast<size_t>(FloorTextureSize) * FloorTextureSize ? &UpscaledTexture(*floorArt, FloorTextureSize) : nullptr;
-				kitTile = kit && !piece.isFlatSolid; // lava and water keep their art
 				tileLight = LightAt(tile);
 				if (!isFloor)
 					tileLight = std::min<uint8_t>(tileLight + CeilingExtraDarkness, LightsMax);
@@ -257,11 +254,7 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 					texel = f;
 			}
 
-			const uint8_t light = tileLight;
-			if (kitTile)
-				dst[x] = Shade(isFloor ? KitFloorColor(wx, wy, texel) : KitCeilingColor(wx, wy), light);
-			else
-				dst[x] = texel == NoPixel ? 0 : Shade(static_cast<uint8_t>(texel), light);
+			dst[x] = texel == NoPixel ? 0 : Shade(static_cast<uint8_t>(texel), tileLight);
 			if (isFloor)
 				depthBuffer[static_cast<size_t>(y) * proj.width + x] = rowDistance * FloorDepthBias;
 		}
@@ -318,12 +311,6 @@ FaceArt TileFaceArt(const RayHit &hit)
 {
 	const PieceTextures &textures = GetPieceTextures(dPiece[hit.tile.x][hit.tile.y]);
 	const bool wantX = hit.xSide;
-	if (IsArchPillarTile(hit.tile)) {
-		// The pillar and its half arch stand on the faces the art draws them on; the rest is open.
-		FaceArt art = wantX ? FaceArt { &textures.faceX, &textures.holesX, 0 } : FaceArt { &textures.faceY, &textures.holesY, 0 };
-		art.emptyIsOpen = true;
-		return art;
-	}
 	auto withRecess = [&](bool useX) {
 		FaceArt art = useX ? FaceArt { &textures.faceX, &textures.holesX, textures.faceXRows } : FaceArt { &textures.faceY, &textures.holesY, textures.faceYRows };
 		if (const Point next = NextAlongFace(hit.tile, useX); useX == wantX && InDungeonBounds(next)) {
@@ -378,34 +365,16 @@ FaceArt FaceForHit(const RayHit &hit)
 	}
 	FaceArt art { &door.face, nullptr, 0 };
 	if (span.offset != 0) {
-		// A neighbour keeps its own art beside the doorway; the partner, painted with the other half of the door, is
-		// plain wall.
-		art = span.offset < 0 && door.hasPartner && HasPlainWall() ? PlainWallArt(hit.xSide ? hit.tile.y : hit.tile.x) : TileFaceArt(hit);
+		art = TileFaceArt(hit); // a neighbour keeps its own art beside the doorway
 	}
 	art.door = &door;
 	art.doorOffset = span.offset;
 	return art;
 }
 
-/** Wall faces nearer than this (tiles) are the kit's wall models; farther ones are drawn from the art. */
-constexpr float KitWallModelRange = 6.0F;
 /** Steps a ray through a doorway is followed to find where it meets the doorway's sides, then refined by halving. */
 constexpr int DoorwaySteps = 8;
 constexpr int DoorwayRefinements = 4;
-
-/** @brief Whether a face's opening mask has any opening in it (cached per mask). */
-bool HasOpenings(const std::vector<uint8_t> *holes)
-{
-	if (holes == nullptr)
-		return false;
-	static std::unordered_map<const std::vector<uint8_t> *, bool> cache;
-	const auto found = cache.find(holes);
-	if (found != cache.end())
-		return found->second;
-	const bool any = std::any_of(holes->begin(), holes->end(), [](uint8_t h) { return h != 0; });
-	cache.emplace(holes, any);
-	return any;
-}
 
 /**
  * @brief Draws the walls. Openings in a wall (arches) are looked through to the walls behind them.
@@ -415,8 +384,6 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 {
 	const float wallHeight = WallHeight();
 	const float stretch = VerticalScale();
-	const bool kit = KitSurfacesActive();
-	static const bool kitWalls = std::getenv("FP_NO_KITWALLS") == nullptr;
 	const int wallRows = LevelWallRows();
 	const int faceHeight = FaceTextureHeight();
 	const std::vector<int16_t> &fallback = GetFallbackFace();
@@ -456,14 +423,6 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 
 			const uint8_t lightLevel = LightAt(hit.previous);
 			const uint8_t *light = LightTables[lightLevel].data();
-			// In the mod-kit dungeon, faces with a niche or a doorway are the kit's wall models (drawn with the
-			// meshes): here they are looked through to whatever is behind them.
-			bool kitModel = false;
-			if (kit && kitWalls && art.door == nullptr && !lowWall && !art.emptyIsOpen && hit.distance < KitWallModelRange) {
-				// Openings are doorway walls; every other face (recessed or plain) a niche wall.
-				const bool opening = art.recess == nullptr && HasOpenings(art.holes);
-				kitModel = KitWallModel(hit.tile, hit.previous, !opening, hitHeight);
-			}
 			// A recess (blind arch, niche) is a second plane behind the face; the rays carry on to it.
 			const float rayAcross = std::abs(hit.xSide ? ray.x : ray.y);
 			const float recessDistance = art.recess != nullptr && rayAcross > 1e-4F ? hit.distance + art.recessDepth / rayAcross : 0.0F;
@@ -508,8 +467,8 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 			// Up close, the face's art at TextureUpscale times its resolution (edges smoothed, see UpscaledTexture).
 			const std::vector<int16_t> *fine = rowsPerPixel < UpscaleBelow && art.face != nullptr ? &UpscaledTexture(*art.face, FaceTextureWidth) : nullptr;
 			const int fineU = std::clamp(static_cast<int>(along * FaceTextureWidth * TextureUpscale), 0, FaceTextureWidth * TextureUpscale - 1);
-			bool sawOpening = lowWall || kitModel;
-			for (int y = top; y <= bottom && !kitModel; y++) {
+			bool sawOpening = lowWall;
+			for (int y = top; y <= bottom; y++) {
 				if (filled[y] != 0)
 					continue;
 				const int row = std::clamp(faceHeight - shownRows + static_cast<int>((static_cast<float>(y) - topF) * rowsPerPixel), 0, faceHeight - 1);
@@ -589,11 +548,10 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 							back = f;
 					}
 					if (recessU >= 0 && row2 >= (*art.recess)[recessU] && back != NoPixel) {
-						const uint8_t base = kit ? KitWallColor(recessAlong, height, back) : static_cast<uint8_t>(back);
-						color = recessLight[base];
+						color = recessLight[static_cast<uint8_t>(back)];
 						depth = recessDistance;
 					} else {
-						color = revealLight[kit ? KitWallColor(along, static_cast<float>(faceHeight - 1 - row) / rowsPerTile, (*art.face)[at]) : (*art.face)[at]];
+						color = revealLight[(*art.face)[at]];
 					}
 					*out.at(x, y) = color;
 					filled[y] = 1;
@@ -620,8 +578,6 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 					}
 					texel = fallback[at];
 				}
-				if (kit)
-					texel = KitWallColor(along, static_cast<float>(faceHeight - 1 - row) / rowsPerTile, texel);
 				*out.at(x, y) = light[texel];
 				filled[y] = 1;
 				depthBuffer[static_cast<size_t>(y) * proj.width + x] = hit.distance;

@@ -148,39 +148,6 @@ void ForgetUpscaledTexture(const std::vector<int16_t> &texture);
 /** @brief The recess (see PieceTextures::recessX) of the filler face GetFallbackFace(parity), null if it has none. */
 [[nodiscard]] const std::vector<int> *GetFallbackRecess(int parity, float &depth);
 
-/** @brief Width of an arch face: from the middle of the tile before the arch's tile to the middle of the one after. */
-constexpr int ArchFaceWidth = 2 * FaceTextureWidth;
-
-/**
- * @brief An arch over a walkable tile (Diablo's special arch cels, dSpecial): its art read on the plane the arch
- * stands on (the middle of the tile, like the walls), ArchFaceWidth x FaceTextureHeight(), row 0 = top, NoPixel where
- * it is open. Column u is at (u + 0.5) / FaceTextureWidth - 0.5 tiles along the arch from the tile's start.
- */
-struct SpecialArch {
-	std::vector<int16_t> face;
-	std::vector<int16_t> column; // the cel as drawn (ColumnWidth x ColumnHeight()), for resampling (SpecialArchFace)
-	bool alongX = true; // runs along world x (the iso right edge), else along y
-	bool ok = false;
-};
-
-/**
- * @brief The arch drawn by special cel `special` (dSpecial's 1-based value), cached per level. The cel draws the half
- * of the arch rising from the pillar after the tile; the pillar before it draws the other half.
- */
-[[nodiscard]] const SpecialArch &GetSpecialArch(int special);
-/**
- * @brief The cel's art on a plane `shiftPx` screen pixels right of the one SpecialArch::face is read on: where the
- * arch is when its pillars stand off their tiles' middles (an axis that far right in the art).
- */
-[[nodiscard]] std::vector<int16_t> SpecialArchFace(const SpecialArch &arch, float shiftPx);
-/**
- * @brief A piece's art on an arch's plane (see SpecialArch), shifted `sOffset` tiles (1: the piece of the tile before,
- * -1: the one after) and `shiftPx` screen pixels right (see SpecialArchFace).
- */
-[[nodiscard]] std::vector<int16_t> PieceArchFace(uint16_t pieceId, bool alongX, float sOffset, float shiftPx = 0);
-/** @brief Per arch face column: the row of the arch's underside (the first art above the opening), -1 where the art reaches the floor or is empty. */
-[[nodiscard]] std::vector<int> ArchUnderside(const std::vector<int16_t> &face);
-
 /** @brief Floor of the level's most common walkable piece, used where a piece has no ground art of its own. */
 [[nodiscard]] const std::vector<int16_t> &GetGroundFloor();
 

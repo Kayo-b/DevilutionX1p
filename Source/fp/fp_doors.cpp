@@ -58,7 +58,10 @@ float NowMilliseconds()
 	return std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - Start).count();
 }
 
-/** @brief The pieces a door shows when it is shut: its own and its partner's (-1 if it has none). */
+/**
+ * @brief The pieces a door shows when it is shut: its own, and the partner's the cathedral and the crypt paint the
+ * other half of the door on (-1 if none; it tells which way the wall runs).
+ */
 void ClosedPieces(const Object &door, int &own, int &partner, Point &partnerTile)
 {
 	partner = -1;
@@ -108,7 +111,6 @@ bool BuildCleanDoorway(Doorway &door)
 {
 	const int faceHeight = FaceTextureHeight();
 	const CleanOpening opening = CleanDoorOpening();
-	door.hasPartner = false;
 	door.face.clear();
 	door.artFrom = 0.0F;
 	door.artTo = 1.0F;
@@ -141,16 +143,13 @@ bool BuildDoorway(Doorway &door, int objectId)
 		door.alongX = solidX;
 	else
 		door.alongX = partner >= 0 ? partnerTile.y == t.y : solidX;
-	door.hasPartner = partner >= 0 && partner < MAXTILES && InDungeonBounds(partnerTile)
-	    && (door.alongX ? partnerTile.y == t.y : partnerTile.x == t.x);
-	door.partner = partnerTile;
 	if (IsCleanDungeon())
 		return BuildCleanDoorway(door);
 
-	// The closed art along the wall: the partner's face then the door's, in world-axis order.
+	// The caves' doorways: the closed door's art along the wall, and the opening read off it.
 	const int faceHeight = FaceTextureHeight();
 	const int rows = LevelWallRows();
-	const int width = door.hasPartner ? 2 * FaceTextureWidth : FaceTextureWidth;
+	const int width = FaceTextureWidth;
 	std::vector<int16_t> strip(static_cast<size_t>(width) * faceHeight, NoPixel);
 	auto copyFace = [&](int piece, int offset) {
 		const PieceTextures &textures = GetPieceTextures(static_cast<uint16_t>(piece));
@@ -159,12 +158,7 @@ bool BuildDoorway(Doorway &door, int objectId)
 			for (int u = 0; u < FaceTextureWidth; u++)
 				strip[static_cast<size_t>(row) * width + offset + u] = face[static_cast<size_t>(row) * FaceTextureWidth + u];
 	};
-	if (door.hasPartner) {
-		copyFace(partner, 0);
-		copyFace(own, FaceTextureWidth);
-	} else {
-		copyFace(own, 0);
-	}
+	copyFace(own, 0);
 	// Where holes are in the art (no pixel), the plain wall shows: the doorway's frame is wall.
 	const std::vector<int16_t> &fallback = GetFallbackFace(door.alongX ? t.x : t.y);
 	for (int row = 0; row < faceHeight; row++)

@@ -4,13 +4,11 @@
  * Doors in first person: the doorway is a wall with an opening through it, open or shut, and the door is a leaf
  * hinged in it that swings open when the door is opened and stays open.
  *
- * The cathedral paints its doors across two tiles: the door tile and its neighbour (the "partner", -x or -y) each
- * carry half of the doorway's arch. The doorway is drawn centred on the door tile, the walkable one, from both halves
- * of the closed art joined; the partner's face is plain wall.
- *
- * The walls are drawn taller than the art (VerticalScale, and the wall cap cut off), so a doorway one tile wide would
- * look narrow beside its iso picture: the doorway's art and opening are widened by DoorwayWidthScale around the
- * tile's middle, reaching a little into the wall tiles either side of it.
+ * In the clean dungeon (the cathedral, the catacombs, the crypt: fp_dungeon.hpp) the doorway is a plain round-arched
+ * opening through the door tile (CleanDoorOpening). In the caves it is the closed door's art with the opening read
+ * off it; the walls are drawn taller than the art (VerticalScale, and the wall cap cut off), so a doorway one tile wide
+ * would look narrow beside its iso picture: the art and its opening are widened by DoorwayWidthScale around the tile's
+ * middle, reaching a little into the wall tiles either side of it.
  */
 #pragma once
 
@@ -38,8 +36,6 @@ struct Doorway {
 	float artTo;
 	float openFrom;
 	float openTo;
-	bool hasPartner;
-	Point partner;
 };
 
 /** @brief A doorway's art reaching into a tile's wall faces: the doorway and the tile's offset from the door tile along the wall. */
