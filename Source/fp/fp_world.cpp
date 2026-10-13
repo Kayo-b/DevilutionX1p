@@ -6,6 +6,7 @@
 #include "fp/fp_world.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <unordered_map>
 
@@ -16,6 +17,7 @@
 #include "items.h"
 #include "levels/dun_tile_data.hpp"
 #include "levels/gendung.h"
+#include "levels/tile_properties.hpp"
 #include "missiles.h"
 #include "monster.h"
 #include "fp/fp_buildings.hpp"
@@ -188,6 +190,26 @@ void CollectTowners(std::vector<Entity> &entities)
 	}
 }
 
+/**
+ * @brief Where a wall torch hangs in the clean dungeon: against the face of its wall, not in the middle of a tile (the
+ * iso art drew it over the wall face it belongs to). A torch on a wall tile comes out in front of the face it was seen
+ * on (towards +x or +y, the faces the iso camera saw); one on a floor tile goes back against the wall behind it.
+ */
+Vec2 WallTorchPosition(Point tile)
+{
+	const Vec2 centre = TileCenter(tile);
+	const bool onWall = IsTileSolid(tile);
+	for (const Displacement d : onWall ? std::array { Displacement { 1, 0 }, Displacement { 0, 1 }, Displacement { -1, 0 }, Displacement { 0, -1 } }
+	                                   : std::array { Displacement { -1, 0 }, Displacement { 0, -1 }, Displacement { 1, 0 }, Displacement { 0, 1 } }) {
+		const Point next = tile + d;
+		if (!InDungeonBounds(next) || IsTileSolid(next) == onWall)
+			continue;
+		const float shift = onWall ? 0.56F : 0.44F;
+		return { centre.x + static_cast<float>(d.deltaX) * shift, centre.y + static_cast<float>(d.deltaY) * shift };
+	}
+	return centre;
+}
+
 void CollectObjects(std::vector<Entity> &entities)
 {
 	for (int i = 0; i < ActiveObjectCount; i++) {
@@ -218,6 +240,8 @@ void CollectObjects(std::vector<Entity> &entities)
 		}
 		entity.lit = object.applyLighting;
 		entity.hidden = IsObjectDrawnAsMesh(id);
+		if (IsCleanDungeon() && IsAnyOf(object._otype, OBJ_TORCHL, OBJ_TORCHR, OBJ_TORCHL2, OBJ_TORCHR2))
+			entity.pos = WallTorchPosition(object.position);
 		entities.push_back(entity);
 	}
 }

@@ -5,8 +5,8 @@ how to build and run it, and how each kind of change was made, so you can carry 
 design decisions, see `PLAN.md`.
 
 **3D assets:** the meshes come from a fan rebuild of Diablo 1's assets (Nexus Mods, mod 67266), which may only be
-used in products given away free of charge. Source, terms and credits are in `assets/fp/CREDITS.md`; keep that file
-up to date when you add models.
+used in products given away free of charge. The clean dungeon's textures (`dungeontex.bin`) come from two CC0 packs.
+Source, terms and credits are in `assets/fp/CREDITS.md`; keep that file up to date when you add models or textures.
 
 ---
 
@@ -17,6 +17,7 @@ Repository: `/home/kxyx/projects/DevilutionX1p`, the fork `Kayo-b/DevilutionX1p`
 | Branch | What it is |
 |---|---|
 | **`fp-buildings`** | **the working branch**: first person plus everything 3D (houses, church, dungeon structures, arcades, doors...) |
+| `fp-dungeon-overhaul` | the clean dungeon for the cathedral, catacombs and crypt (fp_dungeon.cpp), on top of `fp-wall-depth` |
 | `fp` | the earlier first-person base (`fp-buildings` is built on it, not merged back) |
 | `fp-voxel` | paused experiment (voxel monsters) |
 | `master` | tracks upstream DevilutionX |
@@ -43,11 +44,12 @@ All first-person code lives in `Source/fp/` of each checkout:
 
 | File | Responsibility |
 |---|---|
-| `fp_view.cpp` | the frame: floor/ceiling pass, wall raycaster (with recesses and doors), sprite pass, phase timers |
+| `fp_view.cpp` | the frame: floor/ceiling pass, wall raycaster for town, caves and hell (art faces, recesses, doors), sprite pass, phase timers |
+| `fp_dungeon.cpp/.hpp` | **the clean dungeon** (cathedral, catacombs, crypt): tile kinds, texture sets, its floor/ceiling and wall passes, the geometry of its pillars, arches and stairwells |
 | `fp_raycast.cpp/.hpp` | camera projection, `CastRay`, what counts as a wall (`IsOpaque`), `WallHeight()`, `VerticalScale()` |
-| `fp_textures.cpp/.hpp` | turns each tile piece's iso art into wall-face, floor and column textures; detects pillars, lava and recesses; supplies the filler wall pair |
-| `fp_doors.cpp/.hpp` | doorways (the door tile stays a wall with an opening through it) and the door leaf's swing |
-| `fp_buildings.cpp/.hpp` | **all 3D meshes**: town houses (voxel/mesh), landmarks (smithy, tavern, church), dungeon structures (columns, stairs, arcades, sarcophagus boxes), the triangle rasterizer |
+| `fp_textures.cpp/.hpp` | turns each tile piece's iso art into wall-face, floor and column textures; detects pillars, lava and recesses; supplies the filler wall pair (the clean dungeon reads it only to classify tiles) |
+| `fp_doors.cpp/.hpp` | doorways (the door tile stays a wall with an opening through it: a clean arched one, or read off the caves' art) and the door leaf's swing |
+| `fp_buildings.cpp/.hpp` | **all 3D meshes**: town houses (voxel/mesh), landmarks (smithy, tavern, church), dungeon structures (the clean dungeon's pillars, arches and stairwells, the cathedral's stairs, torch stands, the caves' and hell's columns and arcades, sarcophagus boxes, door leaves), the triangle rasterizer |
 | `fp_world.cpp/.hpp` | collects the sprites to draw (monsters, NPCs, objects, items, missiles, corpses, props); sizes and grounding |
 | `fp_controls.cpp` | movement, mouse/gamepad look, pitch limit, taking over click-to-walk |
 | `fp_pick.cpp` | what the crosshair points at |
@@ -62,7 +64,8 @@ Assets the game loads come from `assets/fp/` and are listed in `CMake/Assets.cma
 | `houses.bin` | voxel cottages | `fp-tools/export/export_houses.py` |
 | `housemesh.bin` | cottage triangle meshes | `fp-tools/export/export_meshes.py` |
 | `landmarks.bin` | every town building: the plaza's houses, smithy, tavern, fountain, and the church | `fp-tools/export/export_landmarks.py` |
-| `dungeonkit.bin` | dungeon kit pieces (the entrance stairs) | `fp-tools/export/export_kit.py` |
+| `dungeonkit.bin` | dungeon kit pieces (the entrance stairs, the sarcophagus, the caves' door wood) | `fp-tools/export/export_kit.py` |
+| `dungeontex.bin` | the clean dungeon's texture sets (cathedral, catacombs, crypt; CC0, see `assets/fp/CREDITS.md`) | `fp-tools/export/export_dungeon_textures.py` |
 
 ---
 
@@ -118,13 +121,15 @@ Open the console with the backtick key, then run `dev = require('devilutionx.dev
 | `dev.fp.tilemap(x0,y0,x1,y1)` | ASCII map: `#` solid with tall art, `s` solid flat, `a` tall art, `B` building |
 | `dev.fp.dumpiso(x0,y0,x1,y1,path)` | save the **original iso art** of a tile rectangle as a PPM image |
 | `dev.fp.dumppiece(x,y,path)` / `dev.fp.dumpfaces(...)` | one tile's iso column, or its extracted wall faces (openings in red) |
-| `dev.fp.buildings / housemodels / housemeshes / housetextures / recesses (bool)` | switch individual features off to compare |
+| `dev.fp.buildings / housemodels / housemeshes / housetextures / recesses (bool)` | switch individual features off to compare (recesses: caves and hell) |
+| `dev.fp.cleanmap(x0,y0,x1,y1)` | ASCII map of the clean dungeon's tile kinds: `#` wall, `l` low wall, `o` pillar, `t` torch stand, `D` doorway, `S` stairwell, `~` lava, `^` arch over the tile |
+| `dev.fp.dumpfile(gamePath, outPath)` | copy a file out of the game data (a palette: `levels/l1data/l1_1.pal`), for offline tools |
+| `dev.quests.activateAll()` | activate every quest: a level and seed then always give the same layout (a new game picks its quests at random, and they change the levels' set pieces) |
 | `dev.fp.walkto(x,y)`, `dev.fp.where()` | test click-walks; print the camera position |
 | `dev.fp.operate(x, y)` | operate the object at a tile as a click would (open a sarcophagus, a door, a chest) |
 | `dev.fp.weapon(file, record, frame)` | show one Daggerfall weapon frame (`WEAPON<file>.CIF`; record 0 rest, 1-6 strikes); no arguments to follow the player again |
-| `dev.fp.modkit(bool)` | global kit walls, floors, ceilings, columns, and arcade pillars (default off); entrance stairs and sarcophagus remain on |
 | `dev.fp.modeltextures(bool)` | town buildings with the 3D models' own textures (default) or their projected iso art |
-| `dev.fp.sarcophagus(bool)` | use the 3D mod-kit sarcophagus model independently of `dev.fp.modkit` (default on) |
+| `dev.fp.sarcophagus(bool)` | use the 3D mod-kit sarcophagus model (default on), or a box of its sprite |
 | `dev.level.warp.dungeon(0)` | go to town (any `n` for dungeon level `n`) |
 
 Debug environment variables:
@@ -154,8 +159,15 @@ The run needs a scratch hero: put a single-player save in `fp-tools/selftest/out
 `out/config/`). The copies in use came from `~/projects/diablo-hellfire-fp/selftest/{save,config}`. `KEYS=` sets how
 many Return presses get through the menu (default 3).
 
-`GAME=` chooses the binary (default: the repo's `build/devilutionx`). Screenshots and the log
-(`headless.log`) go to `fp-tools/selftest/out/`, and saves go to `out/save`, so your real saves are never touched.
+`GAME=` chooses the binary (default: the repo's `build/devilutionx`), `ARGS=` adds game arguments. Screenshots and
+the log (`headless.log`) go to `fp-tools/selftest/out/`, and saves go to `out/save`, so your real saves are never
+touched. Every run saves the game (and its settings): keep pristine copies in `out/save.orig` and `out/config.orig`
+and each run starts from them, so the same steps give the same levels. Add `lua:dev.quests.activateAll()` before
+`dev.level.reset` too: a new game picks its quests at random, and their set pieces change the layout.
+
+**Hellfire (the crypt, levels 21-24):** `--data-dir` moves where the game looks for the Hellfire mod (`mods/hf`, built
+next to the binary), so point `FP_DATA_DIR` at a folder holding links to the MPQs and to `build/mods`
+(`levelsweep.sh` makes one, `out/hfdata`, when `HF=1`).
 
 Ready-made scripts:
 ```bash
@@ -163,6 +175,8 @@ T=fp-tools/selftest
 TOGGLE=housemeshes $T/town_sweep.sh tag true "66,62 58,72"        # 4 views from each town spot
 LEVEL=2 SEED=4242 $T/dsweep.sh tag "55,42 54,37"                  # 4 views from each dungeon spot
 LEVEL=1 $T/dungeon_cmp.sh tag 777 "lua:dev.fp.teleport(48,32)"    # FP views + original iso view side by side
+$T/levelsweep.sh tag 5 500 "47,26 29,88"                          # every quest active, labelled sheet out/tag_sheet.png
+HF=1 GAME=/path/to/old/devilutionx $T/levelsweep.sh old 21 2100 "71,51"   # the crypt, with another build
 ```
 The `.ppm` files can be opened directly, or turned into a contact sheet with Python/PIL (every script does this).
 
@@ -182,14 +196,62 @@ Known test spots:
 | Town: (62,67) | smithy porch |
 | Town: (55,64) | tavern |
 | Level 1, seed 777 | stairs down at trigger (81,78); stairs up near (58,47); column (52,52); torch stand (86,44); sarcophagus (63,48); door (53,78) |
+| Level 1, seed 777, all quests | arcade and door (85,62): stand at (85,65), yaw 270; hall with pillars and torch stands (53,52) |
 | Level 2, seed 4242 | colonnade: pillars x = 52/58, y = 38–44; view from (55,42) |
-| Levels 5 / 9 / 13 | catacombs / caves (lava) / hell |
+| Level 5, seed 500 | catacombs: stairs up (46,25), town stairs (48,31), stairs down (30,87) (look from (30,89), yaw 270, pitch -0.3) |
+| Level 21, seed 2100 (Hellfire) | crypt: town stairs (70,50) and stairs down (73,68), both in notches of the wall; pillared hall (59,58) |
+| Levels 9 / 13 | caves (lava) / hell: still drawn from their art |
 
 ---
 
 ## 5. How things work, and how to change them
 
-### 5.1 Walls, floor and ceiling (raycaster)
+### 5.1 The clean dungeon: the cathedral, the catacombs and the crypt
+`fp_dungeon.cpp` draws levels 1-8 and Hellfire's 21-24 without their iso art: plain stone with new textures, simple
+geometry. The art is only read to tell what a tile is.
+
+- **Tile kinds** (`ClassifyTiles`, per level and whenever the map changes: doors, levers; `dev.fp.cleanmap` shows them):
+  a solid tile is a `Wall` (a block up to the ceiling, or a low wall as tall as its art), a solid tile with no solid
+  neighbour a `Pillar`, one carrying a torch's flame (`OBJ_L1LIGHT`) a `Stand` (the kept 3D torch stand), a door tile
+  a `Doorway`; lava in the crypt is `Flat` (its own floor art, colour cycled). `IsOpaque` passes pillars, stands, lava
+  and the cathedral's stairs (meshes).
+- **Walls** (`DrawCleanWalls`): one ray per column; a face's texture runs along the world axis, so the courses carry on
+  from tile to tile. Bands: the texture set's `base` (plinth) at the foot and `top` (frieze) under the ceiling, the
+  `wall` texture tiled between. Low walls are looked over, their tops drawn.
+- **Openings** (doorways, stairwells): a straight-sided round arch centred on the tile (`CleanOpening`; doors
+  `CleanDoorOpening`: `DoorHalfWidth`, `DoorCrown`). A ray entering one is followed through the wall's thickness, solved
+  exactly: it leaves through a jamb, the arched soffit (both faced with the `arch` texture), the floor, or the back (a
+  doorway: on to whatever is behind; a stairwell: its dark back wall). The door's leaf (fp_doors / `DrawDoorLeaves`)
+  hangs in the middle with the set's `door` texture; `IsDoorwayHole` lets aim and sight through an open one.
+- **Arches** over walkable tiles (Diablo's special arch cels, `dSpecial`): `BuildCleanGeometry` takes the run of
+  walkable tiles under the arch between two supports (walls or pillars, along whichever axis is bounded) and builds a
+  slab above a half circle (flattened where it would not fit, `ArchLintel` below the ceiling), as thick as the wall
+  between walls, as the pillars in an arcade.
+- **Pillars:** a plinth, a shaft and a capital, floor to ceiling (`PillarStyleFor`: square in the cathedral and the
+  crypt, ten-sided in the catacombs).
+- **Stairs:** the cathedral's are the kept models (5.6), re-textured with the clean stone (`RetextureClean`). Stairs
+  without a model (the catacombs', the crypt's, quest entrances and exits: `IsUnmodelledStairs`) are a stairwell in the
+  solid tile beside the trigger with the most solid tiles around it (`FindStairs`): a wide arched opening facing the
+  trigger, steps inside going down into a pit (`StairsDrop`, the floor cut open over it) or up into the dark
+  (`StairsRise`), darker towards the back. Aiming at it walks to the trigger.
+- **Textures** (`dungeontex.bin`, `fp-tools/export/export_dungeon_textures.py`; sources and CC0 licenses in
+  `assets/fp/CREDITS.md`): per tileset the slots `wall`, `base`, `top`, `floor`, `ceiling`, `pillar`, `arch`, `door`, at
+  128 texels per tile (a wall face is 128 texels wide, about 400 tall), powers of two, softened by a light blur. When a
+  level loads, `EnsureTextures` converts each to the level palette *once per light level*: the RGB darkened by the share
+  of brightness the game's own light tables leave the colours its art uses (`LightFactors`), then the nearest allowed
+  colour (`IsAllowedColor`: not the near-blacks 112-127, the UI ramps 128-159, white, nor the crypt's cycled lava 1-31).
+  So walls fade smoothly, without the hue speckle of moving texels along palette ramps, and match the sprites' darkness.
+  Detail levels (mips) are picked by the footprint of a pixel; up close each pixel jitters its sample point by a 4 x 4
+  ordered dither (`Sampler`), which blends the texels instead of showing them as squares. To change a set, edit
+  `cathedral()`, `catacombs()` or `crypt()` in the export script and run it (`--preview DIR PALETTE...` writes
+  palette-converted sheets; `dev.fp.dumpfile` gets the palettes).
+- **Light:** `CleanLightAt` interpolates `dLight` between tile centres (the game's light falls off with distance, walls
+  included), and every pass dithers it to the nearest light levels: smooth light, no tile squares. The ceiling is
+  `CeilingDarkness` levels darker, undersides and the insides of openings a little darker too.
+- **Proportions** at the top of `fp_dungeon.cpp` (drawn tiles: walls are `WallHeight() * VerticalScale()` high, about
+  3.1 in the cathedral).
+
+### 5.1.1 Art walls: the caves and hell
 - Every solid tile is a cube. Each face uses its tile's own iso art, unsheared into a texture (`ExtractFace` in
   `fp_textures.cpp`).
 - Faces the iso camera never drew use the **filler pair**: two neighbouring faces from the level's most common
@@ -197,8 +259,8 @@ Known test spots:
   uses each tile's own sparse art with the gaps left open.
 - **Wall foot and cap:** a Diablo wall stands on the middle of its tile, half a tile in front of the tile's edge: in iso its
   face reaches 16 rows below the edge line (`FaceBaseRows`), where the plinths and column bases are, and the top of its
-  thickness shows as a lit band above it (the cap; `WallCapRows` measures it on the plain wall pair: 16 rows in the
-  cathedral, 21 in the catacombs, none in caves and hell). Faces are read down to that foot and drawn without the cap,
+  thickness shows as a lit band above it (the cap; `WallCapRows` measures it on the plain wall pair: none in caves and
+  hell; the cathedral's 16 rows and the catacombs' 21 still set those levels' wall height). Faces are read down to that foot and drawn without the cap,
   at the art's own proportions (`WallArtScale` is 1). The far end of a face's foot lies outside the piece's diamond and
   is drawn by the next tile along the wall: each piece keeps that part of the previous tile's face (`spillX`/`spillY`,
   `cutX`/`cutY`), and the wall pass takes it from the neighbour. `WallArtRow`/`WallArtHeight` map a height to a face row;
@@ -209,14 +271,10 @@ Known test spots:
   (`GetFallbackRecess`). Deep niches use `NicheDepth` and plain blind arches `BlindArchDepth`.
 - **Doors** (`fp_doors.cpp`): the door tile is a wall with an opening through its whole thickness, open or shut, so
   an opened door stays a doorway (`IsOpaque` keeps it; rays inside the opening carry on, and where they meet its sides
-  inside the wall they draw the jambs and soffit, faced with the plain wall's stone read across the wall's thickness and up the side or along the top). The cathedral paints a door across two tiles, the door tile and its
-  partner at -x or -y: the doorway is drawn on the door tile from both halves of the *closed* art joined and centred on
-  it, and the partner's face is plain wall. The opening is `FindArchOutline` on that art (`DefaultOpening` if none).
+  inside the wall they draw the jambs and soffit, faced with the plain wall's stone read across the wall's thickness and up the side or along the top). The opening is `FindArchOutline` on the closed door's art (`DefaultOpening` if none).
   The leaf (`BuildDoorLeaf`, drawn by `DrawDoorLeaves`) is a low-poly slab whose top follows the arch, hinged on a jamb
-  in the middle of the wall, textured with the kit's door-wood texture (or the closed door's art without the kit), its brightness mapped by `DoorLeafColor` onto the palette's brown ramp using wood colours measured from Daggerfall's `TEXTURE.074` "Door Set" (measured once, nothing read from Daggerfall at run time). When the door's state
+  in the middle of the wall, textured with the kit's door-wood texture (the clean dungeon: its texture set's `door`), its brightness mapped by `DoorLeafColor` onto the palette's brown ramp using wood colours measured from Daggerfall's `TEXTURE.074` "Door Set" (measured once, nothing read from Daggerfall at run time). When the door's state
   changes it swings (`DoorSwing`: `OpenAngle`, `SwingMilliseconds`) away from the camera's side, and stays open.
-- **Mod-kit walls (experiment, too heavy: off by default):** within `KitWallModelRange` the wall pass skips each face and `KitWallModel` registers the kit's `wall_concave` (or `wall_door` for faces with openings) in its place; Off by default: `FP_KITWALLS=1` turns it on. About +35 ms per frame in a room.
-- **Mod-kit ceiling:** `BuildCeilingVaults` lays the kit's groin vault (the `vault` model, a 6x6 resample of `ceiling_big_master` made by `export_kit.py`) over each open tile at the wall tops, flat-shaded (`MeshSolid`), drawn only within `VaultDrawRange`. Off by default (flat ceiling): `FP_VAULT=1` turns it on.
 - **Heights:** `VerticalScale()` (1.5 in the dungeon) stretches walls, ceiling, structures and tile-art sprites. Art
   heights stay in art units (`SpritePixelsPerTileY` = 39.2 px per unit), and the stretch is applied only when drawing.
 - Lava and water count as solid, but they are drawn as floor (`isFlatSolid`). The ceiling is the plain ground
@@ -250,8 +308,9 @@ Known test spots:
   level (`GetColorPairs`).
 - Copies are made on first use and cached per level, keyed by the texture's storage (`ForgetUpscaledTexture` when it
   is freed: `BuildStructures` does it for the structure art). Structure art is only upscaled in town, the cathedral
-  and the catacombs (`FineCanvas`): the caves and hell cycle their palettes, which rebuilds their structures every
-  frame. Cost: about 3 ms a frame at 1280x720 in a close cathedral view.
+  and the catacombs (`FineCanvas`; in the clean dungeon that is only the torch stands): the caves and hell cycle their
+  palettes, which rebuilds their structures every frame. The clean dungeon's textures are not upscaled: they are
+  finer than the art to begin with, and blend up close by their dithered sampling (5.1).
 
 ### 5.3 Controls
 `fp_controls.cpp`:
@@ -315,12 +374,12 @@ All in `fp_buildings.cpp`, built per level in `BuildStructures`:
 
 | Structure | How it's made | Code |
 |---|---|---|
-| **Free-standing columns / torch stands** | shape read off the art row by row (the widest pixels give the size at each height; square or round) and turned into a lathe mesh with the art projected onto it, clamped at the ceiling | `ColumnProfile`, `BuildColumn` |
-| **Arcade pillars** | a shaft from the symmetric lower art; neighbouring pillars joined by **arch walls** wearing the filler wall pair, the painted arch stretched to spring from the capitals and span the gap (`FitArcade`), cut open and an underside added | `BuildArcadePillar`, `AddArcadeWall`, `MeshArcade` shader |
-| **Arches over walkable tiles** (cathedral arcades) | Diablo draws them with special cels on the tiles between pillars (`dSpecial`): each cel holds the half arch rising from the pillar after the tile; the pillar before it draws the other half. Both are read on the arch's plane (`SampleArchPlane`, `GetSpecialArch`, `PieceArchFace`) into one face spanning pillar centre to pillar centre (moved, with the slab, to where the pillars' axes are in the art: the cathedral's arcade pillars stand 7.5 px right of their tiles' middles, as their 3D columns do), built as a solid slab as thick as the capitals are wide (`ArchSlab::half`, measured from the art), with its underside along the opening (textured with the ring's lowest rows across its thickness) and the capitals' undersides closed. Over the pillars only what is above the springing is drawn (the springing is measured on the cel, ignoring art in the plinth rows), and the pillars' meshes are clipped there (`ClipTriangleBelow`). Where the art is empty above the opening the slab wears the plain wall, so it is never hollow; where an arcade ends on a pillar the capital block is completed past the pillar's middle and closed with an end face; surfaces over a pillar's (solid, unlit) tile take the light of the walkable tiles around it. Levels with these arches skip the arch walls above | `BuildSpecialArches`, `MeshArch` shader |
-| **Stairs down (between levels)** | built by hand from measurements of the art; the floor is cut open over the pit (the exported kit currently has no down-stair mesh) | `BuildStairsDown`, `FloorHoles` |
-| **Stairs up / main entrance** | the kit's `stairs_01` mesh fitted over the stair tiles by default, independently of the global kit surfaces | `BuildStairsUp` |
-| **Sarcophagus** | a box measured from its first (closed) frame; while it opens, the kit's body plus its lid slid off, turned and tipped over the edge, following the object's animation frame (`sarcophagus_body`, `sarcophagus_lid`, exported in the closed sarcophagus's frame); the 3D mod-kit model can be toggled independently with `dev.fp.sarcophagus(bool)`, even while `dev.fp.modkit(false)` is active | `BuildObjectBox` |
+| **Clean pillars, arches, stairwells** (cathedral, catacombs, crypt) | the quads of `BuildCleanGeometry` (fp_dungeon.cpp, 5.1), gathered per 4 x 4 tiles, textured with the set's surfaces by their texture coordinates | `BuildCleanStructures`, `MeshClean` shader |
+| **Torch stands** (the cathedral's) and **free-standing columns** (caves, hell) | shape read off the art row by row (the widest pixels give the size at each height; square or round) and turned into a lathe mesh with the art projected onto it, clamped at the ceiling. In the clean dungeon only the torch stands are built this way | `ColumnProfile`, `BuildColumn` |
+| **Arcade pillars** (caves, hell) | a shaft from the symmetric lower art; neighbouring pillars joined by **arch walls** wearing the filler wall pair, the painted arch stretched to spring from the capitals and span the gap (`FitArcade`), cut open and an underside added | `BuildArcadePillar`, `AddArcadeWall`, `MeshArcade` shader |
+| **Stairs down (cathedral)** | built by hand from measurements of the art; the floor is cut open over the pit (the exported kit currently has no down-stair mesh); worn with the clean stone by facing (`RetextureClean`) | `BuildStairsDown`, `FloorHoles` |
+| **Stairs up / main entrance (cathedral)** | the kit's `stairs_01` mesh fitted over the stair tiles, worn with the clean stone | `BuildStairsUp` |
+| **Sarcophagus** | a box measured from its first (closed) frame; while it opens, the kit's body plus its lid slid off, turned and tipped over the edge, following the object's animation frame (`sarcophagus_body`, `sarcophagus_lid`, exported in the closed sarcophagus's frame); `dev.fp.sarcophagus(false)` draws the plain box of its sprite instead | `BuildObjectBox` |
 
 To add a new piece from `Dungeon Pieces-67266-.7z`:
 1. Add its group name to `PIECES` in `fp-tools/export/export_kit.py` and run it; it writes `assets/fp/dungeonkit.bin`.
@@ -330,7 +389,6 @@ To add a new piece from `Dungeon Pieces-67266-.7z`:
 Mark the tiles a structure replaces in `StructureTiles`:
 - **`1`:** drawn as a mesh; rays pass through, there is no billboard, and the floor is plain ground.
 - **`2`:** as `1`, plus a floor hole.
-- **`3`:** an open wall drawn from the tile's own face art.
 
 Texturing modes for structure faces (`AddStructureFace(..., mapping)`):
 
@@ -342,6 +400,7 @@ Texturing modes for structure faces (`AddStructureFace(..., mapping)`):
 | `MeshFloorArt` | the floor art under the point (the stairs' fan) |
 | `MeshWallFace` | one wall-face texture |
 | `MeshArcade` | the arch wall |
+| `MeshClean` | a surface of the clean dungeon's texture set, by the triangle's texture coordinates (`cleanSurface`, `uv`) |
 
 ### 5.6.1 The weapon in hand
 - Daggerfall's first-person weapon art, drawn over the view (`fp_weapon.cpp`). The CIF format is described at the
@@ -390,8 +449,13 @@ commit.
   - Forge and anvil props under the smithy porch.
   - Remaining dark slabs on the ground north of the church (possibly original art).
 - **Dungeon:**
-  - Stairs for catacombs, caves and hell (only cathedral stairs are modelled).
-  - The black capital top on plain fallback pillars.
+  - The caves and hell in the clean style (fp_dungeon.cpp is written to take more tilesets: a texture set in the export
+    script, a `SetName`, a `PillarStyleFor`, and the tileset in `IsCleanDungeon`); their stairs have no model either.
+  - The clean dungeon's floors are one texture: the art's floor markings (blood, the pentagram of Lazarus' lair) are
+    gone; wall decorations painted in the art too (banners and torches that are objects stay, as sprites).
+  - The black capital top on plain fallback pillars (caves, hell).
   - The mirrored "V" pattern very close to cave walls.
+  - `dungeonkit.bin` still carries the kit pieces the clean dungeon no longer uses (column, torch stand, wall models,
+    vault, surfaces): re-export it with only `stairs_01`, the sarcophagus and the door to shrink it.
 - **General:**
   - Merge `fp-buildings` into `fp` (or make it the main branch of the fork) once you're happy with it.
