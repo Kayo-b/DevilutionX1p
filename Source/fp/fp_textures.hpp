@@ -103,6 +103,16 @@ void SetWallRecessesEnabled(bool enabled);
  */
 void RemoveUprightGround(uint16_t pieceId, const std::array<bool, 256> &ground);
 
+/**
+ * @brief Paints out what does not belong on a town piece's floor (and its ground under a prop): each 8-connected
+ * cluster of `foreign` texels at least `minCluster[colour class]` big takes the texel `fill` has there, or the nearest
+ * texel of the floor that is not foreign. `kind[texel]` gives each foreign colour's class (0: not foreign).
+ */
+void CleanTownFloor(uint16_t pieceId, const std::array<uint8_t, 256> &kind, const std::array<int, 4> &minCluster, const std::vector<int16_t> &fill);
+
+/** @brief CleanTownFloor on the level's plain ground (GetGroundFloor), each cluster taking the nearest texel that stays. */
+void CleanGroundFloor(const std::array<uint8_t, 256> &kind, const std::array<int, 4> &minCluster);
+
 /** @brief A wall face to use where a piece has no usable art for the face being drawn. */
 [[nodiscard]] const std::vector<int16_t> &GetFallbackFace();
 /** @brief Filler wall face for a tile in a run: two neighbouring faces of the level's commonest straight wall, alternating with the parity of the tile's position along the wall. */

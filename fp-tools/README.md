@@ -125,6 +125,9 @@ Open the console with the backtick key, then run `dev = require('devilutionx.dev
 | `dev.fp.modkit(bool)` | global kit walls, floors, ceilings, columns, and arcade pillars (default off); entrance stairs and sarcophagus remain on |
 | `dev.fp.modeltextures(bool)` | town buildings with the 3D models' own textures (default) or their projected iso art |
 | `dev.fp.sarcophagus(bool)` | use the 3D mod-kit sarcophagus model independently of `dev.fp.modkit` (default on) |
+| `dev.fp.sky(bool)` | the town's night skybox (default) or a flat sky colour |
+| `dev.fp.windowlight(bool)` | the lamps inside the tavern, the smithy and the church lit (default) or out |
+| `dev.fp.floormap(x0,y0,x1,y1,path)` | the town's floor from above, each tile as first person draws it (PPM, with a grid) |
 | `dev.level.warp.dungeon(0)` | go to town (any `n` for dungeon level `n`) |
 
 Debug environment variables:
@@ -136,6 +139,12 @@ Debug environment variables:
 | `FP_DUMP_PROFILES=1` | logs column profiles |
 | `FP_NO_CULL=1` | turns off back-face culling |
 | `FP_FLAT_SHADE=1` | draws meshes in one colour, to time rasterization alone |
+| `FP_NO_HULLS=1` | leaves out the town's prop meshes (boulders, low walls, graves), to time them |
+| `FP_LOG_TREES=1` | logs each town tree: its foot and its sprite's size |
+| `FP_DUMP_TREES=dir` | writes each town tree's sprite to `dir/tree_N.ppm`, and each group's art before and after cleaning |
+| `FP_KEEP_INSIDES=1` | keeps the landmarks' hidden inner surfaces (see `CullHiddenSurfaces`) |
+| `FP_DUMP_PROPS=dir` | writes each group of boulders' and gravestones' art (ground taken out) to `dir/` |
+| `FP_LAMP_SEEN=1` | shows the lamps' light outside whichever way surfaces face (where their light gets to) |
 
 ---
 
@@ -269,6 +278,113 @@ To re-export the cottage models after changing the scripts (they write straight 
 ```bash
 python3 fp-tools/export/export_houses.py && python3 fp-tools/export/export_meshes.py
 ```
+
+### 5.4.1 Town at night: trees and lamplight
+**Trees** (`BuildTrees`, `CollectTreeSprites`): each group of tree tiles is cut out of the iso art into one sprite per
+trunk (every art pixel goes to the nearest trunk whose foot is below it). A tree's tiles that a house's art claimed
+still count as the tree's (`IsTreePiece`), so trees beside houses are whole. The feet of the trunks are drawn in the
+floor diamonds in the ground's own colours: they are grown down from the bark above, row by row, through the art
+with its ground, never wider than the trunk above (nor than 9 pixels). The rest of the diamonds (ground, shadows,
+fallen leaves, twigs) is left out, and a trunk is a piece of bark that reaches the ground. A tree stands on its trunk's foot as an
+upright quad turned to face the camera, each screen column at its own depth (`Entity::facing`,
+`DrawFacingSprite`), so a wide tree beside you recedes instead of filling the view. Boulders, low walls, graves and
+tufts stay meshes (`BuildTownProps`).
+
+The landmarks' model surfaces no one can see from outside (insides of walls and roofs, floors, beams behind closed
+doors and glass) are dropped at load (`CullHiddenSurfaces`: a voxel grid of the model, and rays out from each
+surface; about a quarter of the houses' triangles, in about half a second). What can be seen from where one
+stands around a house (rays from eye height all round it, a tenth of a tile apart where they reach it) stays too:
+the insides seen through small holes, like the gap in Gillian's thatch, which a surface's own few rays can miss.
+The church is left whole (its glass shows through slits finer than the grid). `FP_KEEP_INSIDES=1` keeps every
+surface, to compare.
+
+Ogden's tavern door stands open (`PLAZA_OPEN_DOORS` in the exporter swings it out on its left edge, as the art has
+it). Boulders beside a building that the original art shows (not drawn over by the building's art) stay props even
+where a replaced house's art claimed their tiles (`ShowsInArt`, `Building::claimed`).
+
+**Boulders, gravestones, low walls** (`BuildRocks`, `BuildGraves`, `BuildTownWallTile`): groups of neighbouring rock
+or grave tiles are cut out of the art together, without the ground in their floor diamonds (`BuildPropCanvas`: only
+the stones' blue there). A heap of boulders is its outline filled with round stones, biggest first (`PackStones`: each
+where the outline is widest and as wide as it is there; the iso view has the same scale across and down, so a
+circle of art is a stone of that size on the ray of its middle). Each is a lumpy low-poly stone (`AddStone`: a
+squashed sphere pushed in and out by a few waves, 80 triangles near, 20 far), half behind the heap's foot and half up
+on the stones in front where its circle is above the foot, never higher than the biggest. A gravestone is made as
+what its outline is (`ShapeGrave`): a headstone (round-topped where its top corners are cut), a cross, a post or a
+slab fallen flat, as wide as its body and standing on the ground under its foot (the ground's removal leaves a
+headstone's shaded foot a thin stem, and cuts some in two: pieces one above the other are put back together). Both
+take the art's colours where the iso camera saw them, and are drawn from the front only. The low walls are dry stone
+walls along their runs, narrowing upwards, their top running on from tile to tile at about the walls' common height,
+in the plaza cottages' stone texture turned dark neutral grey (`MeshTiled`, `StoneTexture`, `WallStoneColor`:
+the palette's true greys only, `WallStoneGrey`); pieces 1049 and 1050, a wall's crumbled end, are wall too (not
+gravestones). Each straight run stands at one place across its tiles, the median of where its tiles' art has it
+(`WallAcross`, `WallArtAcross`: tiles of one run differ, and placed one by one they left offset pieces with gaps
+between), and at a corner a wall ends in the one it meets. Corners the art draws across two diagonal tiles (the
+walls ending either side of an empty tile) get that tile as their corner, so the walls meet.
+
+**Lamplight** (the `LitLandmarks` section of `fp_buildings.cpp`):
+1. Every house is lit. The tavern, smithy and church have rooms measured by hand; the cottages' are fitted to their
+   walls from inside (`autoRoom`, `AddAutoRoom`). Each lit landmark has rooms (`LitLandmarks`, in the model's frame). `FitRoom` moves
+   their sides out to the model's walls and puts their ceiling under its roof; `FindStoreyFloor` splits a room at an
+   upper floor the model has (the tavern has one at about 2 tiles). The church has its nave inside the stained-glass
+   box (`AddGlassRoom`) and its tower. Its front door stands open (`export_landmarks.py` swings the leaves and their
+   battens in) onto a small entrance hall (`entrance_hall`, class 3; the nave itself is not modelled inside), lit by
+   a lamp of its own (`AddInsideLamp`, `LandmarkInsideLight`), whose light comes out of the doorway.
+2. Lamps hang under each room's ceiling (`AddRoomLamps`), at most `LampHang` above its floor, and one more every
+   `LampStack` up a tall room (the tower, one for each band of its openings).
+3. `BuildLampGrids` (on a thread of its own, about 2 s, after the town is built) voxelizes every town mesh
+   around each building (`Occluders`, 1/16 tile; the church's glass lets `GlassTransmission` through) and, at the
+   points of a grid around it (1/8 tile across, 1/4 up), sums each lamp's light that reaches there (a few points of
+   its flame, so the edges are soft) as a vector towards the lamps. Inside the rooms it stays dark. Each opening in
+   a room's walls (`AddWindowLamps`, found by looking out from the room's sides through the voxels) gets a small
+   light of its own just outside, shining out, for the glow around and under it.
+4. `ApplyWindowGlow` lights each pixel by the grid at its point, dotted with the surface's normal (from the depth of
+   the pixels around it): so walls and roofs facing away from the lamps, the building's own included, get nothing.
+   It is worked out every 4 pixels and blended between them on smooth surfaces (about 2.5 ms a frame).
+5. Through the windows one sees the room's inside (`AddRoomInside`: plank floor, beamed ceiling, panelling and
+   plaster), lit by its own lamps (`InteriorColor`). The church's glass, seen through its cross windows, glows from
+   deep red through orange to yellow as the original art's lit windows do (`GlassGlow`). Behind each cross window
+   is a red lamp shining out (`AddCrossLamps`, `CrossLamps`): it lights the window's sides (class 4 in
+   `landmarks.bin`, `WorldTriangle::rim`: `cross_rim` in the exporter), their stone in its light (`CrossLight`:
+   the sides turned to it and nearest it brightest), and the ground before the window. The sides are left out of
+   the light's occluders, or the openings, finer than the grid, would be closed to it.
+6. The art's painted lamplight on the ground before the tavern and the church is replaced by plain ground
+   (`ClearPaintedLight`).
+7. Windows are glazed: a glowing pane (`MeshPane`, `PaneColor`: the house's light, brightest in the middle of each
+   light) in a dark oak frame of four lights, a border and a cross (`MeshFrame`, `AddWindowPane`). Window holes the
+   models have are found by looking out from the rooms' walls (`FindWindows`; doors and the smithy's open front are
+   left open), and each edge fitted to the hole's by finer rays (also past the room's ceiling, which can be lower
+   than a window's top under the eaves). A house whose model has none gets a few set into its ground floor's walls (`AddSetWindows`: one per
+   wall, two in a long one, sized to fit under its eaves, clear of its door), each with a light just outside. The panes let
+   `WindowGlassTransmission` of the lamps through, and the frames cast their cross on the ground. The glass glows at
+   `PaneBrightness` (half) of its light's colour, in warm palette colours only (`NearestWarmColor`; the nearest of
+   all can be an olive). The little windows in closed doors (Pepin's, Gillian's grilles) get a pane behind the leaf
+   (`GlazeDoors`), so the emptied inside does not show through them.
+
+Each lit landmark has its light's `color` (fire and candles red-orange; the church a deep red, through its glass) and
+`strength`. Tune with those, `LampPower`, `LampHalf`, `LampReach`, `LampFlicker` and `WindowLampStrength`; the
+church's glass with the ramp in `GlassGlow`; the crosses' lamps with `CrossLampStrength`, `CrossLampHalf`,
+`CrossLampReach` and `CrossLampBehind`.
+
+**Town floor** (`ChooseFloorSources`, `FloorSourceMap`): the iso art paints into the floor what first person cannot
+use: the feet of house walls past the edge of their models, of rocks, walls and barrels now drawn as meshes, and the
+houses' shadows (with no sun to cast them). Those tiles (a building's art or model tiles, prop tiles, uncovered house
+footprints, shadowed tiles next to buildings, and the boulders' feet painted on the solid tiles beside them: small
+groups of solid floor-only tiles touching a boulder, where the river's are one long chain) show the floor of the
+nearest tile of plain open ground instead. Then `CleanTownFloors` paints out, texel by texel, what is left on
+walkable ground, the boulders' tiles and the plain ground itself (`CleanTownFloor`, `CleanGroundFloor`): clusters of
+the boulders' deep blue (3 texels or more) and of the art's painted lamplight and window light (`IsPaintedLightColor`:
+red down to a dark red, orange, yellow; 5 or more), each taking the plain ground's texel there. Smaller specks stay:
+the ground's own leaves and stones. The floor textures' edges sample the iso diamond's outline, where every other
+texel falls outside it; `ExtractFloor` gives those the texel inside, or they were dotted black lines along every
+tile's edge. `dev.fp.floormap` shows the result from above.
+
+**The town palette has no shade ramps.** Dungeon palettes run in ramps of 16 colours from light to dark, and the
+game's light tables and the textures' upscaler (`ComputeMixColor`: the middle of two colours of one ramp is the
+index between them) count on that. The town palette's blocks of 16 mix unrelated colours: the index between two
+greys can be a blood red, and the game's light tables (never used darker than fully lit in town) turn greys into
+reds, greens and blacks. So in town the upscaler mixes by the nearest colour of the whole palette (else the close-up
+floor was sprinkled with red), and first person shades through `FpLightTable`: in town tables made from the palette
+(each colour darkened to the nearest palette colour, by the old tables' average darkening), the game's elsewhere.
 
 ### 5.5 Landmarks: adding or fixing a hand-placed building
 Landmarks (smithy, tavern, church) are full models placed by hand, listed in `Landmarks` in `fp_buildings.cpp`. To

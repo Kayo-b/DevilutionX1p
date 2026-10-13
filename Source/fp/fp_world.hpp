@@ -5,6 +5,8 @@
  */
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -46,6 +48,11 @@ struct Entity {
 	bool flat = false;
 	/** Drawn some other way (as a mesh): kept only so it can be clicked. */
 	bool hidden = false;
+	/**
+	 * Stands as an upright quad on its foot (pos), turned to face the camera, each column at its own depth: wide
+	 * art (a tree) beside the camera then recedes as it should instead of filling the view.
+	 */
+	bool facing = false;
 };
 
 /**
@@ -60,6 +67,24 @@ void DecodeClx(ClxSprite sprite, std::vector<int16_t> &pixels);
 
 /** @brief Light table index of a tile (LightsMax outside the dungeon). */
 [[nodiscard]] uint8_t LightAt(Point tile);
+
+/**
+ * @brief The light table for a light level (0: lit .. LightsMax: dark) in first person. The game's own, but in town
+ * one made from the palette: each colour darkened to the nearest palette colour. The town palette is not laid out in
+ * 16-colour shade ramps, so the game's tables (only ever used fully lit in town) turn its colours into unrelated
+ * ones when darker: greys into reds, greens and blacks.
+ */
+inline const std::array<uint8_t, 256> *FpLightTablesNow = nullptr;
+
+/** @brief Points FpLightTable at the tables for the current level and palette: once a frame, before drawing. */
+void RefreshFpLightTables();
+
+inline const std::array<uint8_t, 256> &FpLightTable(int level)
+{
+	if (FpLightTablesNow == nullptr)
+		RefreshFpLightTables();
+	return FpLightTablesNow[std::clamp(level, 0, 15)];
+}
 
 /** @brief Whether a tile's tall art is drawn as a billboard of its own iso column (a prop: what no mesh replaces). */
 [[nodiscard]] bool IsPropTile(Point tile);

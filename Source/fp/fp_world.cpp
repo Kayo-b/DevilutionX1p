@@ -6,10 +6,14 @@
 #include "fp/fp_world.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
 #include <unordered_map>
 
 #include "dead.h"
+#include "engine/light_tables.hpp"
+#include "engine/palette.h"
 #include "engine/lighting_defs.hpp"
 #include "engine/render/scrollrt.h"
 #include "engine/trn.hpp"
@@ -382,6 +386,47 @@ uint8_t LightAt(Point tile)
 	return dLight[tile.x][tile.y];
 }
 
+void RefreshFpLightTables()
+{
+	if (leveltype != DTYPE_TOWN) {
+		FpLightTablesNow = LightTables.data();
+		return;
+	}
+	// How much of a colour's brightness each level keeps: what the game's tables keep on average of the town's
+	// ground (measured), so the town is as bright as before, now without the wrong colours.
+	constexpr std::array<float, 16> Keep { 1.0F, 0.94F, 0.9F, 0.78F, 0.7F, 0.66F, 0.63F, 0.58F, 0.54F, 0.49F, 0.39F, 0.31F, 0.25F, 0.12F, 0.04F, 0.0F };
+	static std::array<std::array<uint8_t, 256>, 16> tables {};
+	static uint32_t readyFor = 0;
+	if (readyFor != PaletteVersion()) {
+		readyFor = PaletteVersion();
+		for (size_t l = 0; l < tables.size(); l++) {
+			for (int i = 0; i < 256; i++) {
+				if (l == 0 || i == 0) {
+					tables[l][static_cast<size_t>(i)] = l == 0 ? static_cast<uint8_t>(i) : 0;
+					continue;
+				}
+				const SDL_Color c = logical_palette[i];
+				const float r = static_cast<float>(c.r) * Keep[l];
+				const float g = static_cast<float>(c.g) * Keep[l];
+				const float b = static_cast<float>(c.b) * Keep[l];
+				float best = std::numeric_limits<float>::max();
+				uint8_t found = 0;
+				for (int j = 1; j < 256; j++) {
+					const SDL_Color o = logical_palette[j];
+					const float d = (o.r - r) * (o.r - r) * 3 + (o.g - g) * (o.g - g) * 6 + (o.b - b) * (o.b - b);
+					if (d < best) {
+						best = d;
+						found = static_cast<uint8_t>(j);
+					}
+				}
+				// Black where the colour is all but gone.
+				tables[l][static_cast<size_t>(i)] = r + g + b < 6.0F ? 0 : found;
+			}
+		}
+	}
+	FpLightTablesNow = tables.data();
+}
+
 void CollectEntities(Vec2 viewerPos, std::vector<Entity> &entities)
 {
 	entities.clear();
@@ -392,6 +437,7 @@ void CollectEntities(Vec2 viewerPos, std::vector<Entity> &entities)
 	CollectMissiles(entities);
 	CollectCorpses(viewerPos, entities);
 	CollectProps(viewerPos, entities);
+	CollectTreeSprites(viewerPos, entities);
 }
 
 bool IsSelectableKind(EntityKind kind)
@@ -406,6 +452,43 @@ BillboardRect ProjectBillboard(const Projection &projection, const Entity &entit
 {
 	const Vec2 rel { entity.pos.x - projection.pos.x, entity.pos.y - projection.pos.y };
 	const float depth = rel.x * projection.dir.x + rel.y * projection.dir.y;
+	if (entity.facing) {
+		// The quad's two ends, across the line from the camera to the foot.
+		// Standing on its foot, the quad would be all there is to see.
+		const float distance = std::hypot(rel.x, rel.y);
+		if (distance < 0.4F)
+			return { false, depth, 0, 0, 0, 0 };
+		const Vec2 across { -rel.y / distance * entity.width / 2.0F, rel.x / distance * entity.width / 2.0F };
+		BillboardRect rect { false, depth, projection.width, 0, projection.height, 0 };
+		float nearest = std::numeric_limits<float>::max();
+		for (const float side : { -1.0F, 1.0F }) {
+			const Vec2 end { rel.x + across.x * side, rel.y + across.y * side };
+			const float endDepth = end.x * projection.dir.x + end.y * projection.dir.y;
+			const float endLateral = (end.x * projection.plane.x + end.y * projection.plane.y) / (PlaneLength * PlaneLength);
+			if (endDepth < 0.1F) {
+				// Behind the camera: the quad runs off the screen on that end's side.
+				if (endLateral < 0)
+					rect.left = 0;
+				else
+					rect.right = projection.width;
+				continue;
+			}
+			rect.visible = true;
+			nearest = std::min(nearest, endDepth);
+			const float x = (endLateral / endDepth + 1.0F) * static_cast<float>(projection.width) / 2.0F;
+			rect.left = std::min(rect.left, static_cast<int>(std::floor(x)));
+			rect.right = std::max(rect.right, static_cast<int>(std::ceil(x)));
+		}
+		if (!rect.visible)
+			return rect;
+		const float scale = projection.focal / nearest;
+		rect.top = projection.horizon - static_cast<int>(std::lround((entity.bottom + entity.height - EyeHeight) * scale));
+		rect.bottom = projection.horizon - static_cast<int>(std::lround((entity.bottom - EyeHeight) * scale));
+		rect.left = std::max(rect.left, 0);
+		rect.right = std::min(rect.right, projection.width);
+		rect.visible = rect.right > rect.left && rect.bottom > rect.top;
+		return rect;
+	}
 	if (depth < 0.1F)
 		return { false, depth, 0, 0, 0, 0 };
 	const float lateral = (rel.x * projection.plane.x + rel.y * projection.plane.y) / (PlaneLength * PlaneLength);

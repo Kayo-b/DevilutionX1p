@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -17,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -114,6 +117,8 @@ struct WorldTriangle {
 	bool mirrored;
 	bool faceX;         // MeshWallFace: the x face texture (else the y face)
 	bool cull = false;  // one-sided: skipped when turned away from the camera (closed shapes, slabs)
+	bool inside = false; // inside a lit landmark (the church's entrance hall, through its open door): lit by its lamps
+	bool rim = false;    // a side of the church's cross windows: lit by the lamp behind it (CrossLamps)
 	V3 normal { 0, 0, 0 }; // outward, for culling
 	// Baked colours (projective landmarks): an N x N grid over the triangle's (u, v) = weights of p1 and p2.
 	uint32_t bakeOffset = 0;
@@ -145,7 +150,10 @@ enum : uint8_t {
 	MeshFloorArt,   // the floor art under the point (what the art paints on the floor, raised into 3D: the stairs' fan)
 	MeshSolid,      // one colour (fallback) for the whole triangle, shaded by its darkness: the kit's ceiling vaults
 	MeshArch,       // an arch over a walkable tile (ArchSlabs[arch]): its face art, open where it has none; faceX: its underside or top
-	MeshFoliage,    // a town tree's leaves (TownProp::foliage[arch]): leaf cells in space, coloured from its art, open between
+	MeshInterior,   // the inside of a lit landmark's room (LitRooms[arch]), seen through its windows, lit by its lamps
+	MeshTiled,      // a model texture (WorldTriangle::texture) tiled over the surface in world space (the town's low walls)
+	MeshPane,       // window glass, glowing with its house's light (LitLandmarks[arch]); see AddWindowPane
+	MeshFrame,      // a window's wooden frame
 };
 
 struct Building {
@@ -178,6 +186,8 @@ struct Building {
 	std::vector<float> isoNear;      // projective landmarks: nearest surface to the iso camera per 2 x 2 canvas pixels
 	float boundsOverhang = 0;        // how far the model reaches past the footprint, for screen culling
 	int landmark = -1;               // index into Landmarks for the hand-placed buildings
+	std::vector<Point> claimed;      // detected houses: the art tiles they draw (BuildingTiles 1)
+	std::vector<std::array<float, 6>> doors; // landmarks: their doors' bounds (x0, x1, y0, y1, z0, z1)
 };
 
 struct LevelKey {
@@ -478,6 +488,8 @@ void FitBuilding(Building &b)
 	b.highestZ = best.eave + best.rise;
 }
 
+bool IsTownRockPiece(uint16_t piece);
+
 /**
  * @brief Stitches the iso columns of the tiles into pictures, nearest tiles last: `canvas` from the building's
  * art tiles, `fitCanvas` from those plus the ground tiles under it.
@@ -698,7 +710,7 @@ void LoadHouseModels()
 struct LandmarkMesh {
 	std::string name;
 	std::vector<std::array<float, 9>> triangles; // u, w (0..1 over the plaza extent), z (plaza units) per vertex
-	std::vector<uint8_t> classes;                // 0 wall, 1 roof, 2 door
+	std::vector<uint8_t> classes;                // 0 wall, 1 roof, 2 door, 3 inside, 4 a cross window's rim
 	std::vector<std::array<float, 6>> uvs;       // texture coordinates per vertex (FPL2 files)
 	std::vector<int16_t> textures;               // index into MeshTextures, -1 for none
 };
@@ -846,9 +858,9 @@ const std::array<LandmarkPlacement, 10> Landmarks { {
 	{ "pepin", { 48, 74 }, { 55, 81 }, 48.31F, 55.01F, 74.38F, 81.02F, 0.687F, 100.0F, 0.687F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },         // 0.66
 	{ "cottage_small", { 25, 48 }, { 30, 53 }, 25.78F, 30.90F, 48.48F, 53.39F, 0.875F, 100.0F, 0.875F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true }, // 0.65
 	{ "cottage_tall", { 69, 66 }, { 74, 73 }, 69.74F, 74.86F, 66.35F, 73.25F, 0.881F, 100.0F, 0.881F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },  // 0.66
-	// Griswold's smithy: the long hall, and over the forge where he stands an open porch roof on two posts. The plaza
-	// porch eaves are low; they are lifted to the hall's wall height, high enough to stand under.
-	{ "smithy", { 60, 56 }, { 70, 64 }, 60.17F, 70.87F, 56.78F, 64.08F, 1.59F, 1.0F, 0.60F, true, { Vec2 { 61.69F, 63.85F }, Vec2 { 64.44F, 63.85F } }, true }, // 0.59
+	// Griswold's smithy: the long hall, and over the forge where he stands an open porch roof on the model's own two
+	// posts. The plaza porch eaves are low; they are lifted to the hall's wall height, high enough to stand under.
+	{ "smithy", { 60, 56 }, { 70, 64 }, 60.17F, 70.87F, 56.78F, 64.08F, 1.59F, 1.0F, 0.60F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true }, // 0.59
 	// The fountain's model texture is a coarse rock that reads as a blob at its size: it keeps its art.
 	{ "fountain", { 59, 69 }, { 61, 71 }, 59.65F, 61.46F, 69.75F, 71.53F, 0.643F, 100.0F, 0.643F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true, false }, // 0.52
 	// Tristram's church (research/church): tower, nave and round apse, fitted to the iso art by silhouette overlap.
@@ -1535,6 +1547,45 @@ void MakeProjective(Building &b, bool mirroredPlacement)
 	}
 }
 
+
+/**
+ * @brief Whether most of a tile's upright art shows in the original iso picture: not drawn over by the building's
+ * art tiles drawn after it (those in front of it). A boulder beside a building the original shows stays a prop of
+ * its own; one the building's art hides (behind the smithy) stays hidden.
+ */
+bool ShowsInArt(Point t, const std::vector<Point> &artTiles)
+{
+	auto drawnAfter = [&](Point u) { return u.x + u.y != t.x + t.y ? u.x + u.y > t.x + t.y : u.x > t.x; };
+	const PieceTextures &textures = GetPieceTextures(dPiece[t.x][t.y]);
+	const int rows = static_cast<int>(textures.upright.size() / ColumnWidth);
+	const int left = (t.x - t.y) * 32 - 32;
+	const int top = (t.x + t.y + 2) * 16 - (rows - 1);
+	int covered = 0;
+	int total = 0;
+	for (int cy = 0; cy < rows; cy++) {
+		for (int cx = 0; cx < ColumnWidth; cx++) {
+			if (textures.upright[static_cast<size_t>(cy) * ColumnWidth + cx] <= 0)
+				continue;
+			total++;
+			const int sx = left + cx;
+			const int sy = top + cy;
+			for (const Point u : artTiles) {
+				if (u == t || !drawnAfter(u) || IsTownRockPiece(dPiece[u.x][u.y]))
+					continue;
+				const PieceTextures &other = GetPieceTextures(dPiece[u.x][u.y]);
+				const int otherRows = static_cast<int>(other.column.size() / ColumnWidth);
+				const int ox = sx - ((u.x - u.y) * 32 - 32);
+				const int oy = sy - ((u.x + u.y + 2) * 16 - (otherRows - 1));
+				if (ox >= 0 && oy >= 0 && ox < ColumnWidth && oy < otherRows && other.column[static_cast<size_t>(oy) * ColumnWidth + ox] > 0) {
+					covered++;
+					break;
+				}
+			}
+		}
+	}
+	return total > 0 && covered * 2 < total;
+}
+
 /**
  * @brief Marks the tiles a projective landmark replaces: those under the model (2: their ground art, which shows
  * the building, gives way to plain ground) and art tiles around it whose picture is mostly the building (1). Trees,
@@ -1574,6 +1625,8 @@ void ClaimProjectiveTiles(const Building &b, const std::vector<Point> &artTiles)
 		const size_t at = static_cast<size_t>(t.y) * MAXDUNX + t.x;
 		if (under[at] != 0)
 			continue;
+		if (IsTownRockPiece(dPiece[t.x][t.y]) && ShowsInArt(t, artTiles))
+			continue; // a boulder beside the building, not part of it: a prop of its own
 		const PieceTextures &textures = GetPieceTextures(dPiece[t.x][t.y]);
 		const int rows = static_cast<int>(textures.column.size() / ColumnWidth);
 		const int left = (t.x - t.y) * 32 - 32 - b.originX;
@@ -1668,6 +1721,25 @@ void BuildLandmarkMesh(Building &b, const LandmarkPlacement &place, const Landma
 			p[k] = toWorld(&mesh.triangles[t][static_cast<size_t>(k) * 3]);
 		const size_t before = b.mesh.size();
 		AddMeshTriangle(b, p, mesh.classes[t] == 1, middle);
+		if (b.mesh.size() > before) {
+			b.mesh.back().inside = mesh.classes[t] == 3;
+			b.mesh.back().rim = mesh.classes[t] == 4;
+		}
+		if (mesh.classes[t] == 2) {
+			// A door: its bounds, grown by each of its triangles (the leaf and its parts are one door where they touch).
+			std::array<float, 6> box { std::min({ p[0].x, p[1].x, p[2].x }), std::max({ p[0].x, p[1].x, p[2].x }), std::min({ p[0].y, p[1].y, p[2].y }),
+				std::max({ p[0].y, p[1].y, p[2].y }), std::min({ p[0].z, p[1].z, p[2].z }), std::max({ p[0].z, p[1].z, p[2].z }) };
+			bool merged = false;
+			for (std::array<float, 6> &door : b.doors) {
+				if (box[0] <= door[1] + 0.1F && door[0] <= box[1] + 0.1F && box[2] <= door[3] + 0.1F && door[2] <= box[3] + 0.1F) {
+					door = { std::min(door[0], box[0]), std::max(door[1], box[1]), std::min(door[2], box[2]), std::max(door[3], box[3]), std::min(door[4], box[4]), std::max(door[5], box[5]) };
+					merged = true;
+					break;
+				}
+			}
+			if (!merged)
+				b.doors.push_back(box);
+		}
 		if (b.mesh.size() > before && !mesh.textures.empty() && place.modelTextures) {
 			b.mesh.back().texture = mesh.textures[t];
 			b.mesh.back().uv = mesh.uvs[t];
@@ -1703,6 +1775,1428 @@ void BuildLandmarkMesh(Building &b, const LandmarkPlacement &place, const Landma
 	b.boundsOverhang = std::max({ b.params.overhang, b.x0 - place.x0, place.x1 - b.x1, b.y0 - place.y0, place.y1 - b.y1, 0.0F }) + 0.1F;
 }
 
+void AddStructureFace(Building &b, std::initializer_list<V3> corners, V3 normal, Vec2 mirror, uint8_t mapping, uint8_t darkness);
+
+// ---------------------------------------------------------------------------------------------------------------
+// Light from inside the tavern, the smithy and the church. Lamps hang under each one's ceiling, and their light
+// leaves the building only where its model is open (windows and doorways; in the church through the stained glass,
+// dimmed), so it falls out of the windows in patches on the ground and on the walls across from them, and never on
+// the building's own walls or roof. Seen through a window, the room inside is lit by the same lamps.
+
+/**
+ * @brief The landmarks with light inside: which of Landmarks, and its rooms as boxes a little inside its walls (in
+ * the model's own frame: u, w 0..1 over its extent, z model units above its foot, as landmarks.bin has them; the
+ * walls and the roof are found from the model). The church has no room of its own: its stained glass box is the room.
+ */
+struct LitLandmark {
+	const char *name;
+	int rooms;
+	std::array<std::array<float, 6>, 2> room; // u0, u1, w0, w1, z0, z1
+	float strength;                           // of each of its lamps
+	std::array<float, 3> color;               // of its light: fire and candles, the church's through red glass
+	bool glass = false;                       // also lit inside its stained glass box (the church's nave)
+	bool autoRoom = false;                    // its room fitted to its walls from inside (AddAutoRoom), not measured
+};
+constexpr std::array<LitLandmark, 9> LitLandmarks { {
+	// The tavern's two wings (the plaza model's x 73.8 - 79.9, y 250.2 - 254.6 and x 73.8 - 77.1, y 248.2 - 250.3).
+	{ "ogden", 2, { { { 0.0803F, 0.8780F, 0.3438F, 0.9012F, 0.088F, 5.588F }, { 0.0803F, 0.5118F, 0.0904F, 0.3564F, 0.088F, 5.588F } } }, 1.0F, { 255.0F, 112.0F, 40.0F } },
+	// The smithy's hall (x 86.6 - 96.0, y 251.35 - 254.5), not the open porch.
+	{ "smithy", 1, { { { 0.0595F, 0.9381F, 0.4966F, 0.9277F, 0.102F, 3.602F }, {} } }, 0.9F, { 255.0F, 100.0F, 32.0F } },
+	// The church: its nave inside the stained glass box, and its tower (x 24.2 - 26.9, y 23.4 - 25.9, from above the
+	// nave's roof up to under its spire: its openings are at 7.3 - 8, 10.3 - 11 and 12.3 - 13.3 tiles up).
+	{ "church", 1, { { { 0.36F, 0.56F, 0.27F, 0.43F, 7.06F, 15.76F }, {} } }, 1.45F, { 255.0F, 56.0F, 22.0F }, true },
+	// The houses: a hearth and a candle or two, dimmer than the tavern.
+	{ "cottage_long", 0, {}, 0.75F, { 255.0F, 118.0F, 44.0F }, false, true },
+	{ "farnham", 0, {}, 0.75F, { 255.0F, 118.0F, 44.0F }, false, true },
+	{ "gillian", 0, {}, 0.75F, { 255.0F, 118.0F, 44.0F }, false, true },
+	{ "pepin", 0, {}, 0.75F, { 255.0F, 118.0F, 44.0F }, false, true },
+	{ "cottage_small", 0, {}, 0.75F, { 255.0F, 118.0F, 44.0F }, false, true },
+	{ "cottage_tall", 0, {}, 0.75F, { 255.0F, 118.0F, 44.0F }, false, true },
+} };
+
+/** The lamps' light outside, falling from the windows, per unit of strength. */
+constexpr float LampPower = 6.5F;
+/** How far a lamp's light reaches (tiles), and the distance at which it is down to half. */
+constexpr float LampReach = 7.0F;
+constexpr float LampHalf = 3.0F;
+/** How far below the ceiling a lamp hangs, and the radius of its flame (its shadows' soft edges). */
+constexpr float LampDrop = 0.35F;
+constexpr float LampRadius = 0.12F;
+/** How much of the light the church's stained glass lets through, and a house's window glass. */
+constexpr float GlassTransmission = 0.45F;
+constexpr float WindowGlassTransmission = 0.8F;
+/** How much the lamps flicker (share of their light), and the glass's panes with them. */
+constexpr float LampFlicker = 0.07F;
+constexpr float PaneFlicker = 0.06F;
+constexpr int PaneLevels = 9;
+/** Strengths of light falling on a colour (GlowColors). */
+constexpr int GlowLevels = 24;
+
+/** @brief A lamp inside a lit landmark. */
+struct Lamp {
+	V3 position;
+	float strength;
+	int lit;  // which of LitLandmarks: its flicker
+	int room; // which of LitRooms it hangs in; -1 for a window's own light
+	V3 facing { 0, 0, 0 }; // a window's light shines out this way only (Lambertian); zero: all around
+	float half = LampHalf;   // the distance at which its light is down to half
+	float reach = LampReach; // and where it ends
+};
+
+/**
+ * @brief The room inside a lit landmark: the space between its walls, up to under its roof (a ceiling height per
+ * cell, so the room follows the roof's slope). Drawn as seen through the windows, but for the church's (its glass).
+ */
+struct LitRoom {
+	int lit = 0;
+	float x0 = 0;
+	float x1 = 0;
+	float y0 = 0;
+	float y1 = 0;
+	float z0 = 0;
+	float top = 0; // its highest ceiling
+	int nx = 0;
+	int ny = 0;
+	std::vector<float> ceiling; // [y][x]
+};
+constexpr float RoomCell = 0.25F;
+
+/**
+ * @brief The light of a building's lamps around it, on a grid: at each point, the sum over the lamps seen from there
+ * of their light's strength times the direction towards them. A surface takes its share by its normal (N . E): all of
+ * a building's lamps are on the same side of anything outside it, so this is their light, summed.
+ */
+struct LightGrid {
+	int lit = 0;
+	float x0 = 0;
+	float y0 = 0;
+	int nx = 0;
+	int ny = 0;
+	int nz = 0;
+	std::vector<std::array<int16_t, 3>> light; // [z][y][x], LightUnit per unit of light
+	std::vector<uint8_t> lit2d;                 // [y][x]: some light in the column of cells from (x, y) to (x + 1, y + 1)
+};
+constexpr float LightUnit = 2048.0F;
+/** The highest lamp a light grid reaches up to (tiles; the church tower's go higher). */
+constexpr float LightTop = 5.0F;
+constexpr float LampCell = 0.125F;
+constexpr float LampLayer = 0.25F;
+
+std::vector<Lamp> Lamps;
+std::vector<Lamp> CrossLamps; // behind the church's cross windows (in Lamps too): what lights the windows' sides
+std::vector<LitRoom> LitRooms;
+std::vector<LightGrid> LightGrids;
+/**
+ * The light grids are worked out on a thread of their own while the town is already shown (it takes a good part of a
+ * second); LightGrids is the thread's until LightReady.
+ */
+struct LightThread {
+	std::thread thread;
+	std::atomic<bool> stop { false }; // asked to give up (the town is left, or the game quits)
+	~LightThread()
+	{
+		Join();
+	}
+	void Join()
+	{
+		stop = true;
+		if (thread.joinable())
+			thread.join();
+		stop = false;
+	}
+};
+LightThread LightBuilder;
+std::atomic<bool> LightReady { false };
+int GlassTexture = -1; // the church's stained glass (MeshTextures), lit from inside
+bool WindowLightOn = true;
+
+/** @brief The flicker of a building's light at a time (seconds), smooth, in -1..1; each building has its own. */
+float WindowFlicker(int lit, float t)
+{
+	constexpr float Tau = 6.2831853F;
+	const float k = 1.0F + 0.13F * static_cast<float>(lit);
+	const float p = 1.7F * static_cast<float>(lit);
+	return 0.5F * std::sin(t * Tau * 0.47F * k + p) + 0.3F * std::sin(t * Tau * 1.13F * k + 2.1F * p + 1.0F) + 0.2F * std::sin(t * Tau * 2.29F * k + 0.7F * p + 2.0F);
+}
+
+float FlickerNow[LitLandmarks.size()] {};
+
+/** @brief The nearest palette colour to a colour (leaving out the cycling colours, see PatchColor). */
+uint8_t NearestColor(float r, float g, float b)
+{
+	float best = std::numeric_limits<float>::max();
+	uint8_t found = 0;
+	for (int j = 1; j < 256; j++) {
+		if (j >= 112 && j <= 127)
+			continue;
+		const SDL_Color o = logical_palette[j];
+		const float d = (o.r - r) * (o.r - r) * 3 + (o.g - g) * (o.g - g) * 6 + (o.b - b) * (o.b - b);
+		if (d < best) {
+			best = d;
+			found = static_cast<uint8_t>(j);
+		}
+	}
+	return found;
+}
+
+/**
+ * @brief The nearest of the palette's warm colours (red over green over blue) to a warm colour: dim firelight, where
+ * the nearest of all can be an olive or a grey.
+ */
+uint8_t NearestWarmColor(float r, float g, float b)
+{
+	float best = std::numeric_limits<float>::max();
+	uint8_t found = NearestColor(r, g, b);
+	for (int j = 1; j < 256; j++) {
+		if (j >= 112 && j <= 127)
+			continue;
+		const SDL_Color o = logical_palette[j];
+		if (o.r < o.g || o.g < o.b || o.r < o.b + 24)
+			continue;
+		const float d = (o.r - r) * (o.r - r) * 3 + (o.g - g) * (o.g - g) * 6 + (o.b - b) * (o.b - b);
+		if (d < best) {
+			best = d;
+			found = static_cast<uint8_t>(j);
+		}
+	}
+	return found;
+}
+
+/**
+ * @brief The church's stained glass lit from inside, PaneLevels strengths of its light: the glass's brightness on a
+ * ramp from deep red through orange to a hot yellow, as the original art draws its lit windows.
+ */
+const std::array<uint8_t, 256> &GlassGlow(int level)
+{
+	static std::array<std::array<uint8_t, 256>, PaneLevels> tables {};
+	static uint32_t readyFor = 0;
+	if (readyFor != PaletteVersion()) {
+		readyFor = PaletteVersion();
+		constexpr std::array<std::array<float, 4>, 6> Ramp { { { 0.0F, 30, 2, 2 }, { 0.35F, 128, 8, 6 }, { 0.6F, 200, 18, 10 }, { 0.8F, 236, 70, 18 }, { 0.92F, 250, 126, 38 }, { 1.0F, 255, 186, 88 } } };
+		for (int l = 0; l < PaneLevels; l++) {
+			// The glass texture is darkened like the walls (TextureDim): its brightest is about a third of white.
+			const float gain = 2.9F + 0.7F * static_cast<float>(l) / static_cast<float>(PaneLevels - 1);
+			for (int i = 0; i < 256; i++) {
+				const SDL_Color c = logical_palette[i];
+				const float t = std::clamp((0.3F * c.r + 0.59F * c.g + 0.11F * c.b) / 255.0F * gain, 0.0F, 1.0F);
+				size_t k = 1;
+				while (k + 1 < Ramp.size() && Ramp[k][0] < t)
+					k++;
+				const float f = std::clamp((t - Ramp[k - 1][0]) / (Ramp[k][0] - Ramp[k - 1][0]), 0.0F, 1.0F);
+				tables[l][i] = NearestColor(Ramp[k - 1][1] + (Ramp[k][1] - Ramp[k - 1][1]) * f, Ramp[k - 1][2] + (Ramp[k][2] - Ramp[k - 1][2]) * f, Ramp[k - 1][3] + (Ramp[k][3] - Ramp[k - 1][3]) * f);
+			}
+		}
+	}
+	return tables[std::clamp(level, 0, PaneLevels - 1)];
+}
+
+/** @brief The table step for a flicker value (-1..1), dithered by a hash so the steps between do not band. */
+int FlickerStep(float flicker, float amplitude, uint32_t hash)
+{
+	const float t = 0.5F + 0.5F * flicker * amplitude / 0.14F; // 0..1 over the table's range
+	const float dither = static_cast<float>(hash & 0xFF) / 256.0F;
+	return std::clamp(static_cast<int>(t * static_cast<float>(PaneLevels - 1) + dither), 0, PaneLevels - 1);
+}
+
+/**
+ * @brief The palette colours of the lamps' light falling on a colour, GlowLevels strengths of it: the colour lit
+ * (as a surface reflects light: brighter, warmer) and a little of the light itself, so dark ground shows it too.
+ */
+const std::array<uint8_t, 256> &GlowColors(int lit, int level)
+{
+	static std::array<std::array<std::array<uint8_t, 256>, GlowLevels>, LitLandmarks.size()> tables {};
+	static uint32_t readyFor = 0;
+	if (readyFor != PaletteVersion()) {
+		readyFor = PaletteVersion();
+		for (size_t f = 0; f < LitLandmarks.size(); f++)
+		for (int l = 0; l < GlowLevels; l++) {
+			const float s = static_cast<float>(l) / static_cast<float>(GlowLevels - 1);
+			for (int i = 0; i < 256; i++) {
+				const SDL_Color c = logical_palette[i];
+				if (i == 0 || l == 0) {
+					tables[f][l][i] = static_cast<uint8_t>(i);
+					continue;
+				}
+				const std::array<float, 3> &color = LitLandmarks[f].color;
+				auto shine = [&](float channel, float light) { return std::min(255.0F, channel * (1.0F + 2.6F * s * light / 255.0F) + s * light * 0.07F); };
+				tables[f][l][i] = NearestColor(shine(c.r, color[0]), shine(c.g, color[1]), shine(c.b, color[2]));
+			}
+		}
+	}
+	return tables[std::clamp<size_t>(lit, 0, LitLandmarks.size() - 1)][std::clamp(level, 0, GlowLevels - 1)];
+}
+
+/** @brief The nearest of a building's surfaces (not its lit rooms) hit by the segment o + d * t, t in (0, maxT). */
+bool SegmentHitsBuilding(const Building &b, V3 o, V3 d, float maxT, float &hitT)
+{
+	bool hit = false;
+	hitT = maxT;
+	for (const WorldTriangle &tri : b.mesh) {
+		if (tri.mapping == MeshInterior)
+			continue;
+		const V3 e1 { tri.p[1].x - tri.p[0].x, tri.p[1].y - tri.p[0].y, tri.p[1].z - tri.p[0].z };
+		const V3 e2 { tri.p[2].x - tri.p[0].x, tri.p[2].y - tri.p[0].y, tri.p[2].z - tri.p[0].z };
+		const V3 pv { d.y * e2.z - d.z * e2.y, d.z * e2.x - d.x * e2.z, d.x * e2.y - d.y * e2.x };
+		const float det = e1.x * pv.x + e1.y * pv.y + e1.z * pv.z;
+		if (std::abs(det) < 1e-9F)
+			continue;
+		const float inv = 1.0F / det;
+		const V3 tv { o.x - tri.p[0].x, o.y - tri.p[0].y, o.z - tri.p[0].z };
+		const float u = (tv.x * pv.x + tv.y * pv.y + tv.z * pv.z) * inv;
+		if (u < 0 || u > 1)
+			continue;
+		const V3 qv { tv.y * e1.z - tv.z * e1.y, tv.z * e1.x - tv.x * e1.z, tv.x * e1.y - tv.y * e1.x };
+		const float v = (d.x * qv.x + d.y * qv.y + d.z * qv.z) * inv;
+		if (v < 0 || u + v > 1)
+			continue;
+		const float t = (e2.x * qv.x + e2.y * qv.y + e2.z * qv.z) * inv;
+		if (t > 1e-4F && t < hitT) {
+			hitT = t;
+			hit = true;
+		}
+	}
+	return hit;
+}
+
+/** @brief The ceiling of a lit room at a point (its cell's). */
+float RoomCeiling(const LitRoom &room, float x, float y)
+{
+	const int i = std::clamp(static_cast<int>((x - room.x0) / RoomCell), 0, room.nx - 1);
+	const int j = std::clamp(static_cast<int>((y - room.y0) / RoomCell), 0, room.ny - 1);
+	return room.ceiling[static_cast<size_t>(j) * room.nx + i];
+}
+
+/**
+ * @brief Fits a lit room to its building: each side moved out to the wall the model has there (the median of rays
+ * cast out from the room's middle, so a window does not count), its ceiling a little under the roof cell by cell.
+ */
+void FitRoom(const Building &b, LitRoom &room)
+{
+	const float midZ = room.z0 + 0.8F;
+	for (int side = 0; side < 4; side++) {
+		const int axis = side / 2; // 0: a side facing x, 1: facing y
+		const float sign = side % 2 == 0 ? -1.0F : 1.0F;
+		const V3 d = axis == 0 ? V3 { sign, 0, 0 } : V3 { 0, sign, 0 };
+		const float alongLo = axis == 0 ? room.y0 : room.x0;
+		const float alongHi = axis == 0 ? room.y1 : room.x1;
+		const float from = axis == 0 ? (room.x0 + room.x1) / 2.0F : (room.y0 + room.y1) / 2.0F;
+		float &edge = axis == 0 ? (sign < 0 ? room.x0 : room.x1) : (sign < 0 ? room.y0 : room.y1);
+		std::vector<float> walls;
+		for (int i = 0; i < 9; i++) {
+			for (int k = 0; k < 3; k++) {
+				const float along = alongLo + (alongHi - alongLo) * (static_cast<float>(i) + 0.5F) / 9.0F;
+				const float z = midZ + 0.3F * static_cast<float>(k - 1);
+				const V3 o = axis == 0 ? V3 { from, along, z } : V3 { along, from, z };
+				float t;
+				if (SegmentHitsBuilding(b, o, d, std::abs(edge - from) + 1.0F, t))
+					walls.push_back(from + sign * t);
+			}
+		}
+		if (walls.size() < 6)
+			continue;
+		std::nth_element(walls.begin(), walls.begin() + static_cast<ptrdiff_t>(walls.size() / 2), walls.end());
+		const float wall = walls[walls.size() / 2];
+		if (std::abs(wall - edge) < 0.6F)
+			edge = wall - sign * 0.03F;
+	}
+	room.nx = std::max(1, static_cast<int>(std::ceil((room.x1 - room.x0) / RoomCell)));
+	room.ny = std::max(1, static_cast<int>(std::ceil((room.y1 - room.y0) / RoomCell)));
+	room.ceiling.assign(static_cast<size_t>(room.nx) * room.ny, room.top);
+	float highest = room.z0;
+	for (int j = 0; j < room.ny; j++) {
+		for (int i = 0; i < room.nx; i++) {
+			const float cx0 = room.x0 + (room.x1 - room.x0) * static_cast<float>(i) / static_cast<float>(room.nx);
+			const float cx1 = room.x0 + (room.x1 - room.x0) * static_cast<float>(i + 1) / static_cast<float>(room.nx);
+			const float cy0 = room.y0 + (room.y1 - room.y0) * static_cast<float>(j) / static_cast<float>(room.ny);
+			const float cy1 = room.y0 + (room.y1 - room.y0) * static_cast<float>(j + 1) / static_cast<float>(room.ny);
+			float h = room.top;
+			for (int sj = 0; sj <= 2; sj++)
+				for (int si = 0; si <= 2; si++) {
+					const float roof = RoofHeightAt(b, cx0 + (cx1 - cx0) * static_cast<float>(si) / 2.0F, cy0 + (cy1 - cy0) * static_cast<float>(sj) / 2.0F);
+					if (roof > 0)
+						h = std::min(h, roof - 0.12F);
+				}
+			h = std::max(h, room.z0 + 0.6F);
+			room.ceiling[static_cast<size_t>(j) * room.nx + i] = h;
+			highest = std::max(highest, h);
+		}
+	}
+	room.top = highest;
+}
+
+/**
+ * @brief Adds a lit room's inside to its building's mesh (MeshInterior, WorldTriangle::arch its index in LitRooms):
+ * its floor, its ceiling cell by cell with the steps between them, and its walls, all facing in, so that through a
+ * window one sees the far side of the room.
+ */
+void AddRoomInside(Building &b, int roomIndex)
+{
+	const LitRoom &room = LitRooms[roomIndex];
+	const size_t first = b.mesh.size();
+	auto cellX = [&](int i) { return room.x0 + (room.x1 - room.x0) * static_cast<float>(i) / static_cast<float>(room.nx); };
+	auto cellY = [&](int j) { return room.y0 + (room.y1 - room.y0) * static_cast<float>(j) / static_cast<float>(room.ny); };
+	auto ceilingAt = [&](int i, int j) { return i < 0 || j < 0 || i >= room.nx || j >= room.ny ? -1.0F : room.ceiling[static_cast<size_t>(j) * room.nx + i]; };
+	const Vec2 middle { (room.x0 + room.x1) / 2.0F, (room.y0 + room.y1) / 2.0F };
+	const float z0 = room.z0;
+	for (int j = 0; j < room.ny; j++) {
+		for (int i = 0; i < room.nx; i++) {
+			const float ax = cellX(i);
+			const float bx = cellX(i + 1);
+			const float ay = cellY(j);
+			const float by = cellY(j + 1);
+			const float h = ceilingAt(i, j);
+			AddStructureFace(b, { { ax, ay, z0 }, { bx, ay, z0 }, { bx, by, z0 }, { ax, by, z0 } }, { 0, 0, 1 }, middle, MeshInterior, 0);
+			AddStructureFace(b, { { ax, ay, h }, { ax, by, h }, { bx, by, h }, { bx, ay, h } }, { 0, 0, -1 }, middle, MeshInterior, 0);
+			// Each side: a wall where the room ends, else the step up to this cell's ceiling from a lower neighbour's.
+			const std::array<std::pair<int, int>, 4> next { { { i - 1, j }, { i + 1, j }, { i, j - 1 }, { i, j + 1 } } };
+			for (int s = 0; s < 4; s++) {
+				const float other = ceilingAt(next[s].first, next[s].second);
+				const float low = other < 0 ? z0 : other;
+				if (low >= h - 1e-4F)
+					continue;
+				const float x = s == 0 ? ax : bx;
+				const float y = s == 2 ? ay : by;
+				// Facing into this cell when it is a wall, into the neighbour (the lower ceiling) when it is a step.
+				const float facing = other < 0 ? 1.0F : -1.0F;
+				if (s < 2) {
+					const V3 normal { (s == 0 ? 1.0F : -1.0F) * facing, 0, 0 };
+					AddStructureFace(b, { { x, ay, low }, { x, by, low }, { x, by, h }, { x, ay, h } }, normal, middle, MeshInterior, 0);
+				} else {
+					const V3 normal { 0, (s == 2 ? 1.0F : -1.0F) * facing, 0 };
+					AddStructureFace(b, { { ax, y, low }, { bx, y, low }, { bx, y, h }, { ax, y, h } }, normal, middle, MeshInterior, 0);
+				}
+			}
+		}
+	}
+	for (size_t i = first; i < b.mesh.size(); i++)
+		b.mesh[i].arch = static_cast<int16_t>(roomIndex);
+}
+
+/** How high above its floor a lamp hangs at most (tiles), and how far apart lamps hang up a tall room. */
+constexpr float LampHang = 1.6F;
+constexpr float LampStack = 2.5F;
+
+/** @brief Hangs a room's lamps along its length, one about every three tiles, under its ceiling. */
+void AddRoomLamps(int roomIndex)
+{
+	const LitRoom &room = LitRooms[roomIndex];
+	const bool alongX = room.x1 - room.x0 >= room.y1 - room.y0;
+	const float length = alongX ? room.x1 - room.x0 : room.y1 - room.y0;
+	const int count = std::max(1, static_cast<int>(std::lround(length / 3.2F)));
+	for (int k = 0; k < count; k++) {
+		const float t = (static_cast<float>(k) + 0.5F) / static_cast<float>(count);
+		const float x = alongX ? room.x0 + (room.x1 - room.x0) * t : (room.x0 + room.x1) / 2.0F;
+		const float y = alongX ? (room.y0 + room.y1) / 2.0F : room.y0 + (room.y1 - room.y0) * t;
+		// One more every LampStack up a tall room (the church's tower).
+		const float under = RoomCeiling(room, x, y) - LampDrop;
+		for (float z = std::max(std::min(under, room.z0 + LampHang), room.z0 + 0.5F); z <= std::max(under, room.z0 + 0.5F); z += LampStack) {
+			Lamps.push_back({ { x, y, z }, LitLandmarks[room.lit].strength, room.lit, roomIndex });
+			LogInfo("fp: {}: lamp at {:.2f}, {:.2f}, {:.2f}", LitLandmarks[room.lit].name, x, y, z);
+		}
+	}
+}
+
+/**
+ * @brief The floor of an upper storey in a room, if the model has one: the lowest level, well above the room's floor,
+ * where flat surfaces cover a good part of the room. Its underside and top.
+ */
+bool FindStoreyFloor(const Building &b, const LitRoom &room, float &bottom, float &top)
+{
+	constexpr float Bin = 0.1F;
+	const int bins = static_cast<int>((room.top - room.z0) / Bin) + 1;
+	std::vector<float> area(static_cast<size_t>(bins), 0.0F);
+	for (const WorldTriangle &tri : b.mesh) {
+		if (tri.mapping == MeshInterior)
+			continue;
+		const float cx = (tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F;
+		const float cy = (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F;
+		const float cz = (tri.p[0].z + tri.p[1].z + tri.p[2].z) / 3.0F;
+		if (cx < room.x0 + 0.2F || cx > room.x1 - 0.2F || cy < room.y0 + 0.2F || cy > room.y1 - 0.2F || cz < room.z0 + 1.2F || cz > room.top - 0.4F)
+			continue;
+		const V3 u { tri.p[1].x - tri.p[0].x, tri.p[1].y - tri.p[0].y, tri.p[1].z - tri.p[0].z };
+		const V3 v { tri.p[2].x - tri.p[0].x, tri.p[2].y - tri.p[0].y, tri.p[2].z - tri.p[0].z };
+		const V3 n { u.y * v.z - u.z * v.y, u.z * v.x - u.x * v.z, u.x * v.y - u.y * v.x };
+		const float twice = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+		if (std::abs(n.z) > 0.9F * twice)
+			area[static_cast<size_t>((cz - room.z0) / Bin)] += twice / 2.0F;
+	}
+	const float needed = 0.3F * (room.x1 - room.x0) * (room.y1 - room.y0);
+	for (int i = 0; i + 1 < bins; i++) {
+		if (area[i] + area[i + 1] < needed)
+			continue;
+		bottom = std::numeric_limits<float>::max();
+		top = std::numeric_limits<float>::lowest();
+		const float from = room.z0 + static_cast<float>(i) * Bin;
+		for (const WorldTriangle &tri : b.mesh) {
+			if (tri.mapping == MeshInterior)
+				continue;
+			const float cx = (tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F;
+			const float cy = (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F;
+			const float cz = (tri.p[0].z + tri.p[1].z + tri.p[2].z) / 3.0F;
+			if (cx < room.x0 + 0.2F || cx > room.x1 - 0.2F || cy < room.y0 + 0.2F || cy > room.y1 - 0.2F || cz < from || cz > from + 0.4F)
+				continue;
+			for (const V3 &q : tri.p) {
+				bottom = std::min(bottom, q.z);
+				top = std::max(top, q.z);
+			}
+		}
+		return bottom < top + 1e-3F;
+	}
+	return false;
+}
+
+/** @brief The church's lit room: inside its stained glass box (the nave behind the windows), a little inside it. */
+void AddGlassRoom(const Building &b, int lit, const LandmarkPlacement &place)
+{
+	if (GlassTexture < 0)
+		return;
+	LitRoom room;
+	room.lit = lit;
+	room.x0 = room.y0 = room.z0 = std::numeric_limits<float>::max();
+	room.x1 = room.y1 = room.top = std::numeric_limits<float>::lowest();
+	for (const WorldTriangle &tri : b.mesh) {
+		if (tri.texture != GlassTexture)
+			continue;
+		for (const V3 &p : tri.p) {
+			room.x0 = std::min(room.x0, p.x);
+			room.x1 = std::max(room.x1, p.x);
+			room.y0 = std::min(room.y0, p.y);
+			room.y1 = std::max(room.y1, p.y);
+			room.z0 = std::min(room.z0, p.z);
+			room.top = std::max(room.top, p.z);
+		}
+	}
+	if (room.x0 > room.x1)
+		return;
+	room.x0 += 0.1F;
+	room.x1 -= 0.1F;
+	room.y0 += 0.1F;
+	room.y1 -= 0.1F;
+	room.z0 = std::max(room.z0, 0.0F);
+	room.nx = room.ny = 1;
+	room.ceiling.assign(1, room.top + 0.2F);
+	LogInfo("fp: {}: glass room {:.2f}..{:.2f} x {:.2f}..{:.2f}, z {:.2f}..{:.2f}", place.name, room.x0, room.x1, room.y0, room.y1, room.z0, room.top);
+	LitRooms.push_back(room);
+	AddRoomLamps(static_cast<int>(LitRooms.size() - 1));
+}
+
+/**
+ * @brief A lamp in the middle of a landmark's own inside (WorldTriangle::inside: the church's entrance hall behind its
+ * open door), under its ceiling: its light comes out of the doorway.
+ */
+void AddInsideLamp(const Building &b, int lit)
+{
+	V3 lo { std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max() };
+	V3 hi { std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest() };
+	for (const WorldTriangle &tri : b.mesh) {
+		if (!tri.inside)
+			continue;
+		for (const V3 &p : tri.p) {
+			lo = { std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z) };
+			hi = { std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z) };
+		}
+	}
+	if (lo.x > hi.x)
+		return;
+	const V3 at { (lo.x + hi.x) / 2.0F, (lo.y + hi.y) / 2.0F, std::max(hi.z - LampDrop, lo.z + 0.5F) };
+	Lamps.push_back({ at, LitLandmarks[lit].strength, lit, -1 });
+	LogInfo("fp: {}: lamp in its inside at {:.2f}, {:.2f}, {:.2f}", LitLandmarks[lit].name, at.x, at.y, at.z);
+}
+
+/** @brief The nearest of some triangles hit by the segment o + d * t, t in (0, maxT). */
+bool RayHitsTriangles(const std::vector<const WorldTriangle *> &triangles, V3 o, V3 d, float maxT, float &hitT)
+{
+	bool hit = false;
+	hitT = maxT;
+	for (const WorldTriangle *tri : triangles) {
+		const V3 e1 { tri->p[1].x - tri->p[0].x, tri->p[1].y - tri->p[0].y, tri->p[1].z - tri->p[0].z };
+		const V3 e2 { tri->p[2].x - tri->p[0].x, tri->p[2].y - tri->p[0].y, tri->p[2].z - tri->p[0].z };
+		const V3 pv { d.y * e2.z - d.z * e2.y, d.z * e2.x - d.x * e2.z, d.x * e2.y - d.y * e2.x };
+		const float det = e1.x * pv.x + e1.y * pv.y + e1.z * pv.z;
+		if (std::abs(det) < 1e-9F)
+			continue;
+		const float inv = 1.0F / det;
+		const V3 tv { o.x - tri->p[0].x, o.y - tri->p[0].y, o.z - tri->p[0].z };
+		const float u = (tv.x * pv.x + tv.y * pv.y + tv.z * pv.z) * inv;
+		if (u < 0 || u > 1)
+			continue;
+		const V3 qv { tv.y * e1.z - tv.z * e1.y, tv.z * e1.x - tv.x * e1.z, tv.x * e1.y - tv.y * e1.x };
+		const float v = (d.x * qv.x + d.y * qv.y + d.z * qv.z) * inv;
+		if (v < 0 || u + v > 1)
+			continue;
+		const float t = (e2.x * qv.x + e2.y * qv.y + e2.z * qv.z) * inv;
+		if (t > 1e-4F && t < hitT) {
+			hitT = t;
+			hit = true;
+		}
+	}
+	return hit;
+}
+
+/** @brief A window in a building's wall: the rectangle of its opening in the plane through the middle of the wall. */
+struct WindowOpening {
+	int axis;    // 0: in a wall facing x (along y), 1: facing y (along x)
+	float plane; // the wall's middle
+	float along0;
+	float along1;
+	float z0;
+	float z1;
+};
+
+/**
+ * @brief The windows in the walls around a lit room: looking out from its sides, the places where nothing of the
+ * building is in the way, each joined into a rectangle. Openings down to the floor are doors (left open), and very
+ * big ones are open fronts (the smithy's forge).
+ */
+std::vector<WindowOpening> FindWindows(const Building &b, const LitRoom &room)
+{
+	std::vector<WindowOpening> windows;
+	constexpr float Step = 0.05F;
+	constexpr float Reach = 1.0F;
+	constexpr float FitReach = 0.15F; // how far a window's edges may be moved out to the hole's (past the room's ceiling)
+	for (int side = 0; side < 4; side++) {
+		const int axis = side / 2;
+		const float sign = side % 2 == 0 ? -1.0F : 1.0F;
+		const V3 out = axis == 0 ? V3 { sign, 0, 0 } : V3 { 0, sign, 0 };
+		const float at = axis == 0 ? (sign < 0 ? room.x0 : room.x1) : (sign < 0 ? room.y0 : room.y1);
+		const float lo = axis == 0 ? room.y0 : room.x0;
+		const float hi = axis == 0 ? room.y1 : room.x1;
+		const float zLo = room.z0 + 0.1F;
+		const float zHi = room.top;
+		// The triangles that can be in the way: in the slab just outside this side.
+		std::vector<const WorldTriangle *> near;
+		for (const WorldTriangle &tri : b.mesh) {
+			if (tri.mapping == MeshInterior)
+				continue;
+			float a0 = std::numeric_limits<float>::max();
+			float a1 = std::numeric_limits<float>::lowest();
+			float l0 = a0;
+			float l1 = a1;
+			float z0 = a0;
+			float z1 = a1;
+			for (const V3 &p : tri.p) {
+				const float across = (axis == 0 ? p.x : p.y) - at;
+				a0 = std::min(a0, across * sign);
+				a1 = std::max(a1, across * sign);
+				l0 = std::min(l0, axis == 0 ? p.y : p.x);
+				l1 = std::max(l1, axis == 0 ? p.y : p.x);
+				z0 = std::min(z0, p.z);
+				z1 = std::max(z1, p.z);
+			}
+			if (a1 >= -0.05F && a0 <= Reach && l1 >= lo - FitReach && l0 <= hi + FitReach && z1 >= zLo - FitReach && z0 <= zHi + FitReach)
+				near.push_back(&tri);
+		}
+		const int na = static_cast<int>((hi - lo) / Step);
+		const int nz = static_cast<int>((zHi - zLo) / Step);
+		if (na <= 0 || nz <= 0)
+			continue;
+		std::vector<uint8_t> open(static_cast<size_t>(na) * nz, 0);
+		std::vector<float> walls;
+		std::vector<std::pair<float, float>> closed; // (along, z) of some samples with wall, for its thickness
+		for (int k = 0; k < nz; k++) {
+			for (int i = 0; i < na; i++) {
+				const float along = lo + (static_cast<float>(i) + 0.5F) * Step;
+				const float z = zLo + (static_cast<float>(k) + 0.5F) * Step;
+				const float x = axis == 0 ? at : along;
+				const float y = axis == 0 ? along : at;
+				if (z > RoomCeiling(room, x, y) - 0.05F)
+					continue;
+				float t;
+				if (RayHitsTriangles(near, { x - out.x * 0.02F, y - out.y * 0.02F, z }, out, Reach, t)) {
+					walls.push_back(t - 0.02F);
+					if ((i + k) % 7 == 0)
+						closed.emplace_back(along, z);
+				} else {
+					open[static_cast<size_t>(k) * na + i] = 1;
+				}
+			}
+		}
+		if (walls.size() < 20)
+			continue;
+		std::nth_element(walls.begin(), walls.begin() + static_cast<ptrdiff_t>(walls.size() / 2), walls.end());
+		const float inner = walls[walls.size() / 2];
+		// The wall's outer face: looking back in from outside.
+		std::vector<float> outers;
+		for (const auto &[along, z] : closed) {
+			const float x = axis == 0 ? at + sign * (inner + 0.8F) : along;
+			const float y = axis == 0 ? along : at + sign * (inner + 0.8F);
+			float t;
+			if (RayHitsTriangles(near, { x, y, z }, { -out.x, -out.y, 0 }, 0.8F, t))
+				outers.push_back(inner + 0.8F - t);
+		}
+		float outer = inner + 0.3F;
+		if (!outers.empty()) {
+			std::nth_element(outers.begin(), outers.begin() + static_cast<ptrdiff_t>(outers.size() / 2), outers.end());
+			outer = std::max(outers[outers.size() / 2], inner + 0.05F);
+		}
+		const float plane = at + sign * (inner + outer) / 2.0F;
+		// Each opening: the open samples joined to each other.
+		std::vector<uint8_t> seen(open.size(), 0);
+		for (size_t start = 0; start < open.size(); start++) {
+			if (open[start] == 0 || seen[start] != 0)
+				continue;
+			std::vector<size_t> stack { start };
+			seen[start] = 1;
+			int i0 = na;
+			int i1 = -1;
+			int k0 = nz;
+			int k1 = -1;
+			int cells = 0;
+			while (!stack.empty()) {
+				const size_t n = stack.back();
+				stack.pop_back();
+				const int i = static_cast<int>(n % na);
+				const int k = static_cast<int>(n / na);
+				i0 = std::min(i0, i);
+				i1 = std::max(i1, i);
+				k0 = std::min(k0, k);
+				k1 = std::max(k1, k);
+				cells++;
+				for (const auto &[di, dk] : { std::pair { 1, 0 }, std::pair { -1, 0 }, std::pair { 0, 1 }, std::pair { 0, -1 } }) {
+					const int ni = i + di;
+					const int nk = k + dk;
+					if (ni < 0 || nk < 0 || ni >= na || nk >= nz)
+						continue;
+					const size_t m = static_cast<size_t>(nk) * na + ni;
+					if (open[m] != 0 && seen[m] == 0) {
+						seen[m] = 1;
+						stack.push_back(m);
+					}
+				}
+			}
+			WindowOpening window;
+			window.axis = axis;
+			window.plane = plane;
+			window.along0 = lo + static_cast<float>(i0) * Step;
+			window.along1 = lo + static_cast<float>(i1 + 1) * Step;
+			window.z0 = zLo + static_cast<float>(k0) * Step;
+			window.z1 = zLo + static_cast<float>(k1 + 1) * Step;
+			const float width = window.along1 - window.along0;
+			const float height = window.z1 - window.z0;
+			const bool door = window.z0 < room.z0 + 0.35F;
+			const bool square = static_cast<float>(cells) >= 0.6F * static_cast<float>((i1 - i0 + 1) * (k1 - k0 + 1));
+			if (door || width < 0.2F || height < 0.25F || width > 2.0F || height > 2.0F || !square)
+				continue;
+			// Each edge fitted to the hole's, finer than the samples (and past the room's ceiling, which can be lower
+			// than the top of a window under the eaves): out from just inside it while most rays across get through.
+			auto through = [&](float along, float z) {
+				const float x = axis == 0 ? at : along;
+				const float y = axis == 0 ? along : at;
+				float t;
+				return !RayHitsTriangles(near, { x - out.x * 0.02F, y - out.y * 0.02F, z }, out, Reach, t);
+			};
+			auto openRow = [&](bool alongEdge, float edge) {
+				int got = 0;
+				for (int k = 1; k <= 5; k++) {
+					const float f = 0.25F + 0.5F * static_cast<float>(k) / 6.0F;
+					got += alongEdge ? through(edge, window.z0 + (window.z1 - window.z0) * f) : through(window.along0 + (window.along1 - window.along0) * f, edge);
+				}
+				return got >= 3;
+			};
+			constexpr float Fine = 0.01F;
+			auto fit = [&](bool alongEdge, float &edge, float dir) {
+				float last = edge - dir * Step;
+				for (float e = last + dir * Fine; std::abs(e - edge) <= FitReach; e += dir * Fine) {
+					if (!openRow(alongEdge, e))
+						break;
+					last = e;
+				}
+				edge = last + dir * (Fine / 2.0F + 0.01F); // a little into the wall, so no crack shows round the frame
+			};
+			fit(false, window.z1, 1.0F);
+			fit(false, window.z0, -1.0F);
+			fit(true, window.along1, 1.0F);
+			fit(true, window.along0, -1.0F);
+			windows.push_back(window);
+		}
+	}
+	return windows;
+}
+
+/** Window frames: the border's width, the cross's, and how deep they are (tiles). */
+constexpr float FrameBorder = 0.05F;
+constexpr float FrameCross = 0.035F;
+constexpr float FrameDepth = 0.06F;
+
+/**
+ * @brief Glazes a window: a pane of glass in the middle of the wall (MeshPane: glowing with its building's light,
+ * WorldTriangle::arch the lit landmark) in a wooden frame of four lights, a border and a cross (MeshFrame), unless it
+ * has its own (a door's grille).
+ */
+void AddWindowPane(Building &b, const WindowOpening &w, int lit, bool frame = true)
+{
+	auto at = [&](float along, float across, float z) {
+		return w.axis == 0 ? V3 { w.plane + across, along, z } : V3 { along, w.plane + across, z };
+	};
+	const V3 facing = w.axis == 0 ? V3 { 1, 0, 0 } : V3 { 0, 1, 0 };
+	const Vec2 middle = w.axis == 0 ? Vec2 { w.plane, (w.along0 + w.along1) / 2.0F } : Vec2 { (w.along0 + w.along1) / 2.0F, w.plane };
+	// The glass, both sides.
+	const size_t glass = b.mesh.size();
+	AddStructureFace(b, { at(w.along0, 0, w.z0), at(w.along1, 0, w.z0), at(w.along1, 0, w.z1), at(w.along0, 0, w.z1) }, facing, middle, MeshPane, 0);
+	for (size_t i = glass; i < b.mesh.size(); i++) {
+		WorldTriangle &tri = b.mesh[i];
+		tri.cull = false;
+		tri.arch = static_cast<int16_t>(lit);
+		tri.mirrorX = middle.x; // the pane's middle and half its size, for its glow (brightest in the middle)
+		tri.mirrorY = middle.y;
+		tri.downX = (w.z0 + w.z1) / 2.0F;
+		tri.slopeScale = (w.along1 - w.along0) / 2.0F;
+		tri.downY = (w.z1 - w.z0) / 2.0F;
+	}
+	if (!frame)
+		return;
+	// The frame: boxes standing out of the glass on both sides.
+	auto bar = [&](float a0, float a1, float z0, float z1) {
+		const float d = FrameDepth / 2.0F;
+		const V3 p000 = at(a0, -d, z0), p100 = at(a1, -d, z0), p110 = at(a1, d, z0), p010 = at(a0, d, z0);
+		const V3 p001 = at(a0, -d, z1), p101 = at(a1, -d, z1), p111 = at(a1, d, z1), p011 = at(a0, d, z1);
+		const V3 alongDir = w.axis == 0 ? V3 { 0, 1, 0 } : V3 { 1, 0, 0 };
+		AddStructureFace(b, { p010, p110, p111, p011 }, facing, middle, MeshFrame, 0);
+		AddStructureFace(b, { p000, p100, p101, p001 }, { -facing.x, -facing.y, 0 }, middle, MeshFrame, 0);
+		AddStructureFace(b, { p001, p101, p111, p011 }, { 0, 0, 1 }, middle, MeshFrame, 0);
+		AddStructureFace(b, { p000, p100, p110, p010 }, { 0, 0, -1 }, middle, MeshFrame, 0);
+		AddStructureFace(b, { p100, p110, p111, p101 }, alongDir, middle, MeshFrame, 0);
+		AddStructureFace(b, { p000, p010, p011, p001 }, { -alongDir.x, -alongDir.y, 0 }, middle, MeshFrame, 0);
+	};
+	const float am = (w.along0 + w.along1) / 2.0F;
+	const float zm = (w.z0 + w.z1) / 2.0F;
+	bar(w.along0, w.along0 + FrameBorder, w.z0, w.z1);
+	bar(w.along1 - FrameBorder, w.along1, w.z0, w.z1);
+	bar(w.along0, w.along1, w.z0, w.z0 + FrameBorder);
+	bar(w.along0, w.along1, w.z1 - FrameBorder, w.z1);
+	bar(am - FrameCross / 2.0F, am + FrameCross / 2.0F, w.z0, w.z1);
+	bar(w.along0, w.along1, zm - FrameCross / 2.0F, zm + FrameCross / 2.0F);
+}
+
+/**
+ * @brief The faces of the wall beyond one side of a room (0 -x, 1 +x, 2 -y, 3 +y): how far out from the side its inner
+ * and its outer face are (the middle of a few rays, so an opening does not count). False if there is no wall.
+ */
+bool WallFaces(const Building &b, const LitRoom &room, int side, float &inner, float &outer)
+{
+	const int axis = side / 2;
+	const float sign = side % 2 == 0 ? -1.0F : 1.0F;
+	const V3 out = axis == 0 ? V3 { sign, 0, 0 } : V3 { 0, sign, 0 };
+	const float at = axis == 0 ? (sign < 0 ? room.x0 : room.x1) : (sign < 0 ? room.y0 : room.y1);
+	const float lo = axis == 0 ? room.y0 : room.x0;
+	const float hi = axis == 0 ? room.y1 : room.x1;
+	std::vector<float> inners;
+	std::vector<float> outers;
+	for (int k = 1; k <= 7; k++) {
+		const float along = lo + (hi - lo) * static_cast<float>(k) / 8.0F;
+		const float x = axis == 0 ? at : along;
+		const float y = axis == 0 ? along : at;
+		const float z = room.z0 + std::min(0.9F, (RoomCeiling(room, x, y) - room.z0) * 0.5F); // under low eaves too
+		float t;
+		if (!SegmentHitsBuilding(b, { x - out.x * 0.02F, y - out.y * 0.02F, z }, out, 1.0F, t))
+			continue;
+		inners.push_back(t - 0.02F);
+		const V3 back { x + out.x * (t + 0.8F), y + out.y * (t + 0.8F), z };
+		float u;
+		if (SegmentHitsBuilding(b, back, { -out.x, -out.y, 0 }, 0.8F, u))
+			outers.push_back(t + 0.8F - u);
+	}
+	if (inners.size() < 3)
+		return false;
+	std::nth_element(inners.begin(), inners.begin() + static_cast<ptrdiff_t>(inners.size() / 2), inners.end());
+	inner = inners[inners.size() / 2];
+	outer = inner + 0.25F;
+	if (!outers.empty()) {
+		std::nth_element(outers.begin(), outers.begin() + static_cast<ptrdiff_t>(outers.size() / 2), outers.end());
+		outer = std::max(outers[outers.size() / 2], inner + 0.05F);
+	}
+	return true;
+}
+
+/** Windows set into houses whose models have none: their size, and their sill above the room's floor (tiles). */
+constexpr float SetWindowWidth = 0.5F;
+constexpr float SetWindowHeight = 0.62F;
+constexpr float SetWindowSill = 0.75F;
+
+/**
+ * @brief Windows for a house whose model has none in its walls (some of the plaza cottages): one in each wall of a
+ * room (two in a long one), clear of its doors, glazed on the wall's outer face, with a light just outside each
+ * shining out.
+ */
+void AddSetWindows(Building &b, int lit, const LitRoom &room, std::vector<WindowOpening> &glazed)
+{
+	int added = 0;
+	for (int side = 0; side < 4; side++) {
+		const int axis = side / 2;
+		const float sign = side % 2 == 0 ? -1.0F : 1.0F;
+		const V3 out = axis == 0 ? V3 { sign, 0, 0 } : V3 { 0, sign, 0 };
+		const float at = axis == 0 ? (sign < 0 ? room.x0 : room.x1) : (sign < 0 ? room.y0 : room.y1);
+		const float lo = axis == 0 ? room.y0 : room.x0;
+		const float hi = axis == 0 ? room.y1 : room.x1;
+		const float length = hi - lo;
+		const int count = length >= 5.0F ? 2 : (length >= 1.2F ? 1 : 0);
+		float inner;
+		float outer;
+		if (count == 0 || !WallFaces(b, room, side, inner, outer))
+			continue;
+		const float plane = at + sign * outer;
+		for (int k = 0; k < count; k++) {
+			const float middle = lo + length * (static_cast<float>(k) + 0.5F) / static_cast<float>(count);
+			WindowOpening w { axis, plane, middle - SetWindowWidth / 2.0F, middle + SetWindowWidth / 2.0F, room.z0 + SetWindowSill, room.z0 + SetWindowSill + SetWindowHeight };
+			// Under the ceiling there: under low eaves smaller and lower, between the floor and the eaves.
+			const float x = axis == 0 ? at : middle;
+			const float y = axis == 0 ? middle : at;
+			const float ceiling = RoomCeiling(room, x, y);
+			if (w.z1 > ceiling - 0.12F) {
+				const float room0 = room.z0 + 0.12F;
+				const float space = ceiling - 0.12F - room0;
+				if (space < 0.32F)
+					continue;
+				const float height = std::min(SetWindowHeight, space * 0.8F);
+				w.z0 = room0 + (space - height) * 0.6F;
+				w.z1 = w.z0 + height;
+				const float width = std::min(SetWindowWidth, height * 0.85F);
+				w.along0 = middle - width / 2.0F;
+				w.along1 = middle + width / 2.0F;
+			}
+			bool clear = true;
+			for (const std::array<float, 6> &door : b.doors) {
+				const float doorPlane = axis == 0 ? (door[0] + door[1]) / 2.0F : (door[2] + door[3]) / 2.0F;
+				const float d0 = axis == 0 ? door[2] : door[0];
+				const float d1 = axis == 0 ? door[3] : door[1];
+				const bool sameWall = std::abs(doorPlane - plane) < 0.5F && (axis == 0 ? door[1] - door[0] : door[3] - door[2]) < 0.4F;
+				clear = clear && !(sameWall && d0 < w.along1 + 0.3F && w.along0 - 0.3F < d1);
+			}
+			for (const WindowOpening &o : glazed)
+				clear = clear && !(o.axis == axis && std::abs(o.plane - plane) < 0.5F && o.along0 < w.along1 + 0.3F && w.along0 - 0.3F < o.along1);
+			// The wall whole there (no opening already).
+			float t;
+			clear = clear && SegmentHitsBuilding(b, { x - out.x * 0.02F, y - out.y * 0.02F, (w.z0 + w.z1) / 2.0F }, out, 1.0F, t) && std::abs(t - 0.02F - inner) < 0.15F;
+			if (!clear)
+				continue;
+			glazed.push_back(w);
+			w.plane += sign * 0.02F; // on the wall's face
+			AddWindowPane(b, w, lit);
+			const float area = (w.along1 - w.along0) * (w.z1 - w.z0);
+			const V3 lamp = axis == 0 ? V3 { w.plane + sign * 0.15F, middle, (w.z0 + w.z1) / 2.0F } : V3 { middle, w.plane + sign * 0.15F, (w.z0 + w.z1) / 2.0F };
+			Lamps.push_back({ lamp, 1.6F * area * LitLandmarks[lit].strength, lit, -1, out, 1.0F, 3.5F });
+			added++;
+		}
+	}
+	LogInfo("fp: {}: {} windows set in a room's walls", LitLandmarks[lit].name, added);
+}
+
+/** @brief Glazes the windows of a lit landmark's rooms (each window once, where two rooms share a wall). */
+std::vector<WindowOpening> GlazeWindows(Building &b, int lit, size_t firstRoom)
+{
+	std::vector<WindowOpening> done;
+	for (size_t r = firstRoom; r < LitRooms.size(); r++) {
+		for (const WindowOpening &w : FindWindows(b, LitRooms[r])) {
+			bool same = false;
+			for (const WindowOpening &o : done)
+				same = same || (o.axis == w.axis && std::abs(o.plane - w.plane) < 0.3F && o.along0 < w.along1 && w.along0 < o.along1 && o.z0 < w.z1 && w.z0 < o.z1);
+			if (same)
+				continue;
+			done.push_back(w);
+			AddWindowPane(b, w, lit);
+		}
+	}
+	LogInfo("fp: {}: {} windows glazed", LitLandmarks[lit].name, done.size());
+	return done;
+}
+
+/**
+ * @brief Glazes the little windows in a lit house's closed doors (a grille of four lights): a pane of its light just
+ * behind the leaf, over the holes in it, so the house's emptied inside does not show through them.
+ */
+void GlazeDoors(Building &b, int lit, const LitRoom &room)
+{
+	constexpr float Step = 0.02F;
+	int glazed = 0;
+	for (const std::array<float, 6> &door : b.doors) {
+		const int axis = door[1] - door[0] < door[3] - door[2] ? 0 : 1; // across the leaf: 0 x, 1 y
+		const float thin0 = axis == 0 ? door[0] : door[2];
+		const float thin1 = axis == 0 ? door[1] : door[3];
+		const float lo = axis == 0 ? door[2] : door[0];
+		const float hi = axis == 0 ? door[3] : door[1];
+		if (thin1 - thin0 > 0.3F || hi - lo < 0.4F || door[4] > 0.4F)
+			continue; // not a leaf standing on the ground
+		const float plane = (thin0 + thin1) / 2.0F;
+		const V3 across = axis == 0 ? V3 { 1, 0, 0 } : V3 { 0, 1, 0 };
+		auto from = [&](float along, float z, float back) {
+			return axis == 0 ? V3 { plane - back, along, z } : V3 { along, plane - back, z };
+		};
+		// Closed: in its wall, with the wall on both sides of it (an open leaf stands out of its wall).
+		const float zWall = door[4] + (door[5] - door[4]) * 0.4F;
+		float t;
+		if (!SegmentHitsBuilding(b, from(lo - 0.15F, zWall, 0.5F), across, 1.0F, t) || !SegmentHitsBuilding(b, from(hi + 0.15F, zWall, 0.5F), across, 1.0F, t))
+			continue;
+		// The leaf: the surfaces in the door's bounds; the holes, where rays across get through it with the leaf all
+		// round (not round its edge, an arch's corners).
+		std::vector<const WorldTriangle *> leaf;
+		for (const WorldTriangle &tri : b.mesh) {
+			if (tri.mapping == MeshInterior || tri.mapping == MeshPane || tri.mapping == MeshFrame)
+				continue;
+			bool in = true;
+			for (const V3 &p : tri.p)
+				in = in && p.x >= door[0] - 0.02F && p.x <= door[1] + 0.02F && p.y >= door[2] - 0.02F && p.y <= door[3] + 0.02F && p.z >= door[4] - 0.02F && p.z <= door[5] + 0.02F;
+			if (in)
+				leaf.push_back(&tri);
+		}
+		const int na = static_cast<int>((hi - lo) / Step);
+		const int nz = static_cast<int>((door[5] - door[4]) / Step);
+		if (na < 3 || nz < 3)
+			continue;
+		std::vector<uint8_t> open(static_cast<size_t>(na) * nz, 0);
+		for (int k = 0; k < nz; k++)
+			for (int i = 0; i < na; i++)
+				open[static_cast<size_t>(k) * na + i] = RayHitsTriangles(leaf, from(lo + (static_cast<float>(i) + 0.5F) * Step, door[4] + (static_cast<float>(k) + 0.5F) * Step, 0.4F), across, 0.8F, t) ? 0 : 1;
+		// Round the edge: open from the bounds' border in.
+		std::vector<size_t> stack;
+		for (int k = 0; k < nz; k++)
+			for (int i = 0; i < na; i++)
+				if ((i == 0 || k == 0 || i == na - 1 || k == nz - 1) && open[static_cast<size_t>(k) * na + i] == 1) {
+					open[static_cast<size_t>(k) * na + i] = 2;
+					stack.push_back(static_cast<size_t>(k) * na + i);
+				}
+		while (!stack.empty()) {
+			const size_t n = stack.back();
+			stack.pop_back();
+			const int i = static_cast<int>(n % na);
+			const int k = static_cast<int>(n / na);
+			for (const auto &[di, dk] : { std::pair { 1, 0 }, std::pair { -1, 0 }, std::pair { 0, 1 }, std::pair { 0, -1 } }) {
+				const int ni = i + di;
+				const int nk = k + dk;
+				if (ni < 0 || nk < 0 || ni >= na || nk >= nz || open[static_cast<size_t>(nk) * na + ni] != 1)
+					continue;
+				open[static_cast<size_t>(nk) * na + ni] = 2;
+				stack.push_back(static_cast<size_t>(nk) * na + ni);
+			}
+		}
+		int i0 = na;
+		int i1 = -1;
+		int k0 = nz;
+		int k1 = -1;
+		int holes = 0;
+		for (int k = 0; k < nz; k++)
+			for (int i = 0; i < na; i++)
+				if (open[static_cast<size_t>(k) * na + i] == 1) {
+					i0 = std::min(i0, i);
+					i1 = std::max(i1, i);
+					k0 = std::min(k0, k);
+					k1 = std::max(k1, k);
+					holes++;
+				}
+		if (holes < 4)
+			continue;
+		// Behind the leaf, on the house's side.
+		const float inside = axis == 0 ? (room.x0 + room.x1) / 2.0F : (room.y0 + room.y1) / 2.0F;
+		const float sign = inside > plane ? 1.0F : -1.0F;
+		const WindowOpening w { axis, (sign > 0 ? thin1 : thin0) + sign * 0.01F, lo + static_cast<float>(i0 - 1) * Step, lo + static_cast<float>(i1 + 2) * Step,
+			door[4] + static_cast<float>(k0 - 1) * Step, door[4] + static_cast<float>(k1 + 2) * Step };
+		AddWindowPane(b, w, lit, false);
+		glazed++;
+	}
+	LogInfo("fp: {}: {} door windows glazed", LitLandmarks[lit].name, glazed);
+}
+
+/** The lamps behind the church's cross windows: how bright, how far their light carries, and how far behind. */
+constexpr float CrossLampStrength = 0.6F;
+constexpr float CrossLampHalf = 1.1F;
+constexpr float CrossLampReach = 3.0F;
+constexpr float CrossLampBehind = 0.06F;
+
+/**
+ * @brief A red lamp just behind each of the church's cross windows (the sides of its windows, WorldTriangle::rim,
+ * grouped), a little above its middle, shining out through it: it lights the window's sides and the ground before it.
+ */
+void AddCrossLamps(const Building &b, int lit)
+{
+	std::vector<std::array<float, 6>> crosses; // x0, x1, y0, y1, z0, z1
+	for (const WorldTriangle &tri : b.mesh) {
+		if (!tri.rim)
+			continue;
+		std::array<float, 6> box { std::numeric_limits<float>::max(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::max(), std::numeric_limits<float>::lowest(),
+			std::numeric_limits<float>::max(), std::numeric_limits<float>::lowest() };
+		for (const V3 &p : tri.p)
+			box = { std::min(box[0], p.x), std::max(box[1], p.x), std::min(box[2], p.y), std::max(box[3], p.y), std::min(box[4], p.z), std::max(box[5], p.z) };
+		bool joined = false;
+		for (std::array<float, 6> &cross : crosses) {
+			if (box[0] <= cross[1] + 0.3F && cross[0] <= box[1] + 0.3F && box[2] <= cross[3] + 0.3F && cross[2] <= box[3] + 0.3F && box[4] <= cross[5] + 0.3F && cross[4] <= box[5] + 0.3F) {
+				cross = { std::min(cross[0], box[0]), std::max(cross[1], box[1]), std::min(cross[2], box[2]), std::max(cross[3], box[3]), std::min(cross[4], box[4]), std::max(cross[5], box[5]) };
+				joined = true;
+				break;
+			}
+		}
+		if (!joined)
+			crosses.push_back(box);
+	}
+	// Groups a side bridged after they were started are one window.
+	for (bool merged = true; merged;) {
+		merged = false;
+		for (size_t i = 0; i < crosses.size() && !merged; i++)
+			for (size_t j = i + 1; j < crosses.size() && !merged; j++) {
+				std::array<float, 6> &a = crosses[i];
+				const std::array<float, 6> &c = crosses[j];
+				if (c[0] <= a[1] + 0.3F && a[0] <= c[1] + 0.3F && c[2] <= a[3] + 0.3F && a[2] <= c[3] + 0.3F && c[4] <= a[5] + 0.3F && a[4] <= c[5] + 0.3F) {
+					a = { std::min(a[0], c[0]), std::max(a[1], c[1]), std::min(a[2], c[2]), std::max(a[3], c[3]), std::min(a[4], c[4]), std::max(a[5], c[5]) };
+					crosses.erase(crosses.begin() + static_cast<ptrdiff_t>(j));
+					merged = true;
+				}
+			}
+	}
+	if (crosses.empty())
+		return;
+	// The nave's middle, between its two walls of windows.
+	float midX = 0;
+	float midY = 0;
+	for (const std::array<float, 6> &c : crosses) {
+		midX += (c[0] + c[1]) / 2.0F;
+		midY += (c[2] + c[3]) / 2.0F;
+	}
+	midX /= static_cast<float>(crosses.size());
+	midY /= static_cast<float>(crosses.size());
+	for (const std::array<float, 6> &c : crosses) {
+		const V3 middle { (c[0] + c[1]) / 2.0F, (c[2] + c[3]) / 2.0F, (c[4] + c[5]) / 2.0F };
+		// Across its wall: the way the window is thinnest.
+		const bool acrossX = c[1] - c[0] < c[3] - c[2];
+		const float thickness = acrossX ? c[1] - c[0] : c[3] - c[2];
+		const float in = acrossX ? (midX > middle.x ? 1.0F : -1.0F) : (midY > middle.y ? 1.0F : -1.0F);
+		const float back = thickness / 2.0F + CrossLampBehind;
+		const V3 at { middle.x + (acrossX ? in * back : 0.0F), middle.y + (acrossX ? 0.0F : in * back), middle.z + 0.2F * (c[5] - c[4]) };
+		const V3 out { acrossX ? -in : 0.0F, acrossX ? 0.0F : -in, 0.0F };
+		const Lamp lamp { at, CrossLampStrength * LitLandmarks[lit].strength, lit, -1, out, CrossLampHalf, CrossLampReach };
+		Lamps.push_back(lamp);
+		CrossLamps.push_back(lamp);
+	}
+	LogInfo("fp: {}: {} lamps behind its cross windows", LitLandmarks[lit].name, crosses.size());
+}
+
+/** @brief The light of the lamps behind the church's cross windows on a side of a window, facing `normal` (0..). */
+float CrossLight(V3 p, V3 normal)
+{
+	const float length = std::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
+	if (length > 0)
+		normal = { normal.x / length, normal.y / length, normal.z / length };
+	float light = 0.04F;
+	for (const Lamp &lamp : CrossLamps) {
+		const V3 d { lamp.position.x - p.x, lamp.position.y - p.y, lamp.position.z - p.z };
+		const float d2 = d.x * d.x + d.y * d.y + d.z * d.z;
+		if (d2 > lamp.reach * lamp.reach)
+			continue;
+		const float distance = std::sqrt(d2) + 1e-4F;
+		// Mostly from the lamp (the sides turned to it brightest), a little bounced round the window. Every side faces
+		// into the opening, where the lamp is (whichever way the model wound it).
+		const float facing = std::abs(d.x * normal.x + d.y * normal.y + d.z * normal.z) / distance;
+		light += 2.2F * lamp.strength * (0.2F + 0.8F * facing) / (1.0F + d2 / (lamp.half * lamp.half * 0.25F));
+	}
+	return light * (1.0F + LampFlicker * FlickerNow[2]);
+}
+
+/**
+ * @brief A room fitted to a house from the inside: from a point under its roof, out to its walls each way (the
+ * middle of rays at a few heights, so windows do not count), up to under its roof; split at an upper floor if it has
+ * one. For the houses without hand-measured rooms.
+ */
+void AddAutoRoom(Building &b, int lit, const LandmarkPlacement &place)
+{
+	Vec2 middle { (place.x0 + place.x1) / 2.0F, (place.y0 + place.y1) / 2.0F };
+	if (RoofHeightAt(b, middle.x, middle.y) <= 0) {
+		float best = std::numeric_limits<float>::max();
+		for (float y = place.y0; y <= place.y1; y += 0.25F)
+			for (float x = place.x0; x <= place.x1; x += 0.25F)
+				if (RoofHeightAt(b, x, y) > 1.0F && std::hypot(x - middle.x, y - middle.y) < best) {
+					best = std::hypot(x - middle.x, y - middle.y);
+					middle = { x, y };
+				}
+	}
+	std::array<float, 4> wall {};
+	for (int side = 0; side < 4; side++) {
+		const int axis = side / 2;
+		const float sign = side % 2 == 0 ? -1.0F : 1.0F;
+		const V3 d = axis == 0 ? V3 { sign, 0, 0 } : V3 { 0, sign, 0 };
+		std::vector<float> hits;
+		for (const float z : { 0.5F, 0.9F, 1.3F })
+			for (const float off : { -0.5F, -0.25F, 0.0F, 0.25F, 0.5F }) {
+				const V3 o = axis == 0 ? V3 { middle.x, middle.y + off, z } : V3 { middle.x + off, middle.y, z };
+				float t;
+				if (SegmentHitsBuilding(b, o, d, 8.0F, t))
+					hits.push_back(t);
+			}
+		if (hits.empty())
+			return;
+		std::nth_element(hits.begin(), hits.begin() + static_cast<ptrdiff_t>(hits.size() / 2), hits.end());
+		wall[side] = hits[hits.size() / 2];
+	}
+	LitRoom room;
+	room.lit = lit;
+	room.x0 = middle.x - wall[0] + 0.03F;
+	room.x1 = middle.x + wall[1] - 0.03F;
+	room.y0 = middle.y - wall[2] + 0.03F;
+	room.y1 = middle.y + wall[3] - 0.03F;
+	room.z0 = 0.05F;
+	room.top = 6.0F;
+	FitRoom(b, room);
+	std::vector<LitRoom> storeys;
+	float floorBottom;
+	float floorTop;
+	if (FindStoreyFloor(b, room, floorBottom, floorTop)) {
+		LitRoom upper = room;
+		upper.z0 = floorTop + 0.02F;
+		upper.top = 6.0F;
+		FitRoom(b, upper);
+		room.top = floorBottom - 0.03F;
+		FitRoom(b, room);
+		storeys.push_back(std::move(room));
+		storeys.push_back(std::move(upper));
+	} else {
+		storeys.push_back(std::move(room));
+	}
+	for (LitRoom &storey : storeys) {
+		LogInfo("fp: {}: room {:.2f}..{:.2f} x {:.2f}..{:.2f}, z {:.2f}..{:.2f}", place.name, storey.x0, storey.x1, storey.y0, storey.y1, storey.z0, storey.top);
+		LitRooms.push_back(std::move(storey));
+		AddRoomLamps(static_cast<int>(LitRooms.size() - 1));
+	}
+}
+
+/** @brief A lit landmark's rooms (or the church's glass box), their insides and their lamps. */
+void AddLitRooms(Building &b, int lit, const LandmarkPlacement &place)
+{
+	auto height = [&](float z) {
+		return z <= place.eaveIn ? z * place.zScale : place.eaveIn * place.zScale + (z - place.eaveIn) * place.zScaleAbove;
+	};
+	const size_t firstRoom = LitRooms.size();
+	if (LitLandmarks[lit].glass) {
+		AddGlassRoom(b, lit, place);
+		AddCrossLamps(b, lit);
+	}
+	if (LitLandmarks[lit].autoRoom)
+		AddAutoRoom(b, lit, place);
+	for (int r = 0; r < LitLandmarks[lit].rooms; r++) {
+		const auto &box = LitLandmarks[lit].room[r];
+		auto at = [&](float u, float w) {
+			const float ww = place.flipW ? 1.0F - w : w;
+			return Vec2 { place.x0 + u * (place.x1 - place.x0), place.y0 + ww * (place.y1 - place.y0) };
+		};
+		const Vec2 a = at(box[0], box[2]);
+		const Vec2 c = at(box[1], box[3]);
+		LitRoom room;
+		room.lit = lit;
+		room.x0 = std::min(a.x, c.x);
+		room.x1 = std::max(a.x, c.x);
+		room.y0 = std::min(a.y, c.y);
+		room.y1 = std::max(a.y, c.y);
+		room.z0 = height(box[4]);
+		room.top = height(box[5]);
+		FitRoom(b, room);
+		// Two storeys: a room under the upper floor, and one over it up to the roof.
+		std::vector<LitRoom> storeys;
+		float floorBottom;
+		float floorTop;
+		if (FindStoreyFloor(b, room, floorBottom, floorTop)) {
+			LitRoom upper = room;
+			upper.z0 = floorTop + 0.02F;
+			upper.top = height(box[5]);
+			FitRoom(b, upper);
+			room.top = floorBottom - 0.03F;
+			FitRoom(b, room);
+			storeys.push_back(std::move(room));
+			storeys.push_back(std::move(upper));
+		} else {
+			storeys.push_back(std::move(room));
+		}
+		for (LitRoom &storey : storeys) {
+			LogInfo("fp: {}: room {:.2f}..{:.2f} x {:.2f}..{:.2f}, z {:.2f}..{:.2f}", place.name, storey.x0, storey.x1, storey.y0, storey.y1, storey.z0, storey.top);
+			LitRooms.push_back(std::move(storey));
+			AddRoomInside(b, static_cast<int>(LitRooms.size() - 1));
+			AddRoomLamps(static_cast<int>(LitRooms.size() - 1));
+		}
+	}
+	if (!LitLandmarks[lit].glass) {
+		// The windows the model has; a house whose model has none gets a few set into its ground floor's walls.
+		std::vector<WindowOpening> glazed = GlazeWindows(b, lit, firstRoom);
+		if (LitLandmarks[lit].autoRoom && glazed.empty())
+			for (size_t r = firstRoom; r < LitRooms.size(); r++)
+				if (LitRooms[r].z0 < 0.5F)
+					AddSetWindows(b, lit, LitRooms[r], glazed);
+		if (firstRoom < LitRooms.size())
+			GlazeDoors(b, lit, LitRooms[firstRoom]);
+	}
+}
+
+/** @brief The light of a lit room's lamps on a point of its inside, with its inward normal (0: none, ~1: bright). */
+float RoomLight(int room, V3 p, V3 normal)
+{
+	float light = 0.06F;
+	for (const Lamp &lamp : Lamps) {
+		if (lamp.room != room)
+			continue;
+		const V3 d { lamp.position.x - p.x, lamp.position.y - p.y, lamp.position.z - p.z };
+		const float d2 = d.x * d.x + d.y * d.y + d.z * d.z;
+		const float distance = std::sqrt(d2) + 1e-4F;
+		const float facing = std::max(0.0F, (d.x * normal.x + d.y * normal.y + d.z * normal.z) / distance);
+		// Straight from the lamp, and a little bounced off the room's other surfaces.
+		light += lamp.strength * (0.85F * facing + 0.15F) / (1.0F + d2 / (LampHalf * LampHalf * 0.5F));
+	}
+	// Dim: a few candles and a fire, not daylight.
+	return 0.75F * light * (1.0F + LampFlicker * FlickerNow[LitRooms[room].lit]);
+}
+
+/** @brief The light of a lit landmark's lamps at a point inside it (its model's own inside: the church's nave). */
+float LandmarkInsideLight(int lit, V3 p)
+{
+	float light = 0.05F;
+	for (const Lamp &lamp : Lamps) {
+		if (lamp.lit != lit)
+			continue;
+		const V3 d { lamp.position.x - p.x, lamp.position.y - p.y, lamp.position.z - p.z };
+		const float d2 = d.x * d.x + d.y * d.y + d.z * d.z;
+		light += 0.45F * lamp.strength / (1.0F + d2 / (LampHalf * LampHalf * 0.35F));
+	}
+	return light * (1.0F + LampFlicker * FlickerNow[lit]);
+}
+
+uint32_t PointHash(float x, float y, float z, float perUnit);
+
+constexpr int PaneLevels24 = 24;
+/** How bright the houses' window glass is, against their light's colour (dim, as candle light through old glass). */
+constexpr float PaneBrightness = 0.5F;
+
+/**
+ * @brief The palette colours of a lit landmark's window glass, PaneLevels24 strengths of its light: dark glass with
+ * a glow, its light's colour, and at the brightest a warm white, as the original art's lit windows.
+ */
+const std::array<uint8_t, PaneLevels24> &PaneRamp(int lit)
+{
+	static std::array<std::array<uint8_t, PaneLevels24>, LitLandmarks.size()> ramps {};
+	static uint32_t readyFor = 0;
+	if (readyFor != PaletteVersion()) {
+		readyFor = PaletteVersion();
+		for (size_t f = 0; f < LitLandmarks.size(); f++) {
+			const std::array<float, 3> &c = LitLandmarks[f].color;
+			for (int l = 0; l < PaneLevels24; l++) {
+				const float t = static_cast<float>(l) / static_cast<float>(PaneLevels24 - 1);
+				std::array<float, 3> rgb;
+				for (int k = 0; k < 3; k++) {
+					constexpr std::array<float, 3> Hot { 255.0F, 214.0F, 140.0F };
+					rgb[k] = t < 0.6F ? c[k] * (0.2F + 0.8F * t / 0.6F) : c[k] + (Hot[k] - c[k]) * (t - 0.6F) / 0.4F;
+				}
+				ramps[f][l] = NearestWarmColor(rgb[0] * PaneBrightness, rgb[1] * PaneBrightness, rgb[2] * PaneBrightness);
+			}
+		}
+	}
+	return ramps[std::clamp<size_t>(lit, 0, LitLandmarks.size() - 1)];
+}
+
+/** @brief The colour of window glass at a point: its house's light through it, brightest in the middle of each light. */
+int PaneColor(const WorldTriangle &tri, float wx, float wy, float wz)
+{
+	if (!WindowLightOn)
+		return NearestColor(22.0F, 24.0F, 34.0F); // dark glass
+	const bool alongY = std::abs(tri.normal.x) > std::abs(tri.normal.y);
+	const float u = ((alongY ? wy : wx) - (alongY ? tri.mirrorY : tri.mirrorX)) / std::max(tri.slopeScale, 0.01F);
+	const float v = (wz - tri.downX) / std::max(tri.downY, 0.01F);
+	// Each of the four lights: its own middle, and its own shade (old glass is uneven).
+	const float lu = std::abs(u) * 2.0F - 1.0F;
+	const float lv = std::abs(v) * 2.0F - 1.0F;
+	const uint32_t quarter = PointHash(tri.mirrorX + (u < 0 ? 0.0F : 3.1F), tri.mirrorY + (v < 0 ? 0.0F : 5.3F), tri.downX, 13.0F);
+	const float own = (static_cast<float>(quarter & 0xFF) / 255.0F - 0.5F) * 0.14F;
+	const float glow = 0.9F - 0.18F * (lu * lu + lv * lv) - 0.12F * (u * u + v * v) + own + 0.08F * FlickerNow[tri.arch];
+	const float dither = static_cast<float>(PointHash(wx, wy, wz, 60.0F) & 0xFF) / 256.0F;
+	const int level = std::clamp(static_cast<int>(glow * static_cast<float>(PaneLevels24 - 1) + dither), 0, PaneLevels24 - 1);
+	return PaneRamp(tri.arch)[static_cast<size_t>(level)];
+}
+
+/** @brief Which of LitLandmarks a building is, or -1. */
+int LitIndexOf(const Building &b)
+{
+	if (b.landmark < 0)
+		return -1;
+	for (size_t i = 0; i < LitLandmarks.size(); i++)
+		if (std::string_view(Landmarks[b.landmark].name) == LitLandmarks[i].name)
+			return static_cast<int>(i);
+	return -1;
+}
+
+/** Surfaces inside a lit room: plank floor, timber ceiling, wood panelling low on the walls and plaster above. */
+enum InteriorMaterial : uint8_t {
+	InteriorFloor,
+	InteriorCeiling,
+	InteriorPanel,
+	InteriorPlaster,
+};
+constexpr int InteriorLevels = 32;
+
+/** @brief Palette colours of an inside material lit by the lamps, InteriorLevels strengths of their light. */
+const std::array<uint8_t, InteriorLevels> &InteriorRamp(int lit, InteriorMaterial material)
+{
+	static std::array<std::array<std::array<uint8_t, InteriorLevels>, 4>, LitLandmarks.size()> ramps {};
+	static uint32_t readyFor = 0;
+	if (readyFor != PaletteVersion()) {
+		readyFor = PaletteVersion();
+		constexpr std::array<std::array<float, 3>, 4> Albedo { { { 0.42F, 0.32F, 0.23F }, { 0.30F, 0.23F, 0.17F }, { 0.36F, 0.27F, 0.19F }, { 0.60F, 0.58F, 0.55F } } };
+		for (size_t f = 0; f < LitLandmarks.size(); f++)
+			for (size_t m = 0; m < Albedo.size(); m++)
+				for (int l = 0; l < InteriorLevels; l++) {
+					const float light = 1.6F * static_cast<float>(l) / static_cast<float>(InteriorLevels - 1);
+					const std::array<float, 3> &color = LitLandmarks[f].color;
+					ramps[f][m][l] = NearestColor(std::min(255.0F, Albedo[m][0] * color[0] * light), std::min(255.0F, Albedo[m][1] * color[1] * light), std::min(255.0F, Albedo[m][2] * color[2] * light));
+				}
+	}
+	return ramps[lit][material];
+}
+
+/** @brief A small hash of a point in space, for grain and dithering. */
+uint32_t PointHash(float x, float y, float z, float perUnit)
+{
+	uint32_t h = static_cast<uint32_t>(x * perUnit) * 73856093U ^ static_cast<uint32_t>(y * perUnit) * 19349663U ^ static_cast<uint32_t>(std::max(z, 0.0F) * perUnit) * 83492791U;
+	h ^= h >> 13;
+	h *= 0x5bd1e995U;
+	h ^= h >> 15;
+	return h;
+}
+
+/** @brief The colour of a lit room's inside at a point: its material, lit by its lamps. */
+int InteriorColor(const WorldTriangle &tri, float wx, float wy, float wz)
+{
+	const LitRoom &room = LitRooms[tri.arch];
+	float light = WindowLightOn ? RoomLight(tri.arch, { wx, wy, wz }, tri.normal) : 0.02F;
+	InteriorMaterial material;
+	if (tri.normal.z > 0.5F) {
+		// Planks along the room's length, each a little lighter or darker.
+		material = InteriorFloor;
+		const bool alongX = room.x1 - room.x0 >= room.y1 - room.y0;
+		const float across = alongX ? wy : wx;
+		const float along = alongX ? wx : wy;
+		const uint32_t plank = PointHash(across * 5.0F, std::floor(along * 0.8F + std::floor(across * 5.0F) * 0.37F), 0, 1.0F);
+		light *= 0.85F + 0.3F * static_cast<float>(plank & 0xFF) / 255.0F;
+		if (std::abs(across * 5.0F - std::round(across * 5.0F)) < 0.06F)
+			light *= 0.6F; // the gaps between the planks
+	} else if (tri.normal.z < -0.5F) {
+		// Beams across the ceiling.
+		material = InteriorCeiling;
+		const float along = room.x1 - room.x0 >= room.y1 - room.y0 ? wx : wy;
+		if (std::abs(along * 1.6F - std::round(along * 1.6F)) < 0.12F)
+			light *= 0.55F;
+	} else if (wz - room.z0 < 0.85F) {
+		material = InteriorPanel;
+		const float along = std::abs(tri.normal.x) > 0.5F ? wy : wx;
+		if (std::abs(along * 4.0F - std::round(along * 4.0F)) < 0.05F || std::abs(wz - room.z0 - 0.82F) < 0.03F)
+			light *= 0.6F;
+	} else {
+		material = InteriorPlaster;
+		light *= 0.92F + 0.08F * static_cast<float>(PointHash(wx, wy, wz, 9.0F) & 0xFF) / 255.0F;
+	}
+	const float dither = static_cast<float>(PointHash(wx, wy, wz, 40.0F) & 0xFF) / 256.0F;
+	const int level = std::clamp(static_cast<int>(light / 1.6F * static_cast<float>(InteriorLevels - 1) + dither), 0, InteriorLevels - 1);
+	return InteriorRamp(room.lit, material)[level];
+}
+
+/** @brief The flicker of each lit building now. */
+void UpdateWindowFlicker()
+{
+	const float t = static_cast<float>(SDL_GetTicks()) / 1000.0F;
+	for (size_t i = 0; i < LitLandmarks.size(); i++)
+		FlickerNow[i] = WindowFlicker(static_cast<int>(i), t);
+}
+
+void CullHiddenSurfaces(Building &b);
+
 /**
  * @brief Adds the hand-placed landmark buildings, replacing whatever the footprint detection made of their tiles.
  * Their art is stitched and fitted like any house, for cutting the wall and thatch patches.
@@ -1727,8 +3221,14 @@ void AddLandmarks()
 			continue;
 		}
 		std::erase_if(Buildings, [&](const Building &b) {
-			return b.x0 <= static_cast<float>(place.claimMax.x) && b.x1 > static_cast<float>(place.claimMin.x) && b.y0 <= static_cast<float>(place.claimMax.y)
+			const bool replaced = b.x0 <= static_cast<float>(place.claimMax.x) && b.x1 > static_cast<float>(place.claimMin.x) && b.y0 <= static_cast<float>(place.claimMax.y)
 			    && b.y1 > static_cast<float>(place.claimMin.y);
+			// The boulders a replaced house took for its art are props again (unless the landmark claims them).
+			if (replaced)
+				for (const Point t : b.claimed)
+					if (IsTownRockPiece(dPiece[t.x][t.y]))
+						BuildingTiles[static_cast<size_t>(t.y) * MAXDUNX + t.x] = 0;
+			return replaced;
 		});
 		Building b {};
 		b.x0 = static_cast<float>(place.claimMin.x);
@@ -1761,6 +3261,17 @@ void AddLandmarks()
 			MakeProjective(b, place.flipW);
 			BakeColors(b);
 			ClaimProjectiveTiles(b, nearbyArt);
+			for (size_t lit = 0; lit < LitLandmarks.size(); lit++) {
+				if (std::string_view(place.name) != LitLandmarks[lit].name)
+					continue;
+				if (LitLandmarks[lit].glass && !mesh->textures.empty())
+					GlassTexture = mesh->textures.back(); // the stained glass box behind the nave's windows comes last
+				AddLitRooms(b, static_cast<int>(lit), place);
+				AddInsideLamp(b, static_cast<int>(lit));
+			}
+			// Not the church: its stained glass shows through slits finer than the grid, and little else is hidden.
+			if (std::getenv("FP_KEEP_INSIDES") == nullptr && std::string_view(place.name) != "church") // debug: keep every surface
+				CullHiddenSurfaces(b);
 		} else {
 			for (const Point t : artTiles)
 				BuildingTiles[static_cast<size_t>(t.y) * MAXDUNX + t.x] = 1;
@@ -1920,10 +3431,228 @@ Candidate MakeCandidate(const std::vector<Point> &art, int artMinX, int artMaxX,
 }
 
 void BuildTownProps();
+void BuildLampGrids();
+
+/** @brief Whether a colour is one of the art's painted lamplight's: orange and yellow before the tavern, red (down to a dark red) before the church. */
+bool IsPaintedLightColor(SDL_Color c)
+{
+	const bool orange = c.r >= 60 && c.r * 10 >= c.b * 20 && c.g * 10 >= c.b * 12 && c.r >= c.g + 15;
+	const bool red = c.r >= 50 && c.r >= 2 * c.g && c.r >= 2 * c.b;
+	const bool yellow = c.r >= 70 && c.g >= 50 && 2 * c.b <= c.g && c.r >= c.b + 40;
+	return orange || red || yellow;
+}
+
+/** @brief The share of a floor's texels in the art's painted lamplight. */
+float PaintedLightShare(const std::vector<int16_t> &floor)
+{
+	int lit = 0;
+	int count = 0;
+	for (const int16_t texel : floor) {
+		if (texel <= 0)
+			continue;
+		count++;
+		if (IsPaintedLightColor(logical_palette[texel]))
+			lit++;
+	}
+	return count > 0 ? static_cast<float>(lit) / static_cast<float>(count) : 0.0F;
+}
+
+/** Per town tile: the piece whose floor is drawn there, or 0 for its own (FloorSourceMap). */
+std::vector<uint16_t> FloorSources;
+
+/**
+ * @brief Picks the floor each town tile shows where its own would be wrong in first person: the tiles a building's
+ * art is drawn on or its model stands on, the props' tiles (trees, rocks, walls: their art painted the foot of what
+ * stood there into the floor), and the footprints of houses the models do not cover (whose floor art is the foot of
+ * the house's walls), and the boulders' feet painted on the ground of the tiles they block. Each takes the floor of
+ * the nearest tile of plain open ground, so the ground runs on.
+ */
+void ChooseFloorSources()
+{
+	FloorSources.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY, 0);
+	auto index = [](int x, int y) { return static_cast<size_t>(y) * MAXDUNX + x; };
+	// How bright a floor is: the art paints the houses' shadows on the ground, which with no sun to cast them are
+	// only dark stains in first person.
+	auto luma = [](int16_t texel) {
+		const SDL_Color c = logical_palette[texel];
+		return 0.3F * c.r + 0.59F * c.g + 0.11F * c.b;
+	};
+	std::vector<float> levels;
+	for (int y = 0; y < MAXDUNY; y += 3)
+		for (int x = 0; x < MAXDUNX; x += 3)
+			if (!IsTileSolid({ x, y }) && BuildingTiles[index(x, y)] == 0 && !GetPieceTextures(dPiece[x][y]).hasTallArt)
+				for (const int16_t texel : GetPieceTextures(dPiece[x][y]).floor)
+					if (texel > 0)
+						levels.push_back(luma(texel));
+	std::nth_element(levels.begin(), levels.begin() + static_cast<ptrdiff_t>(levels.size() / 2), levels.end());
+	const float darkBelow = levels.empty() ? 0.0F : 0.55F * levels[levels.size() / 2];
+	// The share of a floor in shadow: its texels much darker than the ground's usual.
+	auto shaded = [&](const std::vector<int16_t> &floor) {
+		int dark = 0;
+		int count = 0;
+		for (const int16_t texel : floor) {
+			if (texel <= 0)
+				continue;
+			count++;
+			dark += luma(texel) < darkBelow ? 1 : 0;
+		}
+		return count > 0 ? static_cast<float>(dark) / static_cast<float>(count) : 0.0F;
+	};
+	constexpr float ShadowShare = 0.3F;
+	constexpr float NearBuildingShadowShare = 0.1F; // beside a house: the foot of its walls the art paints there too
+	auto open = [&](int x, int y) {
+		if (!InDungeonBounds({ x, y }) || IsTileSolid({ x, y }) || BuildingTiles[index(x, y)] != 0)
+			return false;
+		const PieceTextures &t = GetPieceTextures(dPiece[x][y]);
+		return !t.hasTallArt && !t.floor.empty() && PaintedLightShare(t.floor) < 0.02F && shaded(t.floor) < ShadowShare;
+	};
+	// Near a building (its art or its model's tiles): where a house's footprint can show past its model.
+	std::vector<uint8_t> nearBuilding(FloorSources.size(), 0);
+	for (int y = 0; y < MAXDUNY; y++)
+		for (int x = 0; x < MAXDUNX; x++) {
+			const uint8_t mark = BuildingTiles[index(x, y)];
+			if (mark != 1 && mark != 2)
+				continue;
+			for (int dy = -2; dy <= 2; dy++)
+				for (int dx = -2; dx <= 2; dx++)
+					if (InDungeonBounds({ x + dx, y + dy }))
+						nearBuilding[index(x + dx, y + dy)] = 1;
+		}
+	// The boulders' feet: solid tiles of floor art only, in small groups beside a boulder's tiles. The river's tiles
+	// are solid floor art too (some of its pieces the same), but run on in one long chain.
+	std::vector<uint8_t> stoneFeet(FloorSources.size(), 0);
+	{
+		auto flatSolid = [&](int x, int y) {
+			return InDungeonBounds({ x, y }) && BuildingTiles[index(x, y)] == 0 && IsTileSolid({ x, y }) && !GetPieceTextures(dPiece[x][y]).hasTallArt;
+		};
+		auto rock = [&](int x, int y) {
+			return InDungeonBounds({ x, y }) && (IsTownRockPiece(dPiece[x][y]) || (BuildingTiles[index(x, y)] == 3 && GetPieceTextures(dPiece[x][y]).hasTallArt && IsTileSolid({ x, y })));
+		};
+		constexpr size_t LongestFeet = 10;
+		std::vector<uint8_t> seen(FloorSources.size(), 0);
+		for (int y = 0; y < MAXDUNY; y++)
+			for (int x = 0; x < MAXDUNX; x++) {
+				if (seen[index(x, y)] != 0 || !flatSolid(x, y))
+					continue;
+				std::vector<Point> group;
+				std::vector<Point> stack { { x, y } };
+				seen[index(x, y)] = 1;
+				bool besideRock = false;
+				while (!stack.empty()) {
+					const Point p = stack.back();
+					stack.pop_back();
+					group.push_back(p);
+					for (int dy = -1; dy <= 1; dy++)
+						for (int dx = -1; dx <= 1; dx++) {
+							besideRock = besideRock || rock(p.x + dx, p.y + dy);
+							if ((dx == 0) == (dy == 0) || !flatSolid(p.x + dx, p.y + dy) || seen[index(p.x + dx, p.y + dy)] != 0)
+								continue;
+							seen[index(p.x + dx, p.y + dy)] = 1;
+							stack.push_back({ p.x + dx, p.y + dy });
+						}
+				}
+				if (besideRock && group.size() <= LongestFeet)
+					for (const Point p : group)
+						stoneFeet[index(p.x, p.y)] = 1;
+			}
+	}
+	int borrowed = 0;
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			const PieceTextures &t = GetPieceTextures(dPiece[x][y]);
+			const uint8_t mark = BuildingTiles[index(x, y)];
+			const bool footprint = nearBuilding[index(x, y)] != 0 && IsTileSolid({ x, y }) && !t.hasTallArt && !t.isFlatSolid;
+			const bool shadow = nearBuilding[index(x, y)] != 0 && !t.hasTallArt && !t.isFlatSolid && shaded(t.floor) >= NearBuildingShadowShare;
+			// A boulder's foot painted on the ground of a tile it blocks (now a mesh stands there).
+			const bool stoneFoot = stoneFeet[index(x, y)] != 0;
+			if (mark == 0 && !footprint && !shadow && !stoneFoot)
+				continue;
+			// The nearest open ground, ring by ring.
+			for (int r = 1; r <= 8 && FloorSources[index(x, y)] == 0; r++) {
+				for (int dy = -r; dy <= r && FloorSources[index(x, y)] == 0; dy++)
+					for (int dx = -r; dx <= r; dx++) {
+						if (std::max(std::abs(dx), std::abs(dy)) != r || !open(x + dx, y + dy))
+							continue;
+						FloorSources[index(x, y)] = dPiece[x + dx][y + dy];
+						borrowed++;
+						break;
+					}
+			}
+		}
+	}
+	LogInfo("fp: {} town tiles show the floor of the open ground near them", borrowed);
+}
+
+/**
+ * @brief Paints out what does not belong on the town's walkable floor: the feet of boulders the art paints into the
+ * floor diamonds of the tiles around them (blue stone, now meshes standing on the ground), and the art's painted
+ * lamplight and window light (red and orange; the lamps light the ground instead). Small specks stay: the ground's
+ * own leaves and stones are specks of these colours too. The river (solid, not a boulder's) keeps its blue.
+ */
+void CleanTownFloors()
+{
+	std::array<uint8_t, 256> kind {};
+	for (int i = 1; i < 256; i++) {
+		const SDL_Color c = logical_palette[i];
+		const bool stone = c.b >= c.r + 20 && c.b >= c.g + 15; // (the ground's own blue-grey specks are paler)
+		kind[static_cast<size_t>(i)] = stone ? 1 : (IsPaintedLightColor(c) ? 2 : 0);
+	}
+	constexpr std::array<int, 4> MinCluster { 0, 3, 5, 0 }; // texels: stone, painted light
+	CleanGroundFloor(kind, MinCluster); // first: the others' cleaned texels take its
+	std::vector<uint8_t> done(65536, 0);
+	int pieces = 0;
+	auto clean = [&](uint16_t piece) {
+		if (piece == 0 || done[piece] != 0)
+			return;
+		done[piece] = 1;
+		CleanTownFloor(piece, kind, MinCluster, GetGroundFloor());
+		pieces++;
+	};
+	for (int y = 0; y < MAXDUNY; y++)
+		for (int x = 0; x < MAXDUNX; x++) {
+			const uint8_t mark = BuildingTiles[static_cast<size_t>(y) * MAXDUNX + x];
+			if (!FloorSources.empty())
+				clean(FloorSources[static_cast<size_t>(y) * MAXDUNX + x]);
+			// Walkable ground, and the boulders' own tiles (their floor the boulder's foot); not the river's.
+			if ((mark == 0 || mark == 3) && (!IsTileSolid({ x, y }) || IsTownRockPiece(dPiece[x][y])))
+				clean(dPiece[x][y]);
+		}
+	LogInfo("fp: the floors of {} town pieces cleaned of stones and painted light", pieces);
+}
+
+/**
+ * @brief The ground the town's art paints lit, in front of the tavern's door and the church's, is plain ground: the lamps' light
+ * falls there instead, from the openings it really comes out of. A piece of ground is painted lit when a good share
+ * of its floor is the art's warm lamplight colours.
+ */
+void ClearPaintedLight()
+{
+	int cleared = 0;
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			uint8_t &mark = BuildingTiles[static_cast<size_t>(y) * MAXDUNX + x];
+			const PieceTextures &t = GetPieceTextures(dPiece[x][y]);
+			if (mark != 0 || t.hasTallArt || IsTileSolid({ x, y }))
+				continue;
+			if (PaintedLightShare(t.floor) >= 0.04F) {
+				mark = 2;
+				cleared++;
+			}
+		}
+	}
+	LogInfo("fp: {} tiles of painted lamplight on the ground made plain ground", cleared);
+}
 
 void BuildAll()
 {
+	LightBuilder.Join(); // it reads the buildings
+	LightReady = false;
 	Buildings.clear();
+	Lamps.clear();
+	CrossLamps.clear();
+	LitRooms.clear();
+	LightGrids.clear();
+	GlassTexture = -1;
 	BuildingTiles.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY, 0);
 	if (leveltype != DTYPE_TOWN)
 		return;
@@ -1998,6 +3727,7 @@ void BuildAll()
 				blockUsed[index(p.x, p.y)] = 1;
 			for (const Point t : chosen->artTiles)
 				BuildingTiles[index(t.x, t.y)] = 1;
+			chosen->building.claimed = chosen->artTiles;
 			ChooseModel(chosen->building);
 			Buildings.push_back(std::move(chosen->building));
 		}
@@ -2043,6 +3773,14 @@ void BuildAll()
 		BuildMesh(b);
 	}
 	BuildTownProps();
+	LightBuilder.thread = std::thread([] {
+		BuildLampGrids();
+		LightReady = true;
+	});
+	ClearPaintedLight();
+	ChooseFloorSources();
+	CleanTownFloors();
+
 }
 
 void EnsureBuilt()
@@ -2145,7 +3883,7 @@ void DrawHouseModel(const Surface &out, const Projection &proj, std::vector<floa
 		}
 		const Point tile { std::clamp(static_cast<int>(std::floor(wx)), static_cast<int>(b.x0), static_cast<int>(b.x1) - 1),
 			std::clamp(static_cast<int>(std::floor(wy)), static_cast<int>(b.y0), static_cast<int>(b.y1) - 1) };
-		const uint8_t shaded = LightTables[LightAt(tile)][color];
+		const uint8_t shaded = FpLightTable(LightAt(tile))[color];
 		for (int y = std::max(0, y0); y < std::min(proj.height, y0 + size); y++) {
 			for (int x = std::max(0, x0); x < std::min(proj.width, x0 + size); x++) {
 				float &stored = depthBuffer[static_cast<size_t>(y) * proj.width + x];
@@ -2465,13 +4203,50 @@ void DrawHouseMesh(const Surface &out, const Projection &proj, std::vector<float
 			sorted.push_back(i);
 		order = &sorted;
 	}
+	const int lit = LitIndexOf(b);
+	static uint32_t woodFor = 0;
+	static uint8_t wood = 0;
+	if (woodFor != PaletteVersion()) {
+		woodFor = PaletteVersion();
+		wood = NearestColor(64.0F, 44.0F, 30.0F); // window frames: dark oak
+	}
 	RasterizeTriangles(out, proj, depthBuffer, b.mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
+		if (tri.mapping == MeshInterior)
+			return InteriorColor(tri, wx, wy, wz);
+		if (tri.mapping == MeshPane)
+			return PaneColor(tri, wx, wy, wz);
+		if (tri.mapping == MeshFrame) {
+			const int tx = std::clamp(static_cast<int>(std::floor(wx)), lightMin.x, lightMax.x);
+			const int ty = std::clamp(static_cast<int>(std::floor(wy)), lightMin.y, lightMax.y);
+			return static_cast<int>(FpLightTable(light[static_cast<size_t>(ty - lightMin.y) * lightWidth + tx - lightMin.x])[ShadeColor(wood, tri.darkness)]);
+		}
 		const uint8_t color = MeshColor(b, tri, wx, wy, wz);
+		if (tri.inside && lit >= 0) {
+			// Its inside, seen through the open door: its own colours in the light of its lamps, not the night's.
+			const float light = WindowLightOn ? LandmarkInsideLight(lit, { wx, wy, wz }) : 0.03F;
+			const int level = std::clamp(static_cast<int>(std::lround((1.0F - std::min(light, 1.0F)) * static_cast<float>(LightsMax))), 0, static_cast<int>(LightsMax));
+			const bool textured = ModelTexturesOn && tri.texture >= 0 && tri.bakeN > 0;
+			const uint8_t base = FpLightTable(level)[ShadeColor(color, textured ? tri.textureDarkness : tri.darkness)];
+			return static_cast<int>(GlowColors(lit, std::clamp(static_cast<int>(light * 10.0F), 0, GlowLevels - 1))[base]);
+		}
+		if (tri.rim && WindowLightOn && lit >= 0) {
+			// A side of a cross window: its stone in the light of the lamp behind it.
+			const float light = CrossLight({ wx, wy, wz }, tri.normal);
+			const int level = std::clamp(static_cast<int>(std::lround((1.0F - std::min(light, 1.0F)) * static_cast<float>(LightsMax))), 0, static_cast<int>(LightsMax));
+			const bool textured = ModelTexturesOn && tri.texture >= 0 && tri.bakeN > 0;
+			const uint8_t base = FpLightTable(level)[ShadeColor(color, textured ? tri.textureDarkness : tri.darkness)];
+			return static_cast<int>(GlowColors(lit, std::clamp(static_cast<int>(light * 10.0F), 0, GlowLevels - 1))[base]);
+		}
+		if (tri.texture == GlassTexture && GlassTexture >= 0 && WindowLightOn && ModelTexturesOn) {
+			// The church's stained glass, lit from inside: its own colours, brighter, flickering with the church's light.
+			const uint32_t hash = static_cast<uint32_t>(wx * 97.0F) * 2654435761U ^ static_cast<uint32_t>(wz * 89.0F) * 40503U ^ static_cast<uint32_t>(wy * 101.0F);
+			return static_cast<int>(GlassGlow(FlickerStep(FlickerNow[2], PaneFlicker, hash >> 8))[color]);
+		}
 		const int tx = std::clamp(static_cast<int>(std::floor(wx)), lightMin.x, lightMax.x);
 		const int ty = std::clamp(static_cast<int>(std::floor(wy)), lightMin.y, lightMax.y);
 		const uint8_t level = light[static_cast<size_t>(ty - lightMin.y) * lightWidth + tx - lightMin.x];
 		const bool textured = ModelTexturesOn && tri.texture >= 0 && tri.bakeN > 0;
-		return static_cast<int>(LightTables[level][ShadeColor(color, textured ? tri.textureDarkness : tri.darkness)]);
+		return static_cast<int>(FpLightTable(level)[ShadeColor(color, textured ? tri.textureDarkness : tri.darkness)]);
 	}, 1.0F, order);
 }
 
@@ -2556,7 +4331,7 @@ void DrawBuilding(const Surface &out, const Projection &proj, const std::vector<
 			uint8_t light = LightAt(tile);
 			if ((color & UndersideFlag) != 0)
 				light = std::min<uint8_t>(light + UndersideDarkness, LightsMax);
-			*out.at(x, y) = LightTables[light][color & 0xFF];
+			*out.at(x, y) = FpLightTable(light)[color & 0xFF];
 			depthBuffer[index] = bestT;
 		}
 	}
@@ -4289,14 +6064,14 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 		if (tri.mapping == MeshSolid) {
 			const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
 			const uint8_t level = InDungeonBounds(lit) ? std::min<uint8_t>(LightAt(lit) + CeilingExtraDarkness, LightsMax) : LightsMax;
-			return static_cast<int>(LightTables[level][tri.fallback]);
+			return static_cast<int>(FpLightTable(level)[tri.fallback]);
 		}
 		if (KitReady && tri.texture >= 0) {
 			const int kitColor = KitMeshColor(tri, wx, wy, wz);
 			if (kitColor >= 0) {
 				const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
 				const uint8_t level = InDungeonBounds(lit) ? LightAt(lit) : LightsMax;
-				return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(static_cast<uint8_t>(kitColor), tri.darkness)]);
+				return static_cast<int>(FpLightTable(std::min<uint8_t>(level, LightsMax))[ShadeColor(static_cast<uint8_t>(kitColor), tri.darkness)]);
 			}
 		}
 		if (tri.mapping == MeshArch) {
@@ -4364,7 +6139,7 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 					if (InDungeonBounds(lit + d) && !IsTileSolid(lit + d))
 						level = std::min(level, LightAt(lit + d));
 			}
-			return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(PatchColor(texel), tri.darkness)]);
+			return static_cast<int>(FpLightTable(std::min<uint8_t>(level, LightsMax))[ShadeColor(PatchColor(texel), tri.darkness)]);
 		}
 		if (tri.mapping == MeshArcade) {
 			const float along = (wx - tri.mirrorX) * tri.downX + (wy - tri.mirrorY) * tri.downY;
@@ -4395,7 +6170,7 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 			}
 			const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
 			const uint8_t level = InDungeonBounds(lit) ? LightAt(lit) : LightsMax;
-			return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(PatchColor(texel), tri.darkness)]);
+			return static_cast<int>(FpLightTable(std::min<uint8_t>(level, LightsMax))[ShadeColor(PatchColor(texel), tri.darkness)]);
 		}
 		if (tri.mapping == MeshProjectiveCut) {
 			float x = wx;
@@ -4420,7 +6195,7 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 			}
 			const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
 			const uint8_t level = InDungeonBounds(lit) ? LightAt(lit) : LightsMax;
-			return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(PatchColor(art), tri.darkness)]);
+			return static_cast<int>(FpLightTable(std::min<uint8_t>(level, LightsMax))[ShadeColor(PatchColor(art), tri.darkness)]);
 		}
 		if (tri.mapping == MeshWallFace) {
 			const PieceTextures &textures = GetPieceTextures(dPiece[static_cast<int>(tri.mirrorX)][static_cast<int>(tri.mirrorY)]);
@@ -4437,7 +6212,7 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 				return -1;
 			const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
 			const uint8_t level = InDungeonBounds(lit) ? LightAt(lit) : LightsMax;
-			return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(PatchColor(texel), tri.darkness)]);
+			return static_cast<int>(FpLightTable(std::min<uint8_t>(level, LightsMax))[ShadeColor(PatchColor(texel), tri.darkness)]);
 		}
 		const uint8_t color = StructureColor(st, tri, wx, wy, wz);
 		uint8_t darkness = tri.darkness;
@@ -4445,7 +6220,7 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 			darkness = std::max<uint8_t>(darkness, static_cast<uint8_t>(std::min(1.0F + -wz * 3.5F, static_cast<float>(SurfaceShade.size() - 1))));
 		const Point tile { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
 		const uint8_t level = InDungeonBounds(tile) ? LightAt(tile) : LightsMax;
-		return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(color, darkness)]);
+		return static_cast<int>(FpLightTable(std::min<uint8_t>(level, LightsMax))[ShadeColor(color, darkness)]);
 	}, stretch);
 }
 
@@ -4526,7 +6301,7 @@ void DrawDoorLeaves(const Surface &out, const Projection &proj, std::vector<floa
 			}
 			const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
 			const uint8_t level = InDungeonBounds(lit) ? LightAt(lit) : LightsMax;
-			return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(static_cast<uint8_t>(color), darkness)]);
+			return static_cast<int>(FpLightTable(std::min<uint8_t>(level, LightsMax))[ShadeColor(static_cast<uint8_t>(color), darkness)]);
 		}, VerticalScale());
 	}
 }
@@ -4617,6 +6392,18 @@ ArtStats UprightStats(const PieceTextures &t)
 	return s;
 }
 
+/** @brief Whether a town piece is a boulder's (the known boulder pieces, or one its art shows is). */
+bool IsTownRockPiece(uint16_t piece)
+{
+	return (piece >= 220 && piece <= 232) || piece == 556 || piece == 558 || piece == 835 || piece == 836 || piece == 1166 || piece >= 1202;
+}
+
+/** @brief Whether a town piece is one of the trees' (its art is the tree alone, even beside a house). */
+bool IsTreePiece(uint16_t piece)
+{
+	return (piece >= 116 && piece <= 216) || (piece >= 357 && piece <= 363);
+}
+
 /**
  * @brief What a town piece's tall art shows. The pieces of Diablo's town are known (dev.fp.props lists those still
  * drawn as billboards, with their colours); any other piece is told by its art: autumn foliage is warm, stone
@@ -4629,16 +6416,16 @@ PropKind TownPieceKind(uint16_t piece)
 		return PropKind::None;
 	if (piece >= 104 && piece <= 114)
 		return PropKind::Grass;
-	if ((piece >= 116 && piece <= 216) || (piece >= 357 && piece <= 363))
+	if (IsTreePiece(piece))
 		return PropKind::Tree;
-	if ((piece >= 220 && piece <= 232) || piece == 556 || piece == 558 || piece == 835 || piece == 836 || piece == 1166 || piece >= 1202)
+	if (IsTownRockPiece(piece))
 		return PropKind::Rock;
 	if ((piece >= 837 && piece <= 847) || (piece >= 998 && piece <= 1029))
 		return PropKind::Leftover;
-	if (piece >= 957 && piece <= 1050)
+	if (piece >= 1049 && piece <= 1112)
+		return PropKind::Wall; // 1049 and 1050: a wall's crumbled end
+	if (piece >= 957 && piece <= 1048)
 		return PropKind::Slab;
-	if (piece >= 1051 && piece <= 1112)
-		return PropKind::Wall;
 	const ArtStats s = UprightStats(t);
 	if (s.opaque == 0)
 		return PropKind::None;
@@ -4650,30 +6437,18 @@ PropKind TownPieceKind(uint16_t piece)
 /** Screen pixels per tile of depth along the iso view (moving (1, 1) / sqrt 2 changes x + y by sqrt 2). */
 constexpr float IsoDepthPixels = 16.0F * 1.41421356F;
 
-/** @brief A prop mesh drawn as one piece: a tree, or the hulls of the props in a block of tiles. */
-/** @brief A tree's leaves: the colours of its art's foliage, dark to light, and how much of its canopy they fill. */
-struct Foliage {
-	std::vector<uint8_t> ramp;
-	float coverage = 0.5F; // share of the leaf cells that hold a leaf
-	float low = 0;         // the canopy's bottom and 1 / its height, for its light (the top catches more of it)
-	float perHeight = 1;
-	int seed = 0;
-};
-
+/** @brief A prop mesh drawn as one piece: the hulls of the props in a block of tiles. */
 struct TownProp {
-	Building art {};        // bounds and mesh; for trees also the canvas the art is projected from
+	Building art {}; // bounds and mesh; each triangle textured from its tile's column of art (WorldTriangle::artX, artY)
 	PropKind kind = PropKind::None;
-	bool ownCanvas = false; // trees: art.canvas; hulls: each triangle's tile column (WorldTriangle::artX, artY)
-	Vec2 middle { 0, 0 };   // for culling by distance
+	bool ownCanvas = false; // textured from art.canvas instead (rocks and gravestones: the art of their group of tiles)
+	Vec2 middle { 0, 0 }; // for culling by distance
 	float radius = 0;
-	std::vector<Foliage> foliage; // trees: per tree (MeshFoliage triangles' WorldTriangle::arch)
 	std::vector<WorldTriangle> farMesh; // fewer triangles, for far away (PropFarDistance)
 };
 
-/** Props farther than this (tiles) are drawn from their far mesh: coarser hulls, trees without their inner leaves. */
+/** Props farther than this (tiles) are drawn from their far mesh: coarser hulls. */
 constexpr float PropFarDistance = 11.0F;
-/** Far trees show only the near side of their canopy: more of its leaf cells filled, so they look as full. */
-constexpr float FarFoliageBoost = 1.6F;
 
 std::vector<TownProp> TownProps;
 
@@ -4854,7 +6629,7 @@ PropHull BuildPropHull(uint16_t piece, PropKind kind, int n)
 }
 
 /** @brief Stitches the upright art of some tiles in iso, nearer tiles over farther ones, as the game draws them. */
-void BuildUprightCanvas(Building &b, const std::vector<Point> &tiles)
+void BuildUprightCanvas(Building &b, const std::vector<Point> &tiles, bool withGround = false)
 {
 	BuildCanvas(b, tiles, {});
 	std::fill(b.canvas.begin(), b.canvas.end(), int16_t { -1 });
@@ -4862,12 +6637,13 @@ void BuildUprightCanvas(Building &b, const std::vector<Point> &tiles)
 	std::sort(sorted.begin(), sorted.end(), [](Point p, Point q) { return p.x + p.y != q.x + q.y ? p.x + p.y < q.x + q.y : p.x < q.x; });
 	for (const Point t : sorted) {
 		const PieceTextures &textures = GetPieceTextures(dPiece[t.x][t.y]);
-		const int rows = static_cast<int>(textures.upright.size() / ColumnWidth);
+		const std::vector<int16_t> &art = withGround ? textures.column : textures.upright;
+		const int rows = static_cast<int>(art.size() / ColumnWidth);
 		const int left = (t.x - t.y) * 32 - 32 - b.originX;
 		const int top = (t.x + t.y + 2) * 16 - (rows - 1) - b.originY;
 		for (int cy = 0; cy < rows; cy++) {
 			for (int cx = 0; cx < ColumnWidth; cx++) {
-				const int16_t pixel = textures.upright[static_cast<size_t>(cy) * ColumnWidth + cx];
+				const int16_t pixel = art[static_cast<size_t>(cy) * ColumnWidth + cx];
 				if (pixel <= 0)
 					continue;
 				const int x = left + cx;
@@ -4880,161 +6656,202 @@ void BuildUprightCanvas(Building &b, const std::vector<Point> &tiles)
 	b.fitCanvas.clear();
 }
 
-/** @brief A small hash in 0..1 of some integers, for the canopies' lumps. */
-float PropNoise(int a, int b, int c)
-{
-	uint32_t h = static_cast<uint32_t>(a) * 73856093U ^ static_cast<uint32_t>(b) * 19349663U ^ static_cast<uint32_t>(c) * 83492791U;
-	h ^= h >> 13;
-	h *= 0x5bd1e995U;
-	h ^= h >> 15;
-	return static_cast<float>(h & 0xFFFF) / 65535.0F;
-}
-
-constexpr float PropPi = 3.14159265F;
-/** Canopy tessellation: around and from top to bottom. */
-constexpr int CanopySlices = 9;
-constexpr int CanopyStacks = 6;
-constexpr int TrunkSides = 7;
-
-/** Lowest a canopy hangs (tiles): above the eye, so one walks under the trees instead of through their leaves. */
-constexpr float CanopyMinBottom = 1.75F;
-/** Size of a leaf cell (tiles): about an art pixel. */
-constexpr float LeafCell = 0.026F;
-
-/** @brief Perceived brightness of a palette colour. */
-float ColorLuma(uint8_t color)
-{
-	const SDL_Color c = logical_palette[color];
-	return 0.3F * c.r + 0.59F * c.g + 0.11F * c.b;
-}
-
 /**
- * @brief Adds a closed lumpy ellipsoid of leaves (both of its sides drawn, so the far side shows through the gaps).
- * @param seed varies the lumps from tree to tree
+ * @brief A town tree: its own art, cut out of the iso picture, drawn as one billboard turned to face the camera
+ * wherever it stands (as the cows are), on the foot of its trunk.
  */
-void AddCanopyBlob(Building &b, V3 middle, float radius, float half, int slices, int stacks, int seed, int16_t foliage, bool twoSided = true)
-{
-	auto point = [&](int slice, int stack) {
-		const float around = 2.0F * PropPi * static_cast<float>(slice % slices) / static_cast<float>(slices);
-		const float down = PropPi * static_cast<float>(stack) / static_cast<float>(stacks);
-		const bool pole = stack == 0 || stack == stacks;
-		const float lump = pole ? 1.0F : 0.82F + 0.36F * PropNoise(slice % slices, stack, seed);
-		const float lift = pole ? 1.0F : 0.88F + 0.24F * PropNoise(stack, slice % slices, seed + 7);
-		return V3 { middle.x + std::cos(around) * std::sin(down) * radius * lump, middle.y + std::sin(around) * std::sin(down) * radius * lump,
-			middle.z + std::cos(down) * half * lift };
-	};
-	const size_t first = b.mesh.size();
-	const Vec2 centre { middle.x, middle.y };
-	for (int stack = 0; stack < stacks; stack++) {
-		for (int slice = 0; slice < slices; slice++) {
-			const V3 a = point(slice, stack);
-			const V3 c = point(slice + 1, stack);
-			const V3 d = point(slice + 1, stack + 1);
-			const V3 e = point(slice, stack + 1);
-			const V3 out { (a.x + c.x + d.x + e.x) / 4.0F - middle.x, (a.y + c.y + d.y + e.y) / 4.0F - middle.y, (a.z + c.z + d.z + e.z) / 4.0F - middle.z };
-			if (stack == 0)
-				AddStructureFace(b, { a, d, e }, out, centre, MeshFoliage);
-			else if (stack == stacks - 1)
-				AddStructureFace(b, { a, c, d }, out, centre, MeshFoliage);
-			else
-				AddStructureFace(b, { a, c, d, e }, out, centre, MeshFoliage);
-		}
-	}
-	for (size_t i = first; i < b.mesh.size(); i++) {
-		b.mesh[i].cull = !twoSided;
-		b.mesh[i].arch = foliage;
-		// The leaves facing the sky are lighter (FoliageColor): their share, kept in a field leaves have no other use for.
-		b.mesh[i].slopeScale = 0.25F * std::clamp(0.5F + 0.5F * b.mesh[i].normal.z, 0.0F, 1.0F);
-	}
-}
+struct TreeSprite {
+	Vec2 foot;
+	std::vector<int16_t> pixels; // -1 transparent, row 0 the top
+	int width = 0;
+	int height = 0;
+	int belowFoot = 0; // rows of art under the foot (sunk into the ground)
+};
 
-/** @brief Adds a tapered prism (a trunk or a branch) from `from` to `to`, `sides` sided. */
-void AddLimb(Building &b, V3 from, V3 to, float r0, float r1, int sides, uint8_t mapping, uint8_t color)
-{
-	V3 axis { to.x - from.x, to.y - from.y, to.z - from.z };
-	const float length = std::sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
-	if (length < 1e-4F)
-		return;
-	axis = { axis.x / length, axis.y / length, axis.z / length };
-	// Two directions across the axis.
-	V3 u = std::abs(axis.z) < 0.9F ? V3 { -axis.y, axis.x, 0 } : V3 { 1, 0, 0 };
-	float ul = std::sqrt(u.x * u.x + u.y * u.y + u.z * u.z);
-	u = { u.x / ul, u.y / ul, u.z / ul };
-	const V3 v { axis.y * u.z - axis.z * u.y, axis.z * u.x - axis.x * u.z, axis.x * u.y - axis.y * u.x };
-	const size_t first = b.mesh.size();
-	for (int side = 0; side < sides; side++) {
-		const float a0 = 2.0F * PropPi * static_cast<float>(side) / static_cast<float>(sides);
-		const float a1 = 2.0F * PropPi * static_cast<float>(side + 1) / static_cast<float>(sides);
-		auto ring = [&](V3 c, float r, float a) {
-			return V3 { c.x + (u.x * std::cos(a) + v.x * std::sin(a)) * r, c.y + (u.y * std::cos(a) + v.y * std::sin(a)) * r, c.z + (u.z * std::cos(a) + v.z * std::sin(a)) * r };
-		};
-		const float am = (a0 + a1) / 2.0F;
-		const V3 normal { u.x * std::cos(am) + v.x * std::sin(am), u.y * std::cos(am) + v.y * std::sin(am), u.z * std::cos(am) + v.z * std::sin(am) };
-		AddStructureFace(b, { ring(from, r0, a0), ring(from, r0, a1), ring(to, r1, a1), ring(to, r1, a0) }, normal, { from.x, from.y }, mapping);
-	}
-	for (size_t i = first; i < b.mesh.size(); i++)
-		b.mesh[i].fallback = color;
-}
+std::vector<TreeSprite> TreeSprites;
 
 /**
- * @brief Builds the trees of a group of neighbouring tree tiles. Each tile whose art comes down to the middle of its
- * own ground diamond holds a trunk's foot; the group's other art is the canopy of the nearest trunk. A tree is a
- * tapered trunk with a few branches up into a canopy of three lumpy ellipsoids, sized so that its iso picture
- * covers the art's and raised above the eye if it hangs lower. The canopy is leaves in space (MeshFoliage): cells
- * about an art pixel big, as many of them filled as the art's canopy is, in the colours of the art's foliage
- * (lighter towards the top), the rest open, so the far side and the branches show through as in a real tree. The
- * trunk wears its own art, projected.
+ * @brief Cuts the trees out of a group of neighbouring tree tiles. Each tile whose art comes down to the middle of
+ * its own ground diamond holds a trunk's foot; every pixel of the group's art goes to the trunk nearest it across
+ * the screen (of those whose foot is not above it), and each trunk's pixels become its sprite, centred on its foot.
  */
 void BuildTrees(const std::vector<Point> &tiles, int &treeCount)
 {
-	TownProp prop;
-	prop.kind = PropKind::Tree;
-	prop.ownCanvas = true;
-	BuildUprightCanvas(prop.art, tiles);
-	Building &b = prop.art;
+	Building b {};
+	BuildUprightCanvas(b, tiles);
 	if (b.canvas.empty())
 		return;
+	// The same art with its ground: the trunks' feet, which are drawn in the floor diamonds in colours the ground
+	// uses too, went with the ground (RemoveUprightGround) and are traced back from it.
+	Building raw {};
+	BuildUprightCanvas(raw, tiles, true);
+	if (raw.canvasWidth != b.canvasWidth || raw.canvasHeight != b.canvasHeight)
+		return;
+	const int w = b.canvasWidth;
+	const int h = b.canvasHeight;
+	auto at = [&](int x, int y) { return static_cast<size_t>(y) * w + x; };
+	std::vector<uint8_t> inDiamond(b.canvas.size(), 0);
+	for (const Point t : tiles) {
+		const float cx = static_cast<float>((t.x - t.y) * 32 - b.originX);
+		const float cy = static_cast<float>((t.x + t.y + 2) * 16 - 16 - b.originY);
+		for (int y = static_cast<int>(cy) - 16; y <= static_cast<int>(cy) + 16; y++)
+			for (int x = static_cast<int>(cx) - 32; x <= static_cast<int>(cx) + 32; x++)
+				if (x >= 0 && y >= 0 && x < w && y < h && std::abs(static_cast<float>(x) + 0.5F - cx) / 32.0F + std::abs(static_cast<float>(y) + 0.5F - cy) / 16.0F <= 1.0F)
+					inDiamond[at(x, y)] = 1;
+	}
+	auto leafy = [](int16_t pixel) {
+		const SDL_Color c = logical_palette[pixel];
+		return c.r >= c.g + 6 || c.r >= c.b + 10;
+	};
 	struct Trunk {
 		float sx; // iso screen position of its foot
 		float sy;
 	};
+	// The bark above the floor diamonds is the trees' own (trunks and branches); in the diamonds the trunks' feet are
+	// drawn over the ground, in colours the ground uses too. They are grown down from the bark above, row by row,
+	// through the art's pixels in the bark's colours, each run no wider than the one above it.
+	std::array<bool, 256> barkColors {};
+	for (size_t i = 0; i < b.canvas.size(); i++)
+		if (inDiamond[i] == 0 && b.canvas[i] > 0 && !leafy(b.canvas[i]))
+			barkColors[static_cast<uint8_t>(b.canvas[i])] = true;
+	std::array<bool, 256> like {};
+	for (int j = 1; j < 256; j++)
+		for (int i = 1; i < 256 && !like[j]; i++) {
+			if (!barkColors[i])
+				continue;
+			const SDL_Color p = logical_palette[i];
+			const SDL_Color q = logical_palette[j];
+			like[j] = std::abs(p.r - q.r) + std::abs(p.g - q.g) + std::abs(p.b - q.b) <= 6;
+		}
+	std::vector<uint8_t> trunkPixel(b.canvas.size(), 0);
+	for (size_t i = 0; i < b.canvas.size(); i++)
+		trunkPixel[i] = inDiamond[i] == 0 && b.canvas[i] > 0 && !leafy(b.canvas[i]) ? 1 : 0;
+	std::vector<int> runWidth(b.canvas.size(), 0); // the width of the run each traced pixel is in
+	for (int y = 1; y < h; y++) {
+		int x = 0;
+		while (x < w) {
+			auto candidate = [&](int cx) {
+				if (inDiamond[at(cx, y)] == 0 || trunkPixel[at(cx, y)] != 0)
+					return false;
+				const int16_t p = raw.canvas[at(cx, y)];
+				if (p <= 0 || !like[static_cast<uint8_t>(p)])
+					return false;
+				for (int dx = -1; dx <= 1; dx++)
+					if (cx + dx >= 0 && cx + dx < w && trunkPixel[at(cx + dx, y - 1)] != 0)
+						return true;
+				return false;
+			};
+			if (!candidate(x)) {
+				x++;
+				continue;
+			}
+			int end = x;
+			while (end + 1 < w && candidate(end + 1))
+				end++;
+			// The run above it: its bark's width there.
+			int above = 0;
+			for (int ax = std::max(0, x - 1); ax <= std::min(w - 1, end + 1); ax++)
+				if (trunkPixel[at(ax, y - 1)] != 0)
+					above++;
+			int from = x;
+			int to = end;
+			const int widest = std::min(above, 9);
+			if (to - from + 1 > widest) {
+				const int middle = (from + to) / 2;
+				from = middle - widest / 2;
+				to = from + widest - 1;
+			}
+			for (int cx = from; cx <= to; cx++) {
+				trunkPixel[at(cx, y)] = 1;
+				b.canvas[at(cx, y)] = raw.canvas[at(cx, y)];
+			}
+			x = end + 1;
+		}
+	}
+	// In the floor diamonds only the trunks and the leaves of the canopy stay: not the shadows on the ground, nor the
+	// leaves fallen round the feet (bits of leaf on their own, wholly in a diamond).
+	for (size_t i = 0; i < b.canvas.size(); i++)
+		if (inDiamond[i] != 0 && trunkPixel[i] == 0 && b.canvas[i] > 0 && !leafy(b.canvas[i]))
+			b.canvas[i] = -1;
+	// The trees: each piece of bark big enough is a trunk and its branches, its lowest pixel the foot.
 	std::vector<Trunk> trunks;
-	for (const Point t : tiles) {
-		const PieceTextures &textures = GetPieceTextures(dPiece[t.x][t.y]);
-		const int rows = static_cast<int>(textures.upright.size() / ColumnWidth);
-		int count = 0;
-		int lowest = -1;
-		for (int cy = rows - 26; cy < rows - 4; cy++)
-			for (int cx = 20; cx < 44; cx++)
-				if (textures.upright[static_cast<size_t>(cy) * ColumnWidth + cx] > 0) {
-					count++;
-					lowest = std::max(lowest, cy);
+	{
+		std::vector<uint8_t> seen(b.canvas.size(), 0);
+		for (int y0 = 0; y0 < h; y0++) {
+			for (int x0 = 0; x0 < w; x0++) {
+				if (trunkPixel[at(x0, y0)] == 0 || seen[at(x0, y0)] != 0 || b.canvas[at(x0, y0)] <= 0)
+					continue;
+				std::vector<std::pair<int, int>> pixels;
+				std::vector<std::pair<int, int>> stack { { x0, y0 } };
+				seen[at(x0, y0)] = 1;
+				while (!stack.empty()) {
+					const auto [x, y] = stack.back();
+					stack.pop_back();
+					pixels.emplace_back(x, y);
+					for (int dy = -1; dy <= 1; dy++)
+						for (int dx = -1; dx <= 1; dx++) {
+							const int nx = x + dx;
+							const int ny = y + dy;
+							if (nx < 0 || ny < 0 || nx >= w || ny >= h || seen[at(nx, ny)] != 0 || trunkPixel[at(nx, ny)] == 0 || b.canvas[at(nx, ny)] <= 0)
+								continue;
+							seen[at(nx, ny)] = 1;
+							stack.emplace_back(nx, ny);
+						}
 				}
-		if (count < 10)
-			continue;
-		float sumX = 0;
-		int n = 0;
-		for (int cy = lowest - 3; cy <= lowest; cy++)
-			for (int cx = 20; cx < 44; cx++)
-				if (textures.upright[static_cast<size_t>(cy) * ColumnWidth + cx] > 0) {
-					sumX += static_cast<float>(cx);
-					n++;
+				if (pixels.size() < 80) {
+					// A bit of bark on its own: what the art draws on the ground (a fallen twig, a trunk's shadow).
+					bool low = true;
+					for (const auto &[x, y] : pixels)
+						low = low && (inDiamond[at(x, y)] != 0 || (y + 3 < h && inDiamond[at(x, y + 3)] != 0));
+					if (low)
+						for (const auto &[x, y] : pixels)
+							b.canvas[at(x, y)] = -1;
+					continue;
 				}
-		const float sx = static_cast<float>((t.x - t.y) * 32 - 32) + sumX / static_cast<float>(std::max(n, 1));
-		const float sy = static_cast<float>((t.x + t.y + 2) * 16 + lowest - (rows - 1));
-		bool near = false;
-		for (const Trunk &other : trunks)
-			near = near || (std::abs(other.sx - sx) < 20.0F && std::abs(other.sy - sy) < 14.0F);
-		if (!near)
-			trunks.push_back({ sx, sy });
+				int footY = -1;
+				for (const auto &[x, y] : pixels)
+					footY = std::max(footY, y);
+				bool grounded = false;
+				for (int dy = 0; dy <= 4 && !grounded; dy++)
+					for (const auto &[x, y] : pixels)
+						if (y == footY && footY + dy < h && inDiamond[at(x, footY + dy)] != 0) {
+							grounded = true;
+							break;
+						}
+				if (!grounded)
+					continue; // a branch, cut off from its trunk by the leaves in front of it
+				int sum = 0;
+				int n = 0;
+				for (const auto &[x, y] : pixels)
+					if (y >= footY - 1) {
+						sum += x;
+						n++;
+					}
+				const float sx = static_cast<float>(sum) / static_cast<float>(n) + 0.5F + static_cast<float>(b.originX);
+				bool near = false;
+				for (const Trunk &k : trunks)
+					near = near || std::abs(k.sx - sx) < 20.0F;
+				if (!near)
+					trunks.push_back({ sx, static_cast<float>(footY + b.originY) });
+			}
+		}
+	}
+	// Round each foot only the trunk: the rest there is leaves fallen on the ground and the trunk's shadow.
+	for (const Trunk &k : trunks) {
+		const int footX = static_cast<int>(k.sx) - b.originX;
+		const int footY = static_cast<int>(k.sy) - b.originY;
+		for (int y = std::max(0, footY - 8); y <= std::min(h - 1, footY + 16); y++)
+			for (int x = std::max(0, footX - 45); x <= std::min(w - 1, footX + 45); x++)
+				if (inDiamond[at(x, y)] != 0 && trunkPixel[at(x, y)] == 0)
+					b.canvas[at(x, y)] = -1;
 	}
 	if (trunks.empty()) {
-		// No foot in the group's own tiles (it stands on a building's): the lowest art.
+		// No trunk in the group's own tiles (it stands on a building's): the lowest art.
 		int lowestY = -1;
 		int atX = 0;
-		for (int y = 0; y < b.canvasHeight; y++)
-			for (int x = 0; x < b.canvasWidth; x++)
-				if (b.canvas[static_cast<size_t>(y) * b.canvasWidth + x] > 0 && y > lowestY) {
+		for (int y = 0; y < h; y++)
+			for (int x = 0; x < w; x++)
+				if (b.canvas[at(x, y)] > 0 && y > lowestY) {
 					lowestY = y;
 					atX = x;
 				}
@@ -5042,180 +6859,129 @@ void BuildTrees(const std::vector<Point> &tiles, int &treeCount)
 			return;
 		trunks.push_back({ static_cast<float>(atX + b.originX), static_cast<float>(lowestY + b.originY) });
 	}
-	// The canopy pixels of each trunk: the art above its foot, nearest it across the screen.
-	std::vector<std::vector<std::pair<int, int>>> canopy(trunks.size());
+	{
+		std::vector<int> component(b.canvas.size(), -1);
+		int next = 0;
+		for (int y0 = 0; y0 < h; y0++) {
+			for (int x0 = 0; x0 < w; x0++) {
+				if (b.canvas[at(x0, y0)] <= 0 || component[at(x0, y0)] >= 0)
+					continue;
+				std::vector<std::pair<int, int>> pixels;
+				std::vector<std::pair<int, int>> stack { { x0, y0 } };
+				component[at(x0, y0)] = next;
+				bool outside = false;
+				while (!stack.empty()) {
+					const auto [x, y] = stack.back();
+					stack.pop_back();
+					pixels.emplace_back(x, y);
+					outside = outside || inDiamond[at(x, y)] == 0;
+					for (int dy = -1; dy <= 1; dy++)
+						for (int dx = -1; dx <= 1; dx++) {
+							const int nx = x + dx;
+							const int ny = y + dy;
+							if (nx < 0 || ny < 0 || nx >= w || ny >= h || b.canvas[at(nx, ny)] <= 0 || component[at(nx, ny)] >= 0)
+								continue;
+							component[at(nx, ny)] = next;
+							stack.emplace_back(nx, ny);
+						}
+				}
+				if (!outside)
+					for (const auto &[x, y] : pixels)
+						b.canvas[at(x, y)] = -1;
+				next++;
+			}
+		}
+	}
+#ifdef _DEBUG
+	if (const char *dir = std::getenv("FP_DUMP_TREES"); dir != nullptr) {
+		static int group = 0;
+		std::string feet;
+		for (const Trunk &k : trunks)
+			feet += StrCat(" ", static_cast<int>(k.sx) - b.originX, ",", static_cast<int>(k.sy) - b.originY);
+		LogInfo("fp: tree group {} (trees from {}): feet{}", group, treeCount, feet);
+		for (const auto &[name, canvas] : { std::pair { "raw", &raw.canvas }, std::pair { "group", &b.canvas } }) {
+			if (FILE *f = std::fopen(StrCat(dir, "/", name, "_", group, ".ppm").c_str(), "wb"); f != nullptr) {
+				std::fprintf(f, "P6\n%d %d\n255\n", w, h);
+				for (size_t i = 0; i < canvas->size(); i++) {
+					const int16_t p = (*canvas)[i];
+					SDL_Color c = p > 0 ? logical_palette[p] : SDL_Color { 0, 120, 0, 255 };
+					if (inDiamond[i] != 0 && p <= 0)
+						c = SDL_Color { 0, 70, 0, 255 };
+					const uint8_t rgb[3] { c.r, c.g, c.b };
+					std::fwrite(rgb, 1, 3, f);
+				}
+				std::fclose(f);
+			}
+		}
+		group++;
+	}
+#endif
+	// Each art pixel to its trunk: the nearest across the screen (a canopy spreads sideways more than it hangs), of
+	// the trunks whose foot is below it.
+	std::vector<std::vector<std::pair<int, int>>> owned(trunks.size());
 	for (int y = 0; y < b.canvasHeight; y++) {
 		for (int x = 0; x < b.canvasWidth; x++) {
 			if (b.canvas[static_cast<size_t>(y) * b.canvasWidth + x] <= 0)
 				continue;
 			const float sx = static_cast<float>(x + b.originX);
 			const float sy = static_cast<float>(y + b.originY);
-			size_t best = 0;
+			size_t best = trunks.size();
 			float bestDistance = std::numeric_limits<float>::max();
-			for (size_t k = 0; k < trunks.size(); k++) {
-				const float d = std::abs(sx - trunks[k].sx) + 0.25F * std::abs(sy - (trunks[k].sy - 70.0F));
-				if (d < bestDistance) {
-					bestDistance = d;
-					best = k;
+			for (int pass = 0; pass < 2 && best == trunks.size(); pass++) {
+				for (size_t k = 0; k < trunks.size(); k++) {
+					if (pass == 0 && sy > trunks[k].sy + 2.0F)
+						continue;
+					const float d = std::abs(sx - trunks[k].sx) + 0.25F * std::abs(sy - (trunks[k].sy - 70.0F));
+					if (d < bestDistance) {
+						bestDistance = d;
+						best = k;
+					}
 				}
 			}
-			if (sy < trunks[best].sy - 18.0F)
-				canopy[best].emplace_back(x, y);
+			owned[best].emplace_back(x, y);
 		}
 	}
-	float minX = std::numeric_limits<float>::max();
-	float maxX = std::numeric_limits<float>::lowest();
-	float minY = minX;
-	float maxY = maxX;
-	float highest = 0;
 	for (size_t k = 0; k < trunks.size(); k++) {
-		const Trunk &trunk = trunks[k];
-		const Vec2 foot { (trunk.sy / 16.0F + trunk.sx / 32.0F) / 2.0F, (trunk.sy / 16.0F - trunk.sx / 32.0F) / 2.0F };
-		// Foliage is the lighter art; the dark strokes are the trunk and branches.
-		std::vector<int> xs;
-		std::vector<int> ys;
-		std::array<int, 256> leafCounts {};
-		int leaves = 0;
-		for (const auto &[x, y] : canopy[k]) {
-			xs.push_back(x + b.originX);
-			ys.push_back(y + b.originY);
-			const uint8_t color = PatchColor(b.canvas[static_cast<size_t>(y) * b.canvasWidth + x]);
-			if (ColorLuma(color) >= 38.0F) {
-				leafCounts[color]++;
-				leaves++;
-			}
+		if (owned[k].size() < 20)
+			continue;
+		const int footX = static_cast<int>(std::lround(trunks[k].sx)) - b.originX;
+		const int footY = static_cast<int>(std::lround(trunks[k].sy)) - b.originY;
+		int halfWidth = 0;
+		int top = footY;
+		int bottom = footY;
+		for (const auto &[x, y] : owned[k]) {
+			halfWidth = std::max(halfWidth, std::abs(x - footX));
+			top = std::min(top, y);
+			bottom = std::max(bottom, y);
 		}
-		float radius = 0.6F;
-		float half = 0.6F;
-		float middleZ = 2.0F;
-		float offset = 0;
-		float coverage = 0.3F;
-		if (xs.size() >= 40) {
-			std::sort(xs.begin(), xs.end());
-			std::sort(ys.begin(), ys.end());
-			auto at = [](const std::vector<int> &v, float q) { return static_cast<float>(v[static_cast<size_t>(q * static_cast<float>(v.size() - 1))]); };
-			const float x0 = at(xs, 0.03F);
-			const float x1 = at(xs, 0.97F);
-			const float y0 = at(ys, 0.02F);
-			const float y1 = at(ys, 0.98F);
-			radius = std::clamp((x1 - x0) / 2.0F / SpritePixelsPerTileX * 1.05F, 0.3F, 2.2F);
-			const float halfPixels = (y1 - y0) / 2.0F;
-			const float depthPart = IsoDepthPixels * radius;
-			half = std::sqrt(std::max(halfPixels * halfPixels - depthPart * depthPart, 0.16F * halfPixels * halfPixels)) / HeightPixels * 1.05F;
-			middleZ = (trunk.sy - (y0 + y1) / 2.0F) / HeightPixels;
-			offset = ((x0 + x1) / 2.0F - trunk.sx) / SpritePixelsPerTileX;
-			// The art's leaves over the area of its canopy's outline (an ellipse in the picture).
-			const float area = PropPi * (x1 - x0) / 2.0F * halfPixels;
-			coverage = std::clamp(static_cast<float>(leaves) / std::max(area, 1.0F) * 1.15F, 0.12F, 0.8F);
-		}
-		middleZ = std::max(middleZ, CanopyMinBottom + half);
-		const V3 middle { foot.x + offset * 0.7071F, foot.y - offset * 0.7071F, middleZ };
-		// The leaves' colours: those the art's foliage uses often, dark to light.
-		Foliage foliage;
-		for (int c = 1; c < 256; c++)
-			if (leafCounts[c] * 100 >= std::max(leaves, 1))
-				foliage.ramp.push_back(static_cast<uint8_t>(c));
-		std::sort(foliage.ramp.begin(), foliage.ramp.end(), [](uint8_t p, uint8_t q) { return ColorLuma(p) < ColorLuma(q); });
-		// The trunk: as wide as the art's, a little above the foot; its colour, the art's commonest there.
-		int width = 0;
-		std::vector<int16_t> trunkPixels;
-		{
-			const int row = static_cast<int>(trunk.sy) - 8 - b.originY;
-			const int column = static_cast<int>(trunk.sx) - b.originX;
-			if (row >= 0 && row < b.canvasHeight) {
-				int first = column;
-				int last = column;
-				while (first - 1 >= 0 && column - first < 10 && b.canvas[static_cast<size_t>(row) * b.canvasWidth + first - 1] > 0)
-					first--;
-				while (last + 1 < b.canvasWidth && last - column < 10 && b.canvas[static_cast<size_t>(row) * b.canvasWidth + last + 1] > 0)
-					last++;
-				width = last - first + 1;
-			}
-			for (int y = static_cast<int>(trunk.sy) - 30 - b.originY; y <= static_cast<int>(trunk.sy) - b.originY; y++)
-				for (int x = column - 3; x <= column + 3; x++)
-					if (x >= 0 && y >= 0 && x < b.canvasWidth && y < b.canvasHeight)
-						trunkPixels.push_back(b.canvas[static_cast<size_t>(y) * b.canvasWidth + x]);
-		}
-		const float trunkRadius = std::clamp(static_cast<float>(width) / 2.0F / SpritePixelsPerTileX, 0.04F, 0.1F);
-		// The wood: the commonest of the dark colours there (the light ones are leaves and ground).
-		std::erase_if(trunkPixels, [](int16_t p) { return p <= 0 || ColorLuma(PatchColor(p)) >= 38.0F; });
-		const uint8_t trunkColor = PatchColor(static_cast<int16_t>(std::max<uint8_t>(CommonestColor(trunkPixels), 1)));
-		if (foliage.ramp.empty())
-			foliage.ramp.push_back(trunkColor);
-		foliage.coverage = coverage;
-		foliage.low = middleZ - half;
-		foliage.perHeight = 1.0F / std::max(2.0F * half, 0.1F);
-		foliage.seed = treeCount * 977;
-		const int16_t foliageIndex = static_cast<int16_t>(prop.foliage.size());
-		prop.foliage.push_back(std::move(foliage));
-		const float trunkTop = middleZ + half * 0.3F;
-		AddLimb(b, { foot.x, foot.y, 0 }, { middle.x, middle.y, trunkTop }, trunkRadius, trunkRadius * 0.5F, TrunkSides, MeshSolid, trunkColor);
-		{
-			// Far away: the trunk and the near side of the canopy.
-			Building far {};
-			AddLimb(far, { foot.x, foot.y, 0 }, { middle.x, middle.y, trunkTop }, trunkRadius, trunkRadius * 0.5F, 5, MeshSolid, trunkColor);
-			AddCanopyBlob(far, middle, radius, half, 8, 5, treeCount, foliageIndex, false);
-			prop.farMesh.insert(prop.farMesh.end(), far.mesh.begin(), far.mesh.end());
-		}
-		// Branches: from up the trunk out into the canopy.
-		const int branches = 3 + static_cast<int>(PropNoise(treeCount, 3, 11) * 2.0F);
-		for (int i = 0; i < branches; i++) {
-			const float t = 0.45F + 0.25F * PropNoise(treeCount, i, 1);
-			const V3 from { foot.x + (middle.x - foot.x) * t, foot.y + (middle.y - foot.y) * t, trunkTop * t };
-			const float around = 2.0F * PropPi * (static_cast<float>(i) + 0.4F * PropNoise(treeCount, i, 2)) / static_cast<float>(branches);
-			const float reach = radius * (0.5F + 0.3F * PropNoise(treeCount, i, 3));
-			const V3 to { middle.x + std::cos(around) * reach, middle.y + std::sin(around) * reach, middleZ + half * (0.1F + 0.4F * PropNoise(treeCount, i, 4)) };
-			AddLimb(b, from, to, trunkRadius * 0.5F, trunkRadius * 0.2F, 4, MeshSolid, trunkColor);
-		}
-		// The canopy: a big lumpy ellipsoid, and a smaller one inside it so it is not hollow.
-		AddCanopyBlob(b, middle, radius, half, CanopySlices, CanopyStacks, treeCount, foliageIndex, false);
-		{
-			const float around = 2.0F * PropPi * PropNoise(treeCount, 1, 5);
-			const V3 inner { middle.x + std::cos(around) * radius * 0.2F, middle.y + std::sin(around) * radius * 0.2F, middleZ - half * 0.1F };
-			AddCanopyBlob(b, inner, radius * 0.62F, half * 0.7F, 7, 5, treeCount * 3 + 1, foliageIndex, false);
-		}
-		minX = std::min({ minX, middle.x - radius * 1.2F, foot.x - trunkRadius });
-		maxX = std::max({ maxX, middle.x + radius * 1.2F, foot.x + trunkRadius });
-		minY = std::min({ minY, middle.y - radius * 1.2F, foot.y - trunkRadius });
-		maxY = std::max({ maxY, middle.y + radius * 1.2F, foot.y + trunkRadius });
-		highest = std::max(highest, middleZ + half * 1.15F);
+		TreeSprite sprite;
+		sprite.width = 2 * halfWidth + 1;
+		sprite.height = bottom - top + 1;
+		sprite.belowFoot = bottom - footY;
+		sprite.pixels.assign(static_cast<size_t>(sprite.width) * sprite.height, -1);
+		for (const auto &[x, y] : owned[k])
+			sprite.pixels[static_cast<size_t>(y - top) * sprite.width + x - footX + halfWidth] = b.canvas[static_cast<size_t>(y) * b.canvasWidth + x];
+		sprite.foot = { (trunks[k].sy / 16.0F + trunks[k].sx / 32.0F) / 2.0F, (trunks[k].sy / 16.0F - trunks[k].sx / 32.0F) / 2.0F };
 #ifdef _DEBUG
 		if (std::getenv("FP_LOG_TREES") != nullptr)
-			LogInfo("fp: tree {} foot {:.2f},{:.2f} canopy {:.2f},{:.2f} r {:.2f} z {:.2f} +- {:.2f} trunk {:.3f} leaves {:.2f} in {} colours", treeCount, foot.x, foot.y, middle.x, middle.y, radius, middleZ, half,
-			    trunkRadius, coverage, prop.foliage.back().ramp.size());
+			LogInfo("fp: tree {} foot {:.2f},{:.2f} sprite {}x{} ({} under the foot)", treeCount, sprite.foot.x, sprite.foot.y, sprite.width, sprite.height, sprite.belowFoot);
 #endif
+#ifdef _DEBUG
+		if (const char *dir = std::getenv("FP_DUMP_TREES"); dir != nullptr) {
+			if (FILE *f = std::fopen(StrCat(dir, "/tree_", treeCount, ".ppm").c_str(), "wb"); f != nullptr) {
+				std::fprintf(f, "P6\n%d %d\n255\n", sprite.width, sprite.height);
+				for (const int16_t p : sprite.pixels) {
+					const SDL_Color c = p > 0 ? logical_palette[p] : SDL_Color { 0, 160, 0, 255 };
+					const uint8_t rgb[3] { c.r, c.g, c.b };
+					std::fwrite(rgb, 1, 3, f);
+				}
+				std::fclose(f);
+			}
+		}
+#endif
+		TreeSprites.push_back(std::move(sprite));
 		treeCount++;
 	}
-	b.x0 = minX;
-	b.x1 = maxX;
-	b.y0 = minY;
-	b.y1 = maxY;
-	b.lowestZ = 0;
-	b.highestZ = highest;
-	prop.middle = { (minX + maxX) / 2.0F, (minY + maxY) / 2.0F };
-	prop.radius = std::hypot(maxX - minX, maxY - minY) / 2.0F;
-	TownProps.push_back(std::move(prop));
-}
-
-/** @brief Colour of a leaf cell of a tree's canopy at a point, or -1 between the leaves. */
-int FoliageColor(const Foliage &foliage, const WorldTriangle &tri, float wx, float wy, float wz, float boost)
-{
-	constexpr float PerCell = 1.0F / LeafCell;
-	// Town coordinates are positive: truncating is flooring.
-	const uint32_t ix = static_cast<uint32_t>(wx * PerCell);
-	const uint32_t iy = static_cast<uint32_t>(wy * PerCell);
-	const uint32_t iz = static_cast<uint32_t>(std::max(wz, 0.0F) * PerCell);
-	uint32_t h = ix * 73856093U ^ iy * 19349663U ^ (iz + static_cast<uint32_t>(foliage.seed)) * 83492791U;
-	h ^= h >> 13;
-	h *= 0x5bd1e995U;
-	h ^= h >> 15;
-	if (static_cast<float>(h & 0xFFFF) * (1.0F / 65535.0F) > foliage.coverage * boost)
-		return -1;
-	// Lighter towards the top and on the side facing the sky, with some leaves darker or lighter than the rest.
-	const float up = std::clamp((wz - foliage.low) * foliage.perHeight, 0.0F, 1.0F);
-	const float jitter = static_cast<float>((h >> 16) & 0xFF) * (1.0F / 255.0F);
-	const float shade = std::clamp(0.45F * up + tri.slopeScale + 0.5F * jitter - 0.1F, 0.0F, 0.999F);
-	return foliage.ramp[static_cast<size_t>(shade * static_cast<float>(foliage.ramp.size()))];
 }
 
 /** Thickness of the town's low stone walls (tiles), and their pieces along a tile (near and far away). */
@@ -5223,20 +6989,115 @@ constexpr float TownWallThickness = 0.42F;
 constexpr int TownWallSegments = 8;
 constexpr int TownWallFarSegments = 3;
 
+/** Heights of the town's low stone wall tiles (index y * MAXDUNX + x; 0 elsewhere), for the walls to run on smoothly. */
+std::vector<float> WallHeights;
+std::vector<float> WallAcross; // per tile and axis (0: a wall along x, 1: along y): where across the tile it stands
+
+/** @brief The plaza houses' stone wall texture (MeshTextures): the commonest on the plaza cottages' walls; -1 if none. */
+int StoneTexture()
+{
+	static int texture = -2;
+	if (texture != -2)
+		return texture;
+	std::unordered_map<int, int> counts;
+	for (const LandmarkMesh &mesh : LandmarkMeshes) {
+		if (mesh.name.rfind("cottage", 0) != 0)
+			continue;
+		for (size_t i = 0; i < mesh.classes.size() && i < mesh.textures.size(); i++)
+			if (mesh.classes[i] == 0 && mesh.textures[i] >= 0)
+				counts[mesh.textures[i]]++;
+	}
+	texture = -1;
+	int best = 0;
+	for (const auto &[index, count] : counts)
+		if (count > best) {
+			best = count;
+			texture = index;
+		}
+	return texture;
+}
+
+/** How much darker the low walls' stone is than the cottages' (SurfaceShade steps): the art's walls are dark. */
+constexpr int WallStoneDarkness = 3;
+/** The low walls' stone in grey, against the texture's brightness (at SurfaceShade step WallStoneDarkness). */
+constexpr float WallStoneGrey = 0.9F;
+
 /**
- * @brief A low stone wall's tile, built as a straight wall along its run (towards the neighbours that are wall too):
- * a row of blocks as high as the art's hull there, so the ragged top of the rubble wall stays. The hull alone breaks
- * such a wall into teeth: its pieces' art lies across the tile at a slant, so the hull is collapsed onto the run,
- * where the hull's cells stand (across), and carried on to the tile's edge towards each wall neighbour.
+ * @brief The low walls' stone: a texel of the cottages' (blue-grey) stone as a dark neutral grey of the same
+ * brightness, dimmed by a SurfaceShade step: the palette's greys only, so no tint creeps in.
+ */
+uint8_t WallStoneColor(uint8_t texel, int darkness)
+{
+	static std::array<std::array<uint8_t, 256>, SurfaceShade.size()> table {};
+	static uint32_t readyFor = 0;
+	if (readyFor != PaletteVersion()) {
+		readyFor = PaletteVersion();
+		for (size_t level = 0; level < SurfaceShade.size(); level++) {
+			for (int i = 0; i < 256; i++) {
+				const SDL_Color c = logical_palette[i];
+				const float grey = (0.3F * c.r + 0.59F * c.g + 0.11F * c.b) * SurfaceShade[level] * WallStoneGrey;
+				float best = std::numeric_limits<float>::max();
+				uint8_t found = 0;
+				for (int j = 1; j < 256; j++) {
+					if (j >= 112 && j <= 127)
+						continue;
+					const SDL_Color o = logical_palette[j];
+					if (std::max({ o.r, o.g, o.b }) - std::min({ o.r, o.g, o.b }) > 2)
+						continue; // (the near-greys are tinted green or purple)
+					const float d = std::abs((o.r + o.g + o.b) / 3.0F - grey);
+					if (d < best) {
+						best = d;
+						found = static_cast<uint8_t>(j);
+					}
+				}
+				table[level][static_cast<size_t>(i)] = found;
+			}
+		}
+	}
+	return table[static_cast<size_t>(std::clamp(darkness, 0, static_cast<int>(SurfaceShade.size()) - 1))][texel];
+}
+
+/** The low walls' width at their foot and at their top (tiles): a dry stone wall narrows as it goes up. */
+constexpr float WallFootHalf = 0.22F;
+constexpr float WallTopHalf = 0.15F;
+
+/** @brief Where across its tile a wall piece's art stands, for a wall along x (else along y): 0..1, kept clear of the edges. */
+float WallArtAcross(const PieceTextures &t, bool alongX)
+{
+	constexpr int Cells = 8;
+	const std::vector<float> grid = PropHullHeights(t, 0.7F, Cells);
+	float acrossSum = 0;
+	float weight = 0;
+	for (int i = 0; i < Cells; i++)
+		for (int j = 0; j < Cells; j++) {
+			const float h = alongX ? grid[static_cast<size_t>(j) * Cells + i] : grid[static_cast<size_t>(i) * Cells + j];
+			if (h <= 0)
+				continue;
+			acrossSum += h * (static_cast<float>(j) + 0.5F) / Cells;
+			weight += h;
+		}
+	return weight > 0 ? std::clamp(acrossSum / weight, WallFootHalf, 1.0F - WallFootHalf) : 0.5F;
+}
+
+/**
+ * @brief A low stone wall's tile, built as a straight dry stone wall along its run (towards the neighbours that are
+ * wall too): narrowing towards its top, which runs on from tile to tile (halfway to each neighbour's height, lower
+ * where the wall ends) with a gentle unevenness, in the plaza houses' stone (MeshTiled). Across the tile it stands
+ * where its run's art has it (WallAcross), and at a corner it ends in the wall it meets.
  */
 void BuildTownWallTile(Point tile, const std::array<bool, 4> &toward, int segments, std::vector<WorldTriangle> &out)
 {
 	const PieceTextures &t = GetPieceTextures(dPiece[tile.x][tile.y]);
-	constexpr int Cells = 8;
-	const std::vector<float> grid = PropHullHeights(t, 0.7F, Cells);
 	const std::vector<int16_t> pixels(t.upright.begin(), t.upright.end());
 	const uint8_t fallback = PatchColor(static_cast<int16_t>(std::max<uint8_t>(CommonestColor(pixels), 1)));
-	const float half = TownWallThickness / 2.0F;
+	auto heightOf = [](Point p) { return InDungeonBounds(p) && !WallHeights.empty() ? WallHeights[static_cast<size_t>(p.y) * MAXDUNX + p.x] : 0.0F; };
+	auto acrossOf = [&](Point p, int axis) {
+		const size_t i = (static_cast<size_t>(p.y) * MAXDUNX + p.x) * 2 + static_cast<size_t>(axis);
+		return i < WallAcross.size() && WallAcross[i] > 0 ? WallAcross[i] : WallArtAcross(t, axis == 0);
+	};
+	const float own = heightOf(tile);
+	if (own <= 0)
+		return;
 	Building mesh {};
 	for (int axis = 0; axis < 2; axis++) {
 		const bool alongX = axis == 0;
@@ -5245,49 +7106,27 @@ void BuildTownWallTile(Point tile, const std::array<bool, 4> &toward, int segmen
 		if (!before && !after)
 			continue;
 		const bool corner = toward[alongX ? 2 : 0] || toward[alongX ? 3 : 1];
-		// The profile along the run, and where across it the art stands.
-		std::array<float, Cells> profile {};
-		float acrossSum = 0;
-		float weight = 0;
-		for (int i = 0; i < Cells; i++) {
-			for (int j = 0; j < Cells; j++) {
-				const float h = alongX ? grid[static_cast<size_t>(j) * Cells + i] : grid[static_cast<size_t>(i) * Cells + j];
-				if (h <= 0)
-					continue;
-				profile[i] = std::max(profile[i], std::min(h, 1.2F));
-				acrossSum += h * (static_cast<float>(j) + 0.5F) / Cells;
-				weight += h;
-			}
-		}
-		if (weight <= 0)
-			continue;
-		const float across = std::clamp(acrossSum / weight, half, 1.0F - half);
-		// Carried on to the edges towards the neighbours.
-		int first = 0;
-		while (first < Cells && profile[first] <= 0)
-			first++;
-		int last = Cells - 1;
-		while (last >= 0 && profile[last] <= 0)
-			last--;
-		if (first > last)
-			continue;
-		if (before)
-			for (int i = 0; i < first; i++)
-				profile[i] = profile[first];
-		if (after)
-			for (int i = last + 1; i < Cells; i++)
-				profile[i] = profile[last];
+		// Where across the tile it stands: where its whole run does (WallAcross), so the run's tiles line up.
+		const float across = acrossOf(tile, axis);
+		// Where the wall it meets at a corner stands, across that wall (along this one).
+		const float meets = acrossOf(tile, 1 - axis);
+		const Point previous = alongX ? Point { tile.x - 1, tile.y } : Point { tile.x, tile.y - 1 };
+		const Point next = alongX ? Point { tile.x + 1, tile.y } : Point { tile.x, tile.y + 1 };
+		const float h0 = before ? (own + heightOf(previous)) / 2.0F : own * 0.8F;
+		const float h1 = after ? (own + heightOf(next)) / 2.0F : own * 0.8F;
 		// Along the run: the whole tile, or (at a corner) from where the walls meet out to each wall neighbour.
-		const float from = before || !corner ? 0.0F : across - half;
-		const float to = after || !corner ? 1.0F : across + half;
-		std::vector<float> heights(static_cast<size_t>(segments));
-		for (int k = 0; k < segments; k++) {
+		const float from = before || !corner ? 0.0F : meets - WallFootHalf;
+		const float to = after || !corner ? 1.0F : meets + WallFootHalf;
+		const float base = alongX ? static_cast<float>(tile.x) : static_cast<float>(tile.y);
+		const float line = alongX ? static_cast<float>(tile.y) : static_cast<float>(tile.x);
+		std::vector<float> heights(static_cast<size_t>(segments) + 1);
+		for (int k = 0; k <= segments; k++) {
 			const float a = from + (to - from) * static_cast<float>(k) / static_cast<float>(segments);
-			const float b = from + (to - from) * static_cast<float>(k + 1) / static_cast<float>(segments);
-			float h = 0;
-			for (int i = std::clamp(static_cast<int>(a * Cells), 0, Cells - 1); i <= std::clamp(static_cast<int>(b * Cells - 0.001F), 0, Cells - 1); i++)
-				h = std::max(h, profile[i]);
-			heights[k] = h;
+			const float h = a < 0.5F ? h0 + (own - h0) * a / 0.5F : own + (h1 - own) * (a - 0.5F) / 0.5F;
+			// Uneven by the world position along the run, so it carries on over the tiles' edges.
+			const float w = base + a;
+			const float bump = 0.035F * std::sin(w * 4.1F + line * 1.7F) + 0.02F * std::sin(w * 11.3F + line * 2.3F + 1.3F);
+			heights[static_cast<size_t>(k)] = std::max(0.15F, h + bump);
 		}
 		auto at = [&](float along, float acrossAt, float z) {
 			return alongX ? V3 { static_cast<float>(tile.x) + along, static_cast<float>(tile.y) + acrossAt, z } : V3 { static_cast<float>(tile.x) + acrossAt, static_cast<float>(tile.y) + along, z };
@@ -5297,28 +7136,25 @@ void BuildTownWallTile(Point tile, const std::array<bool, 4> &toward, int segmen
 		const V3 back { -front.x, -front.y, 0 };
 		const V3 ahead = alongX ? V3 { 1, 0, 0 } : V3 { 0, 1, 0 };
 		const V3 behind { -ahead.x, -ahead.y, 0 };
-		const float lo = across - half;
-		const float hi = across + half;
 		for (int k = 0; k < segments; k++) {
-			const float h = heights[k];
-			if (h <= 0.02F)
-				continue;
 			const float a = from + (to - from) * static_cast<float>(k) / static_cast<float>(segments);
 			const float b = from + (to - from) * static_cast<float>(k + 1) / static_cast<float>(segments);
-			AddStructureFace(mesh, { at(a, lo, h), at(b, lo, h), at(b, hi, h), at(a, hi, h) }, { 0, 0, 1 }, middle, MeshProjective);
-			AddStructureFace(mesh, { at(a, hi, 0), at(b, hi, 0), at(b, hi, h), at(a, hi, h) }, front, middle, MeshProjective);
-			AddStructureFace(mesh, { at(a, lo, 0), at(b, lo, 0), at(b, lo, h), at(a, lo, h) }, back, middle, MeshProjective);
-			// The ends, where the next block is lower (at the tile's edge only if no wall goes on there).
-			const float previous = k > 0 ? heights[k - 1] : 0.0F;
-			const float next = k + 1 < segments ? heights[k + 1] : 0.0F;
-			if (previous < h && (k > 0 || !before || corner))
-				AddStructureFace(mesh, { at(a, lo, previous), at(a, hi, previous), at(a, hi, h), at(a, lo, h) }, behind, middle, MeshProjective);
-			if (next < h && (k + 1 < segments || !after || corner))
-				AddStructureFace(mesh, { at(b, lo, next), at(b, hi, next), at(b, hi, h), at(b, lo, h) }, ahead, middle, MeshProjective);
+			const float ha = heights[static_cast<size_t>(k)];
+			const float hb = heights[static_cast<size_t>(k) + 1];
+			AddStructureFace(mesh, { at(a, across - WallTopHalf, ha), at(b, across - WallTopHalf, hb), at(b, across + WallTopHalf, hb), at(a, across + WallTopHalf, ha) }, { 0, 0, 1 }, middle, MeshTiled);
+			AddStructureFace(mesh, { at(a, across + WallFootHalf, 0), at(b, across + WallFootHalf, 0), at(b, across + WallTopHalf, hb), at(a, across + WallTopHalf, ha) }, front, middle, MeshTiled);
+			AddStructureFace(mesh, { at(a, across - WallFootHalf, 0), at(b, across - WallFootHalf, 0), at(b, across - WallTopHalf, hb), at(a, across - WallTopHalf, ha) }, back, middle, MeshTiled);
+			if (k == 0 && (!before || corner))
+				AddStructureFace(mesh, { at(a, across - WallFootHalf, 0), at(a, across + WallFootHalf, 0), at(a, across + WallTopHalf, ha), at(a, across - WallTopHalf, ha) }, behind, middle, MeshTiled);
+			if (k + 1 == segments && (!after || corner))
+				AddStructureFace(mesh, { at(b, across - WallFootHalf, 0), at(b, across + WallFootHalf, 0), at(b, across + WallTopHalf, hb), at(b, across - WallTopHalf, hb) }, ahead, middle, MeshTiled);
 		}
 	}
+	const int texture = StoneTexture();
 	for (WorldTriangle &tri : mesh.mesh) {
 		tri.fallback = fallback;
+		tri.texture = static_cast<int16_t>(texture);
+		tri.cull = false;
 		tri.artX = static_cast<int16_t>(tile.x);
 		tri.artY = static_cast<int16_t>(tile.y);
 		out.push_back(tri);
@@ -5328,6 +7164,638 @@ void BuildTownWallTile(Point tile, const std::array<bool, 4> &toward, int segmen
 /** Hull props are drawn in blocks of this many tiles a side (culled as one). */
 constexpr int PropBlock = 6;
 
+// ---------------------------------------------------------------------------------------------------------------
+// Rocks and gravestones rebuilt from their art. The iso camera is orthographic, looking down at 30 degrees, with
+// the same scale across and down the screen: a pixel of art is a ray through the world. A boulder is its art's
+// outline blown up into a rounded shape around the rays (deepest where the outline is widest), so that every point
+// of it lies on the ray of the pixel it shows; a gravestone is an upright slab cut to its outline.
+
+/** World units per screen pixel across the screen and down it, and the direction towards the iso camera. */
+constexpr V3 IsoAcross { 1.0F / 64.0F, -1.0F / 64.0F, 0.0F };
+constexpr float IsoDownScale = 1.0F / (512.0F + HeightPixels * HeightPixels);
+constexpr V3 IsoDown { 16.0F * IsoDownScale, 16.0F * IsoDownScale, -HeightPixels * IsoDownScale };
+constexpr float IsoPixelWorld = 1.41421356F / 64.0F; // the length of IsoAcross (and of IsoDown)
+const V3 IsoToward = [] {
+	const V3 c { 32.0F * HeightPixels, 32.0F * HeightPixels, 1024.0F };
+	const float length = std::sqrt(c.x * c.x + c.y * c.y + c.z * c.z);
+	return V3 { c.x / length, c.y / length, c.z / length };
+}();
+
+/** @brief The point on the ground the iso camera shows at screen point (sx, sy). */
+V3 IsoGround(float sx, float sy)
+{
+	return { (sy / 16.0F + sx / 32.0F) / 2.0F, (sy / 16.0F - sx / 32.0F) / 2.0F, 0.0F };
+}
+
+/** @brief The pixel of a prop's own art (its canvas) the iso camera saw at a point, or a neighbour's; NoPixel if none. */
+int16_t CanvasArtAt(const Building &b, float wx, float wy, float wz)
+{
+	const int px = static_cast<int>(std::floor((wx - wy) * 32.0F)) - b.originX;
+	const int py = static_cast<int>(std::floor((wx + wy) * 16.0F - wz * HeightPixels)) - b.originY;
+	for (int r = 0; r <= 1; r++)
+		for (int dy = -r; dy <= r; dy++)
+			for (int dx = -r; dx <= r; dx++) {
+				const int x = px + dx;
+				const int y = py + dy;
+				if (x < 0 || y < 0 || x >= b.canvasWidth || y >= b.canvasHeight)
+					continue;
+				const int16_t p = b.canvas[static_cast<size_t>(y) * b.canvasWidth + x];
+				if (p > 0)
+					return p;
+			}
+	return NoPixel;
+}
+
+/** @brief The groups of 8-connected opaque pixels of a canvas, those of `minSize` pixels or more. */
+std::vector<std::vector<std::pair<int, int>>> CanvasComponents(const Building &b, size_t minSize)
+{
+	std::vector<std::vector<std::pair<int, int>>> components;
+	const int w = b.canvasWidth;
+	const int h = b.canvasHeight;
+	std::vector<uint8_t> seen(b.canvas.size(), 0);
+	for (int y0 = 0; y0 < h; y0++) {
+		for (int x0 = 0; x0 < w; x0++) {
+			if (b.canvas[static_cast<size_t>(y0) * w + x0] <= 0 || seen[static_cast<size_t>(y0) * w + x0] != 0)
+				continue;
+			std::vector<std::pair<int, int>> pixels;
+			std::vector<std::pair<int, int>> stack { { x0, y0 } };
+			seen[static_cast<size_t>(y0) * w + x0] = 1;
+			while (!stack.empty()) {
+				const auto [x, y] = stack.back();
+				stack.pop_back();
+				pixels.emplace_back(x, y);
+				for (int dy = -1; dy <= 1; dy++)
+					for (int dx = -1; dx <= 1; dx++) {
+						const int nx = x + dx;
+						const int ny = y + dy;
+						if (nx < 0 || ny < 0 || nx >= w || ny >= h || seen[static_cast<size_t>(ny) * w + nx] != 0 || b.canvas[static_cast<size_t>(ny) * w + nx] <= 0)
+							continue;
+						seen[static_cast<size_t>(ny) * w + nx] = 1;
+						stack.emplace_back(nx, ny);
+					}
+			}
+			if (pixels.size() >= minSize)
+				components.push_back(std::move(pixels));
+		}
+	}
+	return components;
+}
+
+/** @brief A triangle of a prop rebuilt from its art: textured with the art the iso camera saw at each point. */
+void AddArtTriangle(std::vector<WorldTriangle> &out, V3 a, V3 b, V3 c, uint8_t fallback)
+{
+	const V3 e1 { b.x - a.x, b.y - a.y, b.z - a.z };
+	const V3 e2 { c.x - a.x, c.y - a.y, c.z - a.z };
+	V3 normal { e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x };
+	const float length = std::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
+	if (length < 1e-9F)
+		return;
+	normal = { normal.x / length, normal.y / length, normal.z / length };
+	WorldTriangle tri {};
+	tri.p = { a, b, c };
+	tri.mapping = MeshProjective;
+	tri.normal = normal;
+	tri.cull = false;
+	tri.mirrored = false;
+	tri.slopeScale = 1.0F;
+	tri.fallback = fallback;
+	// Turned away from the iso camera (the side it did not see), or facing down: a little darker.
+	const float facing = normal.x * IsoToward.x + normal.y * IsoToward.y + normal.z * IsoToward.z;
+	tri.darkness = std::abs(facing) < 0.35F ? 1 : 0;
+	out.push_back(tri);
+}
+
+/** @brief A triangle of a closed prop shape, turned to face out from `inside`, drawn from the front only. */
+void AddSolidTriangle(std::vector<WorldTriangle> &out, V3 a, V3 b, V3 c, V3 inside, uint8_t fallback)
+{
+	const V3 e1 { b.x - a.x, b.y - a.y, b.z - a.z };
+	const V3 e2 { c.x - a.x, c.y - a.y, c.z - a.z };
+	const V3 n { e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x };
+	const V3 m { (a.x + b.x + c.x) / 3.0F - inside.x, (a.y + b.y + c.y) / 3.0F - inside.y, (a.z + b.z + c.z) / 3.0F - inside.z };
+	const size_t before = out.size();
+	if (n.x * m.x + n.y * m.y + n.z * m.z < 0)
+		AddArtTriangle(out, a, c, b, fallback);
+	else
+		AddArtTriangle(out, a, b, c, fallback);
+	if (out.size() > before) {
+		WorldTriangle &tri = out.back();
+		tri.cull = true;
+		if (tri.normal.z < -0.3F)
+			tri.darkness = 2; // its underside
+	}
+}
+
+/** @brief The unit icosahedron, split `level` times (each triangle in four), its points on the sphere. */
+const std::vector<std::array<V3, 3>> &UnitSphere(int level)
+{
+	static std::array<std::vector<std::array<V3, 3>>, 2> spheres;
+	std::vector<std::array<V3, 3>> &sphere = spheres[static_cast<size_t>(std::clamp(level, 0, 1))];
+	if (!sphere.empty())
+		return sphere;
+	const float t = (1.0F + std::sqrt(5.0F)) / 2.0F;
+	std::array<V3, 12> v { { { -1, t, 0 }, { 1, t, 0 }, { -1, -t, 0 }, { 1, -t, 0 }, { 0, -1, t }, { 0, 1, t }, { 0, -1, -t }, { 0, 1, -t }, { t, 0, -1 }, { t, 0, 1 }, { -t, 0, -1 }, { -t, 0, 1 } } };
+	auto unit = [](V3 p) {
+		const float l = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+		return V3 { p.x / l, p.y / l, p.z / l };
+	};
+	for (V3 &p : v)
+		p = unit(p);
+	constexpr std::array<std::array<int, 3>, 20> Faces { { { 0, 11, 5 }, { 0, 5, 1 }, { 0, 1, 7 }, { 0, 7, 10 }, { 0, 10, 11 }, { 1, 5, 9 }, { 5, 11, 4 }, { 11, 10, 2 }, { 10, 7, 6 }, { 7, 1, 8 },
+		{ 3, 9, 4 }, { 3, 4, 2 }, { 3, 2, 6 }, { 3, 6, 8 }, { 3, 8, 9 }, { 4, 9, 5 }, { 2, 4, 11 }, { 6, 2, 10 }, { 8, 6, 7 }, { 9, 8, 1 } } };
+	for (const auto &f : Faces) {
+		const V3 a = v[f[0]], b = v[f[1]], c = v[f[2]];
+		if (level <= 0) {
+			sphere.push_back({ a, b, c });
+			continue;
+		}
+		auto mid = [&](V3 p, V3 q) { return unit({ (p.x + q.x) / 2, (p.y + q.y) / 2, (p.z + q.z) / 2 }); };
+		const V3 ab = mid(a, b), bc = mid(b, c), ca = mid(c, a);
+		sphere.push_back({ a, ab, ca });
+		sphere.push_back({ ab, b, bc });
+		sphere.push_back({ ca, bc, c });
+		sphere.push_back({ ab, bc, ca });
+	}
+	return sphere;
+}
+
+/**
+ * @brief A lumpy stone: a squashed sphere (`radius` across, `height` up, turned by `turn`) with its surface pushed in
+ * and out by a few waves, so no two are alike; what would be under the ground is flattened onto it.
+ */
+void AddStone(std::vector<WorldTriangle> &out, V3 middle, float radius, float height, float turn, uint32_t seed, int level, uint8_t fallback)
+{
+	auto random = [&](int k) { return static_cast<float>((seed * 2654435761U + static_cast<uint32_t>(k) * 40503U) >> 8 & 0xFFFF) / 65535.0F; };
+	std::array<V3, 4> waves;
+	std::array<float, 4> phase;
+	for (int k = 0; k < 4; k++) {
+		const float a = random(k * 3) * 6.2831853F;
+		const float z = random(k * 3 + 1) * 2.0F - 1.0F;
+		const float r = std::sqrt(1.0F - z * z);
+		waves[k] = { r * std::cos(a), r * std::sin(a), z };
+		phase[k] = random(k * 3 + 2) * 6.2831853F;
+	}
+	const float stretch = 0.85F + 0.3F * random(20);
+	const float c = std::cos(turn);
+	const float s = std::sin(turn);
+	auto place = [&](V3 p) {
+		float lump = 1.0F;
+		for (int k = 0; k < 4; k++)
+			lump += (k < 2 ? 0.13F : 0.06F) * std::sin((p.x * waves[k].x + p.y * waves[k].y + p.z * waves[k].z) * (k < 2 ? 2.6F : 5.3F) + phase[k]);
+		const float x = p.x * lump * radius * stretch;
+		const float y = p.y * lump * radius / stretch;
+		const float z = std::max(p.z * lump * height, -0.35F * height);
+		return V3 { middle.x + x * c - y * s, middle.y + x * s + y * c, std::max(middle.z + z, 0.0F) };
+	};
+	for (const auto &tri : UnitSphere(level))
+		AddSolidTriangle(out, place(tri[0]), place(tri[1]), place(tri[2]), { middle.x, middle.y, std::max(middle.z, height * 0.3F) }, fallback);
+}
+
+/** @brief A component of a canvas as a mask (a pixel of empty border round it), with its small specks closed. */
+struct ArtMask {
+	int x0 = 0; // the canvas pixel at mask (1, 1)
+	int y0 = 0;
+	int w = 0;
+	int h = 0;
+	std::vector<uint8_t> mask;
+
+	ArtMask(const std::vector<std::pair<int, int>> &pixels, int close)
+	{
+		int x1 = std::numeric_limits<int>::lowest();
+		int y1 = x1;
+		x0 = y0 = std::numeric_limits<int>::max();
+		for (const auto &[x, y] : pixels) {
+			x0 = std::min(x0, x);
+			y0 = std::min(y0, y);
+			x1 = std::max(x1, x);
+			y1 = std::max(y1, y);
+		}
+		w = x1 - x0 + 3;
+		h = y1 - y0 + 3;
+		mask.assign(static_cast<size_t>(w) * h, 0);
+		for (const auto &[x, y] : pixels)
+			mask[At(x, y)] = 1;
+		auto grow = [&](uint8_t value) {
+			std::vector<uint8_t> to = mask;
+			for (int y = 0; y < h; y++)
+				for (int x = 0; x < w; x++) {
+					if (mask[static_cast<size_t>(y) * w + x] == value)
+						continue;
+					for (int dy = -close; dy <= close; dy++)
+						for (int dx = -close; dx <= close; dx++) {
+							const int nx = x + dx;
+							const int ny = y + dy;
+							if (dx * dx + dy * dy <= close * close && nx >= 0 && ny >= 0 && nx < w && ny < h && mask[static_cast<size_t>(ny) * w + nx] == value) {
+								to[static_cast<size_t>(y) * w + x] = value;
+								dy = close + 1;
+								break;
+							}
+						}
+				}
+			mask = std::move(to);
+		};
+		if (close > 0) {
+			grow(1);
+			grow(0);
+		}
+		for (const auto &[x, y] : pixels)
+			mask[At(x, y)] = 1;
+		for (int y = 0; y < h; y++)
+			for (int x = 0; x < w; x++)
+				if (x == 0 || y == 0 || x == w - 1 || y == h - 1)
+					mask[static_cast<size_t>(y) * w + x] = 0;
+	}
+
+	[[nodiscard]] size_t At(int x, int y) const { return static_cast<size_t>(y - y0 + 1) * w + (x - x0 + 1); }
+
+	/** @brief Each pixel's distance to the outside of the mask (chamfer). */
+	[[nodiscard]] std::vector<float> Distance() const
+	{
+		std::vector<float> d(mask.size(), 0.0F);
+		for (size_t i = 0; i < mask.size(); i++)
+			if (mask[i] != 0)
+				d[i] = 1e6F;
+		constexpr float Diagonal = 1.41421356F;
+		for (int y = 1; y < h; y++)
+			for (int x = 1; x < w - 1; x++) {
+				float &v = d[static_cast<size_t>(y) * w + x];
+				if (v != 0)
+					v = std::min({ v, d[static_cast<size_t>(y - 1) * w + x] + 1, d[static_cast<size_t>(y) * w + x - 1] + 1, d[static_cast<size_t>(y - 1) * w + x - 1] + Diagonal, d[static_cast<size_t>(y - 1) * w + x + 1] + Diagonal });
+			}
+		for (int y = h - 2; y >= 0; y--)
+			for (int x = w - 2; x >= 1; x--) {
+				float &v = d[static_cast<size_t>(y) * w + x];
+				if (v != 0)
+					v = std::min({ v, d[static_cast<size_t>(y + 1) * w + x] + 1, d[static_cast<size_t>(y) * w + x + 1] + 1, d[static_cast<size_t>(y + 1) * w + x + 1] + Diagonal, d[static_cast<size_t>(y + 1) * w + x - 1] + Diagonal });
+			}
+		return d;
+	}
+};
+
+/** Screen pixels per tile across the iso view, and down it (for a length along the ground towards the camera). */
+constexpr float IsoPixelsPerTile = 45.254834F;
+constexpr float IsoPixelsPerTileDeep = 22.627417F;
+
+/**
+ * @brief A heap of boulders from its art: its outline filled with round stones, the biggest first (each where the
+ * outline is widest, as wide as it is there), each a lumpy low-poly stone. The iso view has the same scale across and
+ * down, so a circle of the art is a stone of that size, and its middle is on the ray of the circle's middle. Where a
+ * stone's circle is above the heap's foot, it is half further back, half up on the stones in front (never higher than
+the biggest of them). `stones` counts.
+ */
+void PackStones(const Building &b, const std::vector<std::pair<int, int>> &pixels, uint8_t fallback, std::vector<WorldTriangle> &near, std::vector<WorldTriangle> &far, int &stones)
+{
+	ArtMask m(pixels, 2);
+	// The heap's foot: the lowest pixel of each column, evened out over the columns around it.
+	std::vector<int> bottom(static_cast<size_t>(m.w), -1);
+	for (int y = 0; y < m.h; y++)
+		for (int x = 0; x < m.w; x++)
+			if (m.mask[static_cast<size_t>(y) * m.w + x] != 0)
+				bottom[static_cast<size_t>(x)] = y;
+	std::vector<float> foot(static_cast<size_t>(m.w), static_cast<float>(m.h - 2));
+	for (int c = 0; c < m.w; c++) {
+		std::vector<int> around;
+		for (int k = std::max(0, c - 4); k <= std::min(m.w - 1, c + 4); k++)
+			if (bottom[static_cast<size_t>(k)] >= 0)
+				around.push_back(bottom[static_cast<size_t>(k)]);
+		if (!around.empty()) {
+			std::nth_element(around.begin(), around.begin() + static_cast<ptrdiff_t>(around.size() / 2), around.end());
+			foot[static_cast<size_t>(c)] = static_cast<float>(around[around.size() / 2]) + 1.0F;
+		}
+	}
+	constexpr float Smallest = 2.5F; // pixels of radius
+	constexpr int Most = 16;
+	float tallest = 0; // the biggest stone's height: none rests higher than on top of it
+	for (int k = 0; k < Most; k++) {
+		const std::vector<float> distance = m.Distance();
+		const auto widest = std::max_element(distance.begin(), distance.end());
+		if (*widest < Smallest)
+			break;
+		const int mx = static_cast<int>((widest - distance.begin()) % m.w);
+		const int my = static_cast<int>((widest - distance.begin()) / m.w);
+		const float r = *widest + 0.5F;
+		for (int y = 0; y < m.h; y++)
+			for (int x = 0; x < m.w; x++)
+				if (static_cast<float>((x - mx) * (x - mx) + (y - my) * (y - my)) <= r * r * 0.7F)
+					m.mask[static_cast<size_t>(y) * m.w + x] = 0;
+		// The stone: its middle on the ray of the circle's.
+		const float radius = r / IsoPixelsPerTile;
+		const float height = radius * 0.78F;
+		const float sx = static_cast<float>(mx + m.x0 - 1 + b.originX) + 0.5F;
+		const float sy = static_cast<float>(my + m.y0 - 1 + b.originY) + 0.5F;
+		const float gap = std::max(0.0F, foot[static_cast<size_t>(mx)] - static_cast<float>(my) - r);
+		const float lift = std::min(0.5F * gap / HeightPixels, tallest * 0.8F);
+		tallest = std::max(tallest, 2.0F * height);
+		const float z = lift + height * 0.7F;
+		const float sum = (sy + z * HeightPixels) / 16.0F; // x + y
+		const float difference = sx / 32.0F;            // x - y
+		const V3 middle { (sum + difference) / 2.0F, (sum - difference) / 2.0F, z };
+		const uint32_t seed = static_cast<uint32_t>(std::lround(middle.x * 97.0F)) * 73856093U ^ static_cast<uint32_t>(std::lround(middle.y * 97.0F)) * 19349663U;
+		const float turn = static_cast<float>(seed % 628U) / 100.0F;
+		AddStone(near, middle, radius, height, turn, seed, 1, fallback);
+		AddStone(far, middle, radius, height, turn, seed, 0, fallback);
+		stones++;
+	}
+}
+
+/**
+ * @brief A gravestone from its art, made as what its outline is: a headstone (round-topped where its top corners are
+ * cut), a cross (arms much wider than the upright above them), a post (narrow) or a slab fallen flat (wide and low).
+ * Its body is the art's wider rows: what the ground's removal leaves of its shaded foot is a thin stem, so it stands
+ * on the ground under the art's foot as wide as its body. It faces the iso camera.
+ */
+void ShapeGrave(const Building &b, const std::vector<std::pair<int, int>> &pixels, uint8_t fallback, std::vector<WorldTriangle> &out)
+{
+	int y0 = std::numeric_limits<int>::max();
+	int y1 = std::numeric_limits<int>::lowest();
+	for (const auto &[x, y] : pixels) {
+		y0 = std::min(y0, y);
+		y1 = std::max(y1, y);
+	}
+	const int rows = y1 - y0 + 1;
+	std::vector<int> left(static_cast<size_t>(rows), std::numeric_limits<int>::max());
+	std::vector<int> right(static_cast<size_t>(rows), std::numeric_limits<int>::lowest());
+	for (const auto &[x, y] : pixels) {
+		left[static_cast<size_t>(y - y0)] = std::min(left[static_cast<size_t>(y - y0)], x);
+		right[static_cast<size_t>(y - y0)] = std::max(right[static_cast<size_t>(y - y0)], x);
+	}
+	auto width = [&](int row) { return right[static_cast<size_t>(row)] >= left[static_cast<size_t>(row)] ? right[static_cast<size_t>(row)] - left[static_cast<size_t>(row)] + 1 : 0; };
+	int widest = 0;
+	int widestRow = 0;
+	for (int row = 0; row < rows; row++)
+		if (width(row) > widest) {
+			widest = width(row);
+			widestRow = row;
+		}
+	// The body: the rows at least half as wide as the widest; its width, and its middle across.
+	std::vector<int> body;
+	float middleSum = 0;
+	for (int row = 0; row < rows; row++)
+		if (2 * width(row) >= widest) {
+			body.push_back(width(row));
+			middleSum += static_cast<float>(left[static_cast<size_t>(row)] + right[static_cast<size_t>(row)] + 1) / 2.0F;
+		}
+	const float middlePx = middleSum / static_cast<float>(body.size());
+	std::sort(body.begin(), body.end());
+	const float bodyWidth = static_cast<float>(body[body.size() * 85 / 100]);
+	const float tall = static_cast<float>(rows);
+	const float footSx = middlePx + static_cast<float>(b.originX);
+	const float footSy = static_cast<float>(y1 + b.originY) + 1.0F;
+	const V3 foot = IsoGround(footSx, footSy);
+	constexpr V3 Along { 0.70710678F, -0.70710678F, 0.0F };
+	constexpr V3 Facing { 0.70710678F, 0.70710678F, 0.0F };
+	auto at = [&](float along, float facing, float z) {
+		return V3 { foot.x + along * Along.x + facing * Facing.x, foot.y + along * Along.y + facing * Facing.y, z };
+	};
+	auto zOf = [&](int row) { return std::max(0.0F, (footSy - static_cast<float>(y0 + row + b.originY)) / HeightPixels); };
+	// A box from a0 to a1 along, f0 to f1 towards the camera, z0 to z1 up.
+	auto box = [&](float a0, float a1, float f0, float f1, float z0, float z1) {
+		const V3 inside = at((a0 + a1) / 2.0F, (f0 + f1) / 2.0F, (z0 + z1) / 2.0F);
+		const std::array<V3, 8> p { at(a0, f0, z0), at(a1, f0, z0), at(a1, f1, z0), at(a0, f1, z0), at(a0, f0, z1), at(a1, f0, z1), at(a1, f1, z1), at(a0, f1, z1) };
+		constexpr std::array<std::array<int, 4>, 6> Sides { { { 0, 1, 2, 3 }, { 4, 5, 6, 7 }, { 0, 1, 5, 4 }, { 1, 2, 6, 5 }, { 2, 3, 7, 6 }, { 3, 0, 4, 7 } } };
+		for (const auto &q : Sides) {
+			AddSolidTriangle(out, p[q[0]], p[q[1]], p[q[2]], inside, fallback);
+			AddSolidTriangle(out, p[q[0]], p[q[2]], p[q[3]], inside, fallback);
+		}
+	};
+	const float halfWidth = bodyWidth / 2.0F / IsoPixelsPerTile;
+	const float top = zOf(0);
+	constexpr float Thick = 0.09F;
+	// A cross: a band of rows nearly as wide as the widest, with a narrow upright above it and narrower rows below.
+	int band0 = widestRow;
+	int band1 = widestRow;
+	while (band0 > 0 && 20 * width(band0 - 1) >= 17 * widest)
+		band0--;
+	while (band1 + 1 < rows && 20 * width(band1 + 1) >= 17 * widest)
+		band1++;
+	float above = 0;
+	for (int row = 0; row < band0; row++)
+		above += static_cast<float>(width(row));
+	above = band0 > 0 ? above / static_cast<float>(band0) : static_cast<float>(widest);
+	float below = 0;
+	int belowRows = 0;
+	for (int row = band1 + 1; row < std::min(rows, band1 + 5); row++, belowRows++)
+		below += static_cast<float>(width(row));
+	below = belowRows > 0 ? below / static_cast<float>(belowRows) : static_cast<float>(widest);
+	const bool cross = band0 >= 2 && above <= 0.55F * static_cast<float>(widest) && below <= 0.75F * static_cast<float>(widest) && band1 - band0 + 1 <= rows * 45 / 100;
+	if (static_cast<float>(widest) >= 1.6F * tall) {
+		// Fallen flat: as long towards the camera as the art is tall (less its own thickness).
+		const float length = std::max(0.1F, (tall - 3.0F) / IsoPixelsPerTileDeep);
+		const float half = static_cast<float>(widest) / 2.0F / IsoPixelsPerTile;
+		box(-half, half, -length, 0.0F, 0.0F, 0.06F);
+	} else if (cross) {
+		// Its upright as wide as the art above the arms, its arms as wide as the art there, both about its middle.
+		const float stem = std::max(above, 2.0F) / 2.0F / IsoPixelsPerTile;
+		const float arm = static_cast<float>(widest) / 2.0F / IsoPixelsPerTile;
+		box(-stem, stem, -Thick / 2.0F, Thick / 2.0F, 0.0F, top);
+		box(-arm, arm, -Thick / 2.0F, Thick / 2.0F, zOf(band1 + 1), zOf(band0));
+	} else if (bodyWidth <= 0.42F * tall) {
+		// A post: as deep as it is wide.
+		box(-halfWidth, halfWidth, -halfWidth, halfWidth, 0.0F, top);
+	} else {
+		// A headstone, round-topped where the corners of its top are cut.
+		const int topWidth = std::max(width(0), width(std::min(1, rows - 1)));
+		const bool round = static_cast<float>(topWidth) < 0.75F * bodyWidth;
+		const float arc = round ? std::min(halfWidth, top * 0.5F) : 0.0F;
+		std::vector<std::pair<float, float>> outline { { -halfWidth, 0.0F }, { halfWidth, 0.0F }, { halfWidth, top - arc } };
+		constexpr int ArcSteps = 6;
+		for (int k = 1; k < ArcSteps; k++) {
+			const float a = 3.14159265F * static_cast<float>(k) / static_cast<float>(ArcSteps);
+			outline.emplace_back(halfWidth * std::cos(a), top - arc + arc * std::sin(a));
+		}
+		outline.emplace_back(-halfWidth, top - arc);
+		const V3 inside = at(0.0F, 0.0F, top * 0.45F);
+		const size_t n = outline.size();
+		for (size_t k = 1; k + 1 < n; k++) {
+			for (const float f : { -Thick / 2.0F, Thick / 2.0F })
+				AddSolidTriangle(out, at(outline[0].first, f, outline[0].second), at(outline[k].first, f, outline[k].second), at(outline[k + 1].first, f, outline[k + 1].second), inside, fallback);
+		}
+		for (size_t k = 0; k < n; k++) {
+			const auto &[a0, z0] = outline[k];
+			const auto &[a1, z1] = outline[(k + 1) % n];
+			const V3 p0 = at(a0, -Thick / 2.0F, z0), p1 = at(a1, -Thick / 2.0F, z1);
+			const V3 q0 = at(a0, Thick / 2.0F, z0), q1 = at(a1, Thick / 2.0F, z1);
+			AddSolidTriangle(out, p0, p1, q1, inside, fallback);
+			AddSolidTriangle(out, p0, q1, q0, inside, fallback);
+		}
+	}
+}
+
+/** @brief The commonest colour of a group of canvas pixels, for where the art shows nothing. */
+uint8_t ComponentColor(const Building &b, const std::vector<std::pair<int, int>> &pixels)
+{
+	std::vector<int16_t> colors;
+	colors.reserve(pixels.size());
+	for (const auto &[x, y] : pixels)
+		colors.push_back(b.canvas[static_cast<size_t>(y) * b.canvasWidth + x]);
+	return PatchColor(static_cast<int16_t>(std::max<uint8_t>(CommonestColor(colors), 1)));
+}
+
+/** @brief The bounds of a prop from its mesh. */
+void FitPropBounds(TownProp &prop)
+{
+	Building &b = prop.art;
+	b.x0 = b.y0 = std::numeric_limits<float>::max();
+	b.x1 = b.y1 = std::numeric_limits<float>::lowest();
+	b.lowestZ = 0;
+	b.highestZ = 0;
+	for (const WorldTriangle &tri : b.mesh)
+		for (const V3 &p : tri.p) {
+			b.x0 = std::min(b.x0, p.x);
+			b.y0 = std::min(b.y0, p.y);
+			b.x1 = std::max(b.x1, p.x);
+			b.y1 = std::max(b.y1, p.y);
+			b.highestZ = std::max(b.highestZ, p.z);
+		}
+	prop.middle = { (b.x0 + b.x1) / 2.0F, (b.y0 + b.y1) / 2.0F };
+	prop.radius = std::hypot(b.x1 - b.x0, b.y1 - b.y0) / 2.0F;
+}
+
+/**
+ * @brief The art of a group of prop tiles without the ground it paints in their floor diamonds. The foot of a
+ * boulder or a gravestone is drawn there with the ground, and the ground (with its shadows) is grey, brown and green
+ * where the stones are blue: in the diamonds the stone pixels of the whole art are kept (where they are not a speck
+ * on their own), the rest goes. Painted lamplight goes too.
+ */
+void BuildPropCanvas(Building &b, const std::vector<Point> &tiles)
+{
+	BuildUprightCanvas(b, tiles);
+	Building raw {};
+	BuildUprightCanvas(raw, tiles, true);
+	if (raw.canvasWidth != b.canvasWidth || raw.canvasHeight != b.canvasHeight)
+		return;
+	const int w = b.canvasWidth;
+	const int h = b.canvasHeight;
+	std::vector<uint8_t> inDiamond(b.canvas.size(), 0);
+	for (const Point t : tiles) {
+		const float cx = static_cast<float>((t.x - t.y) * 32 - b.originX);
+		const float cy = static_cast<float>((t.x + t.y + 2) * 16 - 16 - b.originY);
+		for (int y = static_cast<int>(cy) - 17; y <= static_cast<int>(cy) + 17; y++)
+			for (int x = static_cast<int>(cx) - 33; x <= static_cast<int>(cx) + 33; x++)
+				if (x >= 0 && y >= 0 && x < w && y < h && std::abs(static_cast<float>(x) + 0.5F - cx) / 32.0F + std::abs(static_cast<float>(y) + 0.5F - cy) / 16.0F <= 1.05F)
+					inDiamond[static_cast<size_t>(y) * w + x] = 1;
+	}
+	auto stone = [](int16_t p) {
+		if (p <= 0)
+			return false;
+		const SDL_Color c = logical_palette[static_cast<uint8_t>(p)];
+		return c.b >= c.r + 12 && c.b >= c.g + 8;
+	};
+	std::vector<int16_t> kept = b.canvas;
+	for (size_t i = 0; i < kept.size(); i++)
+		if (inDiamond[i] != 0)
+			kept[i] = stone(raw.canvas[i]) ? raw.canvas[i] : int16_t { -1 };
+	b.canvas = kept;
+	for (int y = 0; y < h; y++)
+		for (int x = 0; x < w; x++) {
+			const size_t i = static_cast<size_t>(y) * w + x;
+			if (inDiamond[i] == 0 || kept[i] <= 0)
+				continue;
+			int around = 0;
+			for (int dy = -1; dy <= 1; dy++)
+				for (int dx = -1; dx <= 1; dx++)
+					if ((dx != 0 || dy != 0) && x + dx >= 0 && y + dy >= 0 && x + dx < w && y + dy < h && kept[static_cast<size_t>(y + dy) * w + x + dx] > 0)
+						around++;
+			if (around < 3)
+				b.canvas[i] = -1;
+		}
+	for (int16_t &p : b.canvas) {
+		if (p <= 0)
+			continue;
+		const SDL_Color c = logical_palette[static_cast<uint8_t>(p)];
+		const bool orange = c.r >= 80 && c.r * 10 >= c.b * 20 && c.g * 10 >= c.b * 12;
+		const bool red = c.r >= 80 && c.r >= 2 * c.g && c.r >= 2 * c.b;
+		if (orange || red)
+			p = -1;
+	}
+}
+
+#ifdef _DEBUG
+/** @brief Debug (FP_DUMP_PROPS=dir): a prop group's canvas as dir/name_N.ppm. */
+void DumpPropCanvas(const Building &b, const char *name)
+{
+	const char *dir = std::getenv("FP_DUMP_PROPS");
+	if (dir == nullptr)
+		return;
+	static int count = 0;
+	if (FILE *f = std::fopen(StrCat(dir, "/", name, "_", count++, ".ppm").c_str(), "wb"); f != nullptr) {
+		std::fprintf(f, "P6\n%d %d\n255\n", b.canvasWidth, b.canvasHeight);
+		for (const int16_t p : b.canvas) {
+			const SDL_Color c = p > 0 ? logical_palette[p] : SDL_Color { 0, 120, 0, 255 };
+			const uint8_t rgb[3] { c.r, c.g, c.b };
+			std::fwrite(rgb, 1, 3, f);
+		}
+		std::fclose(f);
+	}
+}
+#endif
+
+int StoneCount = 0; // the boulders made (logged)
+
+/** @brief The boulders of a group of rock tiles. */
+void BuildRocks(const std::vector<Point> &tiles)
+{
+	TownProp prop;
+	prop.kind = PropKind::Rock;
+	prop.ownCanvas = true;
+	Building &b = prop.art;
+	BuildPropCanvas(b, tiles);
+#ifdef _DEBUG
+	DumpPropCanvas(b, "rocks");
+#endif
+	if (b.canvas.empty())
+		return;
+	for (const auto &pixels : CanvasComponents(b, 40))
+		PackStones(b, pixels, ComponentColor(b, pixels), b.mesh, prop.farMesh, StoneCount);
+	if (b.mesh.empty())
+		return;
+	FitPropBounds(prop);
+	TownProps.push_back(std::move(prop));
+}
+
+/** @brief The gravestones and crosses of a group of grave tiles. */
+void BuildGraves(const std::vector<Point> &tiles)
+{
+	TownProp prop;
+	prop.kind = PropKind::Slab;
+	prop.ownCanvas = true;
+	Building &b = prop.art;
+	BuildPropCanvas(b, tiles);
+#ifdef _DEBUG
+	DumpPropCanvas(b, "graves");
+#endif
+	if (b.canvas.empty())
+		return;
+	// A stone the ground's removal cut in two (its dark foot taken out) is one again: pieces one above the other.
+	std::vector<std::vector<std::pair<int, int>>> pieces = CanvasComponents(b, 3);
+	auto bounds = [](const std::vector<std::pair<int, int>> &piece) {
+		std::array<int, 4> r { std::numeric_limits<int>::max(), std::numeric_limits<int>::lowest(), std::numeric_limits<int>::max(), std::numeric_limits<int>::lowest() };
+		for (const auto &[x, y] : piece)
+			r = { std::min(r[0], x), std::max(r[1], x), std::min(r[2], y), std::max(r[3], y) };
+		return r;
+	};
+	for (bool merged = true; merged;) {
+		merged = false;
+		for (size_t i = 0; i < pieces.size() && !merged; i++)
+			for (size_t j = i + 1; j < pieces.size() && !merged; j++) {
+				const std::array<int, 4> a = bounds(pieces[i]);
+				const std::array<int, 4> c = bounds(pieces[j]);
+				if (a[0] <= c[1] + 1 && c[0] <= a[1] + 1 && std::max(a[2], c[2]) - std::min(a[3], c[3]) <= 12) {
+					pieces[i].insert(pieces[i].end(), pieces[j].begin(), pieces[j].end());
+					pieces.erase(pieces.begin() + static_cast<ptrdiff_t>(j));
+					merged = true;
+				}
+			}
+	}
+	for (const auto &pixels : pieces)
+		if (pixels.size() >= 12)
+			ShapeGrave(b, pixels, ComponentColor(b, pixels), b.mesh);
+	if (b.mesh.empty())
+		return;
+	prop.farMesh = b.mesh;
+	FitPropBounds(prop);
+	TownProps.push_back(std::move(prop));
+}
+
 /**
  * @brief Replaces the town's remaining tall-art tiles (those no building draws) with meshes: trees, and the hulls of
  * the rest. Pieces of the church's art its model stands in for are hidden. Marks the tiles (BuildingTiles 3) so
@@ -5336,7 +7804,9 @@ constexpr int PropBlock = 6;
 void BuildTownProps()
 {
 	TownProps.clear();
+	StoneCount = 0;
 	PropHulls.clear();
+	TreeSprites.clear();
 	if (leveltype != DTYPE_TOWN)
 		return;
 	auto index = [](int x, int y) { return static_cast<size_t>(y) * MAXDUNX + x; };
@@ -5365,9 +7835,12 @@ void BuildTownProps()
 	}
 	std::vector<PropKind> kinds(static_cast<size_t>(MAXDUNX) * MAXDUNY, PropKind::None);
 	for (int y = 0; y < MAXDUNY; y++)
-		for (int x = 0; x < MAXDUNX; x++)
+		for (int x = 0; x < MAXDUNX; x++) {
 			if (BuildingTiles[index(x, y)] == 0)
 				kinds[index(x, y)] = TownPieceKind(dPiece[x][y]);
+			else if (GetPieceTextures(dPiece[x][y]).hasTallArt && IsTreePiece(dPiece[x][y]))
+				kinds[index(x, y)] = PropKind::Tree; // a tree beside a house, its tile claimed by the house's art: still the tree's
+		}
 	// Trees: groups of neighbouring tree tiles.
 	int treeCount = 0;
 	std::vector<uint8_t> seen(kinds.size(), 0);
@@ -5394,6 +7867,87 @@ void BuildTownProps()
 			BuildTrees(group, treeCount);
 		}
 	}
+	// The low stone walls' heights, from their art.
+	WallHeights.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY, 0.0F);
+	for (int y = 0; y < MAXDUNY; y++)
+		for (int x = 0; x < MAXDUNX; x++) {
+			if (kinds[index(x, y)] != PropKind::Wall)
+				continue;
+			float top = 0;
+			for (const float h : PropHullHeights(GetPieceTextures(dPiece[x][y]), 0.7F, 8))
+				top = std::max(top, h);
+			WallHeights[index(x, y)] = std::clamp(top, 0.35F, 1.1F);
+		}
+	{
+		// Mostly the walls' common height: the art's tiles of a wall differ more than the wall does.
+		std::vector<float> heights;
+		for (const float h : WallHeights)
+			if (h > 0)
+				heights.push_back(h);
+		if (!heights.empty()) {
+			std::nth_element(heights.begin(), heights.begin() + static_cast<ptrdiff_t>(heights.size() / 2), heights.end());
+			const float common = heights[heights.size() / 2];
+			for (float &h : WallHeights)
+				if (h > 0)
+					h = 0.25F * h + 0.75F * common;
+		}
+	}
+	// Corners the art draws across two tiles meeting at a diagonal (the walls ending on the tiles either side of an
+	// empty one): the empty tile is the corner, so the two walls meet in it instead of leaving a gap at the corner.
+	std::vector<Point> corners;
+	for (int y = 1; y < MAXDUNY - 1; y++)
+		for (int x = 1; x < MAXDUNX - 1; x++) {
+			if (kinds[index(x, y)] != PropKind::None || BuildingTiles[index(x, y)] != 0)
+				continue;
+			auto wall = [&](int dx, int dy) { return kinds[index(x + dx, y + dy)] == PropKind::Wall; };
+			for (const int sx : { -1, 1 })
+				for (const int sy : { -1, 1 })
+					if (wall(sx, 0) && wall(0, sy) && !wall(-sx, 0) && !wall(0, -sy) && wall(2 * sx, 0) && wall(0, 2 * sy))
+						corners.push_back({ x, y });
+		}
+	for (const Point c : corners) {
+		kinds[index(c.x, c.y)] = PropKind::Wall;
+		float sum = 0;
+		int count = 0;
+		for (const Point n : { Point { c.x - 1, c.y }, Point { c.x + 1, c.y }, Point { c.x, c.y - 1 }, Point { c.x, c.y + 1 } })
+			if (WallHeights[index(n.x, n.y)] > 0) {
+				sum += WallHeights[index(n.x, n.y)];
+				count++;
+			}
+		WallHeights[index(c.x, c.y)] = count > 0 ? sum / static_cast<float>(count) : 0.6F;
+		LogInfo("fp: low wall corner closed at {}, {}", c.x, c.y);
+	}
+	// Where across their tiles the walls stand: each straight run of wall tiles where most of its art has it (the
+	// art's tiles of a run differ, some with a buttress or a fallen stone), so they line up with no gaps between.
+	WallAcross.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY * 2, 0.0F);
+	for (int axis = 0; axis < 2; axis++) {
+		auto at = [&](int line, int k) { return axis == 0 ? Point { k, line } : Point { line, k }; };
+		auto isWall = [&](Point p) { return InDungeonBounds(p) && kinds[index(p.x, p.y)] == PropKind::Wall; };
+		for (int line = 0; line < (axis == 0 ? MAXDUNY : MAXDUNX); line++) {
+			const int length = axis == 0 ? MAXDUNX : MAXDUNY;
+			for (int k = 0; k < length;) {
+				if (!isWall(at(line, k)) || !isWall(at(line, k + 1))) {
+					k++;
+					continue;
+				}
+				int end = k + 1;
+				while (isWall(at(line, end + 1)))
+					end++;
+				std::vector<float> acrosses;
+				for (int m = k; m <= end; m++) {
+					const Point p = at(line, m);
+					acrosses.push_back(WallArtAcross(GetPieceTextures(dPiece[p.x][p.y]), axis == 0));
+				}
+				std::nth_element(acrosses.begin(), acrosses.begin() + static_cast<ptrdiff_t>(acrosses.size() / 2), acrosses.end());
+				const float across = acrosses[acrosses.size() / 2];
+				for (int m = k; m <= end; m++) {
+					const Point p = at(line, m);
+					WallAcross[index(p.x, p.y) * 2 + static_cast<size_t>(axis)] = across;
+				}
+				k = end + 1;
+			}
+		}
+	}
 	// The rest: each tile's hull (one per piece, placed on every tile showing it), in blocks.
 	std::unordered_map<int, size_t> blocks;
 	int hullTiles = 0;
@@ -5406,9 +7960,11 @@ void BuildTownProps()
 				BuildingTiles[index(x, y)] = 1;
 				continue;
 			}
+			if (BuildingTiles[index(x, y)] != 0)
+				continue; // a tree's tile a house claimed: its ground stays the house's
 			BuildingTiles[index(x, y)] = 3;
-			if (kind == PropKind::Tree)
-				continue;
+			if (kind == PropKind::Tree || kind == PropKind::Rock || kind == PropKind::Slab)
+				continue; // built by group, below (trees above)
 			std::array<bool, 4> wallToward {};
 			if (kind == PropKind::Wall) {
 				const std::array<Point, 4> next { Point { x - 1, y }, Point { x + 1, y }, Point { x, y - 1 }, Point { x, y + 1 } };
@@ -5471,15 +8027,736 @@ void BuildTownProps()
 		}
 	}
 	for (TownProp &prop : TownProps) {
-		if (prop.kind == PropKind::Tree)
-			continue;
 		prop.middle = { (prop.art.x0 + prop.art.x1) / 2.0F, (prop.art.y0 + prop.art.y1) / 2.0F };
 		prop.radius = std::hypot(prop.art.x1 - prop.art.x0, prop.art.y1 - prop.art.y0) / 2.0F;
 	}
+	// Boulders and gravestones: groups of neighbouring tiles of each, from their art together.
+	for (const PropKind kind : { PropKind::Rock, PropKind::Slab }) {
+		std::vector<uint8_t> grouped(kinds.size(), 0);
+		for (int y = 0; y < MAXDUNY; y++) {
+			for (int x = 0; x < MAXDUNX; x++) {
+				if (kinds[index(x, y)] != kind || grouped[index(x, y)] != 0 || BuildingTiles[index(x, y)] != 3)
+					continue;
+				std::vector<Point> group;
+				std::vector<Point> stack { { x, y } };
+				grouped[index(x, y)] = 1;
+				while (!stack.empty()) {
+					const Point p = stack.back();
+					stack.pop_back();
+					group.push_back(p);
+					for (int dy = -1; dy <= 1; dy++)
+						for (int dx = -1; dx <= 1; dx++) {
+							const Point q { p.x + dx, p.y + dy };
+							if (InDungeonBounds(q) && grouped[index(q.x, q.y)] == 0 && kinds[index(q.x, q.y)] == kind && BuildingTiles[index(q.x, q.y)] == 3) {
+								grouped[index(q.x, q.y)] = 1;
+								stack.push_back(q);
+							}
+						}
+				}
+				if (kind == PropKind::Rock)
+					BuildRocks(group);
+				else
+					BuildGraves(group);
+				hullTiles += static_cast<int>(group.size());
+			}
+		}
+	}
 	size_t triangles = 0;
-	for (const TownProp &prop : TownProps)
+	std::array<size_t, 8> byKind {};
+	for (const TownProp &prop : TownProps) {
 		triangles += prop.art.mesh.size();
-	LogInfo("fp: town props: {} trees, {} hull tiles ({} pieces), {} meshes, {} triangles", treeCount, hullTiles, PropHulls.size(), TownProps.size(), triangles);
+		byKind[static_cast<size_t>(prop.kind)] += prop.art.mesh.size();
+	}
+	LogInfo("fp: prop triangles: rocks {} ({} stones), walls {}, graves {}, grass {}", byKind[static_cast<size_t>(PropKind::Rock)], StoneCount, byKind[static_cast<size_t>(PropKind::Wall)], byKind[static_cast<size_t>(PropKind::Slab)], byKind[static_cast<size_t>(PropKind::Grass)]);
+	LogInfo("fp: town props: {} tree sprites, {} hull tiles ({} pieces), {} meshes, {} triangles", treeCount, hullTiles, PropHulls.size(), TownProps.size(), triangles);
+}
+
+/** @brief Whether a point is inside a lit room (with its walls): no light from the grids there. */
+bool InsideLitRoom(float x, float y, float z)
+{
+	constexpr float Wall = 0.15F;
+	for (const LitRoom &room : LitRooms)
+		if (x > room.x0 - Wall && x < room.x1 + Wall && y > room.y0 - Wall && y < room.y1 + Wall && z < room.top + 0.3F)
+			return true;
+	return false;
+}
+
+/**
+ * @brief What blocks the lamps' light around a point: the town's buildings and prop hulls, as a grid of voxels
+ * (1 solid, 2 the church's glass, 3 a window's glass) over every surface of them.
+ */
+struct Occluders {
+	float x0 = 0;
+	float y0 = 0;
+	int nx = 0;
+	int ny = 0;
+	int nz = 0;
+	std::vector<uint8_t> cells; // [z][y][x]
+	static constexpr float Size = 0.0625F;
+
+	void Mark(const WorldTriangle &tri, uint8_t value)
+	{
+		const V3 &a = tri.p[0];
+		const V3 &b = tri.p[1];
+		const V3 &c = tri.p[2];
+		auto length = [](const V3 &p, const V3 &q) { return std::sqrt((p.x - q.x) * (p.x - q.x) + (p.y - q.y) * (p.y - q.y) + (p.z - q.z) * (p.z - q.z)); };
+		const int n = std::max(1, static_cast<int>(std::ceil(std::max({ length(a, b), length(b, c), length(c, a) }) / (Size * 0.5F))));
+		for (int i = 0; i <= n; i++) {
+			for (int j = 0; i + j <= n; j++) {
+				const float u = static_cast<float>(i) / static_cast<float>(n);
+				const float v = static_cast<float>(j) / static_cast<float>(n);
+				const int cx = static_cast<int>(std::floor((a.x + (b.x - a.x) * u + (c.x - a.x) * v - x0) / Size));
+				const int cy = static_cast<int>(std::floor((a.y + (b.y - a.y) * u + (c.y - a.y) * v - y0) / Size));
+				const int cz = static_cast<int>(std::floor((a.z + (b.z - a.z) * u + (c.z - a.z) * v) / Size));
+				if (cx < 0 || cy < 0 || cz < 0 || cx >= nx || cy >= ny || cz >= nz)
+					continue;
+				uint8_t &cell = cells[(static_cast<size_t>(cz) * ny + cy) * nx + cx];
+				if (cell != 1)
+					cell = value;
+			}
+		}
+	}
+
+	void Add(const std::vector<WorldTriangle> &mesh, float bx0, float by0, float bx1, float by1, bool glass)
+	{
+		if (bx1 < x0 || by1 < y0 || bx0 > x0 + static_cast<float>(nx) * Size || by0 > y0 + static_cast<float>(ny) * Size)
+			return;
+		for (const WorldTriangle &tri : mesh) {
+			if (tri.mapping == MeshInterior || tri.rim)
+				continue; // (a cross window's sides line its opening: marked, they would close it to the light)
+			Mark(tri, tri.mapping == MeshPane ? 3 : (glass && tri.texture == GlassTexture && GlassTexture >= 0 ? 2 : 1));
+		}
+	}
+
+	/** @brief The cells a triangle passes through (as Mark marks them), each given to `visit` until it returns true. */
+	template <typename Visit>
+	bool AnyCell(const WorldTriangle &tri, Visit visit) const
+	{
+		const V3 &a = tri.p[0];
+		const V3 &b = tri.p[1];
+		const V3 &c = tri.p[2];
+		auto length = [](const V3 &p, const V3 &q) { return std::sqrt((p.x - q.x) * (p.x - q.x) + (p.y - q.y) * (p.y - q.y) + (p.z - q.z) * (p.z - q.z)); };
+		const int n = std::max(1, static_cast<int>(std::ceil(std::max({ length(a, b), length(b, c), length(c, a) }) / (Size * 0.5F))));
+		for (int i = 0; i <= n; i++) {
+			for (int j = 0; i + j <= n; j++) {
+				const float u = static_cast<float>(i) / static_cast<float>(n);
+				const float v = static_cast<float>(j) / static_cast<float>(n);
+				const int cx = static_cast<int>(std::floor((a.x + (b.x - a.x) * u + (c.x - a.x) * v - x0) / Size));
+				const int cy = static_cast<int>(std::floor((a.y + (b.y - a.y) * u + (c.y - a.y) * v - y0) / Size));
+				const int cz = static_cast<int>(std::floor((a.z + (b.z - a.z) * u + (c.z - a.z) * v) / Size));
+				if (cx >= 0 && cy >= 0 && cz >= 0 && cx < nx && cy < ny && cz < nz && visit((static_cast<size_t>(cz) * ny + cy) * nx + cx))
+					return true;
+			}
+		}
+		return false;
+	}
+
+	/** @brief The first marked cell a ray from `from` (outside the grid or in it) along a unit direction meets, or -1. */
+	ptrdiff_t FirstMet(V3 from, V3 d) const
+	{
+		// Into the grid's box first.
+		const std::array<float, 3> lo { x0, y0, 0 };
+		const std::array<float, 3> hi { x0 + static_cast<float>(nx) * Size, y0 + static_cast<float>(ny) * Size, static_cast<float>(nz) * Size };
+		const std::array<float, 3> o { from.x, from.y, from.z };
+		const std::array<float, 3> dir { d.x, d.y, d.z };
+		float enter = 0;
+		float leave = std::numeric_limits<float>::max();
+		for (int k = 0; k < 3; k++) {
+			if (std::abs(dir[k]) < 1e-9F) {
+				if (o[k] < lo[k] || o[k] > hi[k])
+					return -1;
+				continue;
+			}
+			float t0 = (lo[k] - o[k]) / dir[k];
+			float t1 = (hi[k] - o[k]) / dir[k];
+			if (t0 > t1)
+				std::swap(t0, t1);
+			enter = std::max(enter, t0);
+			leave = std::min(leave, t1);
+		}
+		if (enter > leave)
+			return -1;
+		const float start = enter + 1e-4F;
+		float px = (from.x + d.x * start - x0) / Size;
+		float py = (from.y + d.y * start - y0) / Size;
+		float pz = (from.z + d.z * start) / Size;
+		int ix = std::clamp(static_cast<int>(std::floor(px)), 0, nx - 1);
+		int iy = std::clamp(static_cast<int>(std::floor(py)), 0, ny - 1);
+		int iz = std::clamp(static_cast<int>(std::floor(pz)), 0, nz - 1);
+		const int sx = d.x > 0 ? 1 : -1;
+		const int sy = d.y > 0 ? 1 : -1;
+		const int sz = d.z > 0 ? 1 : -1;
+		constexpr float Far = std::numeric_limits<float>::max();
+		const float ddx = d.x != 0 ? std::abs(1.0F / d.x) : Far;
+		const float ddy = d.y != 0 ? std::abs(1.0F / d.y) : Far;
+		const float ddz = d.z != 0 ? std::abs(1.0F / d.z) : Far;
+		float tx = d.x != 0 ? ((d.x > 0 ? static_cast<float>(ix + 1) - px : px - static_cast<float>(ix)) * ddx) : Far;
+		float ty = d.y != 0 ? ((d.y > 0 ? static_cast<float>(iy + 1) - py : py - static_cast<float>(iy)) * ddy) : Far;
+		float tz = d.z != 0 ? ((d.z > 0 ? static_cast<float>(iz + 1) - pz : pz - static_cast<float>(iz)) * ddz) : Far;
+		while (ix >= 0 && iy >= 0 && iz >= 0 && ix < nx && iy < ny && iz < nz) {
+			const size_t cell = (static_cast<size_t>(iz) * ny + iy) * nx + ix;
+			if (cells[cell] != 0)
+				return static_cast<ptrdiff_t>(cell);
+			if (tx <= ty && tx <= tz) {
+				tx += ddx;
+				ix += sx;
+			} else if (ty <= tz) {
+				ty += ddy;
+				iy += sy;
+			} else {
+				tz += ddz;
+				iz += sz;
+			}
+		}
+		return -1;
+	}
+
+	/** @brief Whether a ray from `from` along a unit direction gets `length` away without meeting anything (glass included). */
+	bool Escapes(V3 from, V3 d, float length) const
+	{
+		float px = (from.x - x0) / Size;
+		float py = (from.y - y0) / Size;
+		float pz = from.z / Size;
+		int ix = static_cast<int>(std::floor(px));
+		int iy = static_cast<int>(std::floor(py));
+		int iz = static_cast<int>(std::floor(pz));
+		const int sx = d.x > 0 ? 1 : -1;
+		const int sy = d.y > 0 ? 1 : -1;
+		const int sz = d.z > 0 ? 1 : -1;
+		constexpr float Far = std::numeric_limits<float>::max();
+		const float ddx = d.x != 0 ? std::abs(Size / d.x) : Far;
+		const float ddy = d.y != 0 ? std::abs(Size / d.y) : Far;
+		const float ddz = d.z != 0 ? std::abs(Size / d.z) : Far;
+		float tx = d.x != 0 ? ((d.x > 0 ? static_cast<float>(ix + 1) - px : px - static_cast<float>(ix)) * ddx) : Far;
+		float ty = d.y != 0 ? ((d.y > 0 ? static_cast<float>(iy + 1) - py : py - static_cast<float>(iy)) * ddy) : Far;
+		float tz = d.z != 0 ? ((d.z > 0 ? static_cast<float>(iz + 1) - pz : pz - static_cast<float>(iz)) * ddz) : Far;
+		float t = 0;
+		while (t < length) {
+			if (iz < 0)
+				return false; // into the ground
+			if (ix < 0 || iy < 0 || ix >= nx || iy >= ny || iz >= nz)
+				return true; // out of the grid: in the open
+			if (cells[(static_cast<size_t>(iz) * ny + iy) * nx + ix] != 0)
+				return false;
+			if (tx <= ty && tx <= tz) {
+				t = tx;
+				tx += ddx;
+				ix += sx;
+			} else if (ty <= tz) {
+				t = ty;
+				ty += ddy;
+				iy += sy;
+			} else {
+				t = tz;
+				tz += ddz;
+				iz += sz;
+			}
+		}
+		return true;
+	}
+
+	/** @brief How far along a unit direction the first solid cell is (glass does not count), or -1 if none within `length`. */
+	float FirstSolid(V3 from, V3 direction, float length) const
+	{
+		constexpr float Step = Size * 0.5F;
+		for (float t = 0; t <= length; t += Step) {
+			const int ix = static_cast<int>(std::floor((from.x + direction.x * t - x0) / Size));
+			const int iy = static_cast<int>(std::floor((from.y + direction.y * t - y0) / Size));
+			const int iz = static_cast<int>(std::floor((from.z + direction.z * t) / Size));
+			if (ix >= 0 && iy >= 0 && iz >= 0 && ix < nx && iy < ny && iz < nz && cells[(static_cast<size_t>(iz) * ny + iy) * nx + ix] == 1)
+				return t;
+		}
+		return -1.0F;
+	}
+
+	/**
+	 * @brief How much light gets from `from` to `to` (1, the glass's share, or 0), leaving out the last `skip` of
+	 * the way: the surface the light falls on is not in its own way.
+	 */
+	float Transmission(V3 from, V3 to, float skip) const
+	{
+		const float dx = to.x - from.x;
+		const float dy = to.y - from.y;
+		const float dz = to.z - from.z;
+		const float length = std::sqrt(dx * dx + dy * dy + dz * dz);
+		if (length <= skip)
+			return 1.0F;
+		const float end = (length - skip) / length; // in t along from .. to
+		float px = (from.x - x0) / Size;
+		float py = (from.y - y0) / Size;
+		float pz = from.z / Size;
+		int ix = static_cast<int>(std::floor(px));
+		int iy = static_cast<int>(std::floor(py));
+		int iz = static_cast<int>(std::floor(pz));
+		const int sx = dx > 0 ? 1 : -1;
+		const int sy = dy > 0 ? 1 : -1;
+		const int sz = dz > 0 ? 1 : -1;
+		constexpr float Far = std::numeric_limits<float>::max();
+		const float ddx = dx != 0 ? std::abs(Size / dx) : Far; // t per cell along each axis
+		const float ddy = dy != 0 ? std::abs(Size / dy) : Far;
+		const float ddz = dz != 0 ? std::abs(Size / dz) : Far;
+		float tx = dx != 0 ? ((dx > 0 ? static_cast<float>(ix + 1) - px : px - static_cast<float>(ix)) * ddx) : Far;
+		float ty = dy != 0 ? ((dy > 0 ? static_cast<float>(iy + 1) - py : py - static_cast<float>(iy)) * ddy) : Far;
+		float tz = dz != 0 ? ((dz > 0 ? static_cast<float>(iz + 1) - pz : pz - static_cast<float>(iz)) * ddz) : Far;
+		float through = 1.0F;
+		uint8_t inGlass = 0; // the glass the ray is in (2 the church's, 3 a window's), counted once
+		float t = 0;
+		while (t < end) {
+			if (ix >= 0 && iy >= 0 && iz >= 0 && ix < nx && iy < ny && iz < nz) {
+				const uint8_t cell = cells[(static_cast<size_t>(iz) * ny + iy) * nx + ix];
+				if (cell == 1)
+					return 0.0F;
+				if (cell >= 2 && cell != inGlass)
+					through *= cell == 2 ? GlassTransmission : WindowGlassTransmission;
+				inGlass = cell;
+			} else {
+				inGlass = 0;
+			}
+			if (tx <= ty && tx <= tz) {
+				t = tx;
+				tx += ddx;
+				ix += sx;
+			} else if (ty <= tz) {
+				t = ty;
+				ty += ddy;
+				iy += sy;
+			} else {
+				t = tz;
+				tz += ddz;
+				iz += sz;
+			}
+		}
+		return through;
+	}
+};
+
+/**
+ * @brief Drops the surfaces of a landmark's model no one can see from outside: the insides of its walls and roof,
+ * its floors, beams and stairs behind closed doors and glass. A surface stays if, from a few points just off its
+ * front, a ray in one of a few dozen directions gets out of the building without meeting anything (through an open
+ * door, past the eaves). Its lit rooms' insides (MeshInterior) and the reveals around its windows' glass stay.
+ */
+void CullHiddenSurfaces(Building &b)
+{
+	const auto start = std::chrono::steady_clock::now();
+	float minX = std::numeric_limits<float>::max();
+	float minY = minX;
+	float maxX = std::numeric_limits<float>::lowest();
+	float maxY = maxX;
+	float maxZ = 0;
+	for (const WorldTriangle &tri : b.mesh)
+		for (const V3 &p : tri.p) {
+			minX = std::min(minX, p.x);
+			minY = std::min(minY, p.y);
+			maxX = std::max(maxX, p.x);
+			maxY = std::max(maxY, p.y);
+			maxZ = std::max(maxZ, p.z);
+		}
+	Occluders grid;
+	grid.x0 = minX - 0.5F;
+	grid.y0 = minY - 0.5F;
+	grid.nx = static_cast<int>((maxX - minX + 1.0F) / Occluders::Size) + 1;
+	grid.ny = static_cast<int>((maxY - minY + 1.0F) / Occluders::Size) + 1;
+	grid.nz = static_cast<int>((maxZ + 0.5F) / Occluders::Size) + 1;
+	grid.cells.assign(static_cast<size_t>(grid.nx) * grid.ny * grid.nz, 0);
+	for (const WorldTriangle &tri : b.mesh)
+		if (tri.mapping != MeshInterior)
+			grid.Mark(tri, 1);
+	const float reach = std::hypot(maxX - minX + 1.0F, maxY - minY + 1.0F, maxZ + 1.0F);
+	// Directions spread over the sphere (a Fibonacci lattice).
+	std::vector<V3> directions;
+	constexpr int Count = 96;
+	for (int k = 0; k < Count; k++) {
+		const float z = 1.0F - 2.0F * (static_cast<float>(k) + 0.5F) / Count;
+		const float r = std::sqrt(std::max(0.0F, 1.0F - z * z));
+		const float a = static_cast<float>(k) * 2.39996323F;
+		directions.push_back({ r * std::cos(a), r * std::sin(a), z });
+	}
+	// The reveals of glazed windows show between the glass and the wall's face, a gap finer than the grid: what is
+	// around a pane stays.
+	std::vector<std::array<float, 6>> panes;
+	for (const WorldTriangle &tri : b.mesh) {
+		if (tri.mapping != MeshPane)
+			continue;
+		std::array<float, 6> box { std::numeric_limits<float>::max(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::max(), std::numeric_limits<float>::lowest(),
+			std::numeric_limits<float>::max(), std::numeric_limits<float>::lowest() };
+		for (const V3 &p : tri.p) {
+			box = { std::min(box[0], p.x - 0.35F), std::max(box[1], p.x + 0.35F), std::min(box[2], p.y - 0.35F), std::max(box[3], p.y + 0.35F), std::min(box[4], p.z - 0.35F),
+				std::max(box[5], p.z + 0.35F) };
+		}
+		panes.push_back(box);
+	}
+	// What is in sight from where one stands around it: from points round it at eye height, rays over all of it, a
+	// tenth of a tile apart where they reach it; the first cell each meets is in sight. A surface in such a
+	// cell stays whatever its own rays found: the insides seen through small holes (in a roof's thatch), which those
+	// few directions can miss.
+	std::unique_ptr<std::atomic<uint8_t>[]> inSight(new std::atomic<uint8_t>[grid.cells.size()]);
+	for (size_t i = 0; i < grid.cells.size(); i++)
+		inSight[i].store(0, std::memory_order_relaxed);
+	constexpr float StandingEye = 1.3F; // the first-person eye's height (EyeHeight; town walls are not stretched)
+	std::vector<V3> standing;
+	for (const float off : { 0.5F, 1.5F, 4.0F }) {
+		const float ax = minX - off;
+		const float ay = minY - off;
+		const float bx = maxX + off;
+		const float by = maxY + off;
+		const float perimeter = 2.0F * (bx - ax + by - ay);
+		constexpr float Apart = 1.0F;
+		for (float s = 0; s < perimeter; s += Apart) {
+			float u = s;
+			Vec2 at;
+			if (u < bx - ax) {
+				at = { ax + u, ay };
+			} else if ((u -= bx - ax) < by - ay) {
+				at = { bx, ay + u };
+			} else if ((u -= by - ay) < bx - ax) {
+				at = { bx - u, by };
+			} else {
+				at = { ax, by - (u - (bx - ax)) };
+			}
+			standing.push_back({ at.x, at.y, StandingEye });
+		}
+	}
+	const V3 middle { (minX + maxX) / 2.0F, (minY + maxY) / 2.0F, maxZ / 2.0F };
+	std::atomic<size_t> nextView { 0 };
+	auto look = [&]() {
+		for (size_t v = nextView++; v < standing.size(); v = nextView++) {
+			const V3 eye = standing[v];
+			V3 f { middle.x - eye.x, middle.y - eye.y, middle.z - eye.z };
+			const float distance = std::sqrt(f.x * f.x + f.y * f.y + f.z * f.z);
+			f = { f.x / distance, f.y / distance, f.z / distance };
+			V3 r { f.y, -f.x, 0 };
+			const float rl = std::sqrt(r.x * r.x + r.y * r.y);
+			r = { r.x / rl, r.y / rl, 0 };
+			const V3 u { r.y * f.z - r.z * f.y, r.z * f.x - r.x * f.z, r.x * f.y - r.y * f.x };
+			// The building's bounds as seen from here.
+			float a0 = std::numeric_limits<float>::max();
+			float a1 = std::numeric_limits<float>::lowest();
+			float e0 = a0;
+			float e1 = a1;
+			for (int corner = 0; corner < 8; corner++) {
+				const V3 k { ((corner & 1) != 0 ? maxX : minX) - eye.x, ((corner & 2) != 0 ? maxY : minY) - eye.y, ((corner & 4) != 0 ? maxZ : 0.0F) - eye.z };
+				const float kf = k.x * f.x + k.y * f.y + k.z * f.z;
+				const float kr = k.x * r.x + k.y * r.y + k.z * r.z;
+				const float ku = k.x * u.x + k.y * u.y + k.z * u.z;
+				const float a = std::atan2(kr, kf);
+				const float e = std::atan2(ku, std::hypot(kf, kr));
+				a0 = std::min(a0, a);
+				a1 = std::max(a1, a);
+				e0 = std::min(e0, e);
+				e1 = std::max(e1, e);
+			}
+			const float step = std::clamp(0.1F / distance, 0.006F, 0.05F);
+			for (float e = e0; e <= e1; e += step) {
+				for (float a = a0; a <= a1; a += step) {
+					const float ce = std::cos(e);
+					const V3 d { f.x * ce * std::cos(a) + r.x * ce * std::sin(a) + u.x * std::sin(e), f.y * ce * std::cos(a) + r.y * ce * std::sin(a) + u.y * std::sin(e),
+						f.z * ce * std::cos(a) + r.z * ce * std::sin(a) + u.z * std::sin(e) };
+					const ptrdiff_t cell = grid.FirstMet(eye, d);
+					if (cell >= 0)
+						inSight[static_cast<size_t>(cell)].store(1, std::memory_order_relaxed);
+				}
+			}
+		}
+	};
+	{
+		std::vector<std::thread> lookers;
+		const unsigned count = std::clamp(std::thread::hardware_concurrency(), 1U, 16U);
+		for (unsigned t = 0; t < count; t++)
+			lookers.emplace_back(look);
+		for (std::thread &thread : lookers)
+			thread.join();
+	}
+	std::vector<uint8_t> keep(b.mesh.size(), 1);
+	std::atomic<size_t> next { 0 };
+	auto work = [&]() {
+		for (size_t i = next++; i < b.mesh.size(); i = next++) {
+			const WorldTriangle &tri = b.mesh[i];
+			if (tri.mapping == MeshInterior || tri.mapping == MeshPane || tri.mapping == MeshFrame)
+				continue;
+			bool nearPane = false;
+			for (const std::array<float, 6> &box : panes) {
+				bool inside = true;
+				for (const V3 &p : tri.p)
+					inside = inside && p.x >= box[0] && p.x <= box[1] && p.y >= box[2] && p.y <= box[3] && p.z >= box[4] && p.z <= box[5];
+				nearPane = nearPane || inside;
+			}
+			if (nearPane)
+				continue;
+			const V3 e1 { tri.p[1].x - tri.p[0].x, tri.p[1].y - tri.p[0].y, tri.p[1].z - tri.p[0].z };
+			const V3 e2 { tri.p[2].x - tri.p[0].x, tri.p[2].y - tri.p[0].y, tri.p[2].z - tri.p[0].z };
+			V3 n { e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x };
+			const float length = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+			if (length < 1e-9F)
+				continue;
+			n = { n.x / length, n.y / length, n.z / length };
+			if (std::abs(n.z) < 0.5F && std::min({ tri.p[0].z, tri.p[1].z, tri.p[2].z }) < 0.2F)
+				continue; // a wall's foot: the ground beside it is in the grid's lowest cells
+			// Its front: the side it is drawn from (both for two-sided surfaces).
+			const float front = tri.normal.x * n.x + tri.normal.y * n.y + tri.normal.z * n.z;
+			std::array<float, 2> sides { front >= 0 ? 1.0F : -1.0F, 0.0F };
+			if (!tri.cull)
+				sides[1] = -sides[0];
+			const V3 c { (tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F, (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F, (tri.p[0].z + tri.p[1].z + tri.p[2].z) / 3.0F };
+			const std::array<V3, 4> points { c, V3 { (c.x + tri.p[0].x) / 2.0F, (c.y + tri.p[0].y) / 2.0F, (c.z + tri.p[0].z) / 2.0F },
+				V3 { (c.x + tri.p[1].x) / 2.0F, (c.y + tri.p[1].y) / 2.0F, (c.z + tri.p[1].z) / 2.0F }, V3 { (c.x + tri.p[2].x) / 2.0F, (c.y + tri.p[2].y) / 2.0F, (c.z + tri.p[2].z) / 2.0F } };
+			bool seen = false;
+			for (const float side : sides) {
+				if (side == 0 || seen)
+					continue;
+				const V3 m { n.x * side, n.y * side, n.z * side };
+				for (const float off : { 0.1F, 0.22F }) { // farther off too: past a neighbour's cells
+					for (const V3 &p : points) {
+						const V3 from { p.x + m.x * off, p.y + m.y * off, p.z + m.z * off };
+						for (const V3 &d : directions) {
+							if (d.x * m.x + d.y * m.y + d.z * m.z < 0.05F)
+								continue;
+							if (grid.Escapes(from, d, reach)) {
+								seen = true;
+								break;
+							}
+						}
+						if (seen)
+							break;
+					}
+					if (seen)
+						break;
+				}
+			}
+			if (!seen && !grid.AnyCell(tri, [&](size_t cell) { return inSight[cell].load(std::memory_order_relaxed) != 0; }))
+				keep[i] = 0;
+		}
+	};
+	std::vector<std::thread> threads;
+	const unsigned count = std::clamp(std::thread::hardware_concurrency(), 1U, 16U);
+	for (unsigned t = 0; t < count; t++)
+		threads.emplace_back(work);
+	for (std::thread &thread : threads)
+		thread.join();
+	const size_t before = b.mesh.size();
+	std::vector<WorldTriangle> kept;
+	kept.reserve(before);
+	for (size_t i = 0; i < before; i++)
+		if (keep[i] != 0)
+			kept.push_back(b.mesh[i]);
+	b.mesh = std::move(kept);
+	const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+	LogInfo("fp: {}: {} of {} surfaces hidden inside, dropped ({:.0f} ms)", Landmarks[b.landmark].name, before - b.mesh.size(), before, ms);
+}
+
+/** A window's own light: its strength per square tile of opening, and the distance at which it is down to half. */
+constexpr float WindowLampStrength = 1.2F;
+constexpr float WindowLampHalf = 1.0F;
+constexpr float WindowLampReach = 3.5F;
+
+/**
+ * @brief The openings in the walls around a lit room (windows, doorways, the smithy's open front), found by looking
+ * out from the room's sides through what blocks light, and a light of each just outside it, shining out: the glow
+ * of the room's light in and around it.
+ */
+void AddWindowLamps(const LitRoom &room, const Occluders &occluders, std::vector<Lamp> &lamps)
+{
+	constexpr float Step = Occluders::Size;
+	constexpr float Reach = 1.5F;
+	int count = 0;
+	for (int side = 0; side < 4; side++) {
+		const int axis = side / 2; // 0: a side facing x, 1: facing y
+		const float sign = side % 2 == 0 ? -1.0F : 1.0F;
+		const V3 out = axis == 0 ? V3 { sign, 0, 0 } : V3 { 0, sign, 0 };
+		const float at = axis == 0 ? (sign < 0 ? room.x0 : room.x1) : (sign < 0 ? room.y0 : room.y1);
+		const float alongLo = axis == 0 ? room.y0 : room.x0;
+		const float alongHi = axis == 0 ? room.y1 : room.x1;
+		const int na = static_cast<int>((alongHi - alongLo) / Step);
+		const int nz = static_cast<int>((room.top - room.z0) / Step);
+		if (na <= 0 || nz <= 0)
+			continue;
+		std::vector<float> wall(static_cast<size_t>(na) * nz, -1.0F); // distance out to the wall; -1 open
+		std::vector<uint8_t> open(wall.size(), 0);
+		for (int k = 0; k < nz; k++) {
+			for (int i = 0; i < na; i++) {
+				const float along = alongLo + (static_cast<float>(i) + 0.5F) * Step;
+				const float z = room.z0 + (static_cast<float>(k) + 0.5F) * Step;
+				const float x = axis == 0 ? at : along;
+				const float y = axis == 0 ? along : at;
+				if (z > RoomCeiling(room, x, y) - 0.05F)
+					continue;
+				const V3 from { x - out.x * 0.05F, y - out.y * 0.05F, z };
+				const float hit = occluders.FirstSolid(from, out, Reach);
+				if (hit < 0)
+					open[static_cast<size_t>(k) * na + i] = 1;
+				else
+					wall[static_cast<size_t>(k) * na + i] = hit;
+			}
+		}
+		std::vector<float> walls;
+		for (const float d : wall)
+			if (d >= 0)
+				walls.push_back(d);
+		if (walls.empty())
+			continue;
+		std::nth_element(walls.begin(), walls.begin() + static_cast<ptrdiff_t>(walls.size() / 2), walls.end());
+		const float wallOut = walls[walls.size() / 2] - 0.05F; // from the room's side to the wall's outer face, about
+		std::vector<uint8_t> seen(open.size(), 0);
+		for (size_t start = 0; start < open.size(); start++) {
+			if (open[start] == 0 || seen[start] != 0)
+				continue;
+			std::vector<size_t> stack { start };
+			seen[start] = 1;
+			float sumA = 0;
+			float sumZ = 0;
+			int cells = 0;
+			while (!stack.empty()) {
+				const size_t n = stack.back();
+				stack.pop_back();
+				const int i = static_cast<int>(n % na);
+				const int k = static_cast<int>(n / na);
+				sumA += alongLo + (static_cast<float>(i) + 0.5F) * Step;
+				sumZ += room.z0 + (static_cast<float>(k) + 0.5F) * Step;
+				cells++;
+				for (const auto &[di, dk] : { std::pair { 1, 0 }, std::pair { -1, 0 }, std::pair { 0, 1 }, std::pair { 0, -1 } }) {
+					const int ni = i + di;
+					const int nk = k + dk;
+					if (ni < 0 || nk < 0 || ni >= na || nk >= nz)
+						continue;
+					const size_t m = static_cast<size_t>(nk) * na + ni;
+					if (open[m] != 0 && seen[m] == 0) {
+						seen[m] = 1;
+						stack.push_back(m);
+					}
+				}
+			}
+			if (cells < 4)
+				continue; // a chink
+			const float area = static_cast<float>(cells) * Step * Step;
+			const float along = sumA / static_cast<float>(cells);
+			const float z = sumZ / static_cast<float>(cells);
+			const float outAt = at + (axis == 0 ? out.x : out.y) * (wallOut + 0.12F);
+			const V3 position = axis == 0 ? V3 { outAt, along, z } : V3 { along, outAt, z };
+			lamps.push_back({ position, WindowLampStrength * std::min(area, 1.5F) * LitLandmarks[room.lit].strength, room.lit, -1, out, WindowLampHalf, WindowLampReach });
+			count++;
+		}
+	}
+	LogInfo("fp: {}: room at {:.1f}, {:.1f}: {} openings", LitLandmarks[room.lit].name, (room.x0 + room.x1) / 2.0F, (room.y0 + room.y1) / 2.0F, count);
+}
+
+/**
+ * @brief Works out, for each lamp, how much of it can be seen from the points of a grid around it: from inside
+ * its room, all of it; outside, through the openings in the walls only. The flame is a small ball: several points of
+ * it are tried, so the light's edges on the ground are soft.
+ */
+void BuildLampGrids()
+{
+	LightGrids.clear();
+	if (Lamps.empty())
+		return;
+	const auto start = std::chrono::steady_clock::now();
+	static const std::array<V3, 5> Flame { { { 0, 0, 0 }, { LampRadius, 0, LampRadius * 0.5F }, { -LampRadius, 0, -LampRadius * 0.5F }, { 0, LampRadius, -LampRadius * 0.5F }, { 0, -LampRadius, LampRadius * 0.5F } } };
+	for (size_t lit = 0; lit < LitLandmarks.size(); lit++) {
+		if (LightBuilder.stop)
+			return;
+		std::vector<const Lamp *> lamps;
+		float minX = std::numeric_limits<float>::max();
+		float minY = minX;
+		float maxX = std::numeric_limits<float>::lowest();
+		float maxY = maxX;
+		float maxZ = 0;
+		for (const Lamp &lamp : Lamps) {
+			if (lamp.lit != static_cast<int>(lit))
+				continue;
+			lamps.push_back(&lamp);
+			minX = std::min(minX, lamp.position.x);
+			minY = std::min(minY, lamp.position.y);
+			maxX = std::max(maxX, lamp.position.x);
+			maxY = std::max(maxY, lamp.position.y);
+			maxZ = std::max(maxZ, lamp.position.z);
+		}
+		if (lamps.empty())
+			continue;
+		// What is in the way of the light: the buildings and prop hulls around.
+		Occluders occluders;
+		occluders.x0 = minX - LampReach - 0.5F;
+		occluders.y0 = minY - LampReach - 0.5F;
+		occluders.nx = static_cast<int>((maxX - minX + 2.0F * LampReach + 1.0F) / Occluders::Size) + 1;
+		occluders.ny = static_cast<int>((maxY - minY + 2.0F * LampReach + 1.0F) / Occluders::Size) + 1;
+		occluders.nz = static_cast<int>((maxZ + 1.5F) / Occluders::Size) + 1;
+		occluders.cells.assign(static_cast<size_t>(occluders.nx) * occluders.ny * occluders.nz, 0);
+		for (const Building &b : Buildings)
+			occluders.Add(b.mesh, b.x0 - b.boundsOverhang - 1.0F, b.y0 - b.boundsOverhang - 1.0F, b.x1 + b.boundsOverhang + 1.0F, b.y1 + b.boundsOverhang + 1.0F, true);
+		for (const TownProp &prop : TownProps)
+			occluders.Add(prop.art.mesh, prop.art.x0, prop.art.y0, prop.art.x1, prop.art.y1, false);
+		// The windows' own lights, shining out of them.
+		std::vector<Lamp> windowLamps;
+		for (const LitRoom &room : LitRooms)
+			if (room.lit == static_cast<int>(lit) && !LightBuilder.stop)
+				AddWindowLamps(room, occluders, windowLamps);
+		for (const Lamp &lamp : windowLamps)
+			lamps.push_back(&lamp);
+		LightGrid grid;
+		grid.lit = static_cast<int>(lit);
+		grid.x0 = minX - LampReach;
+		grid.y0 = minY - LampReach;
+		grid.nx = static_cast<int>((maxX - minX + 2.0F * LampReach) / LampCell) + 2;
+		grid.ny = static_cast<int>((maxY - minY + 2.0F * LampReach) / LampCell) + 2;
+		// Up to a little over the eaves: higher up the light falls on nothing but the lit building itself.
+		grid.nz = static_cast<int>((std::min(maxZ, LightTop) + 1.0F) / LampLayer) + 2;
+		grid.light.assign(static_cast<size_t>(grid.nx) * grid.ny * grid.nz, { 0, 0, 0 });
+		// Rows of the grid, spread over the threads.
+		std::atomic<int> next { 0 };
+		auto work = [&]() {
+			for (int row = next++; row < grid.ny * grid.nz && !LightBuilder.stop; row = next++) {
+				const int j = row % grid.ny;
+				const int k = row / grid.ny;
+				for (int i = 0; i < grid.nx; i++) {
+					const V3 p { grid.x0 + static_cast<float>(i) * LampCell, grid.y0 + static_cast<float>(j) * LampCell, static_cast<float>(k) * LampLayer };
+					if (InsideLitRoom(p.x, p.y, p.z))
+						continue;
+					V3 sum { 0, 0, 0 };
+					for (const Lamp *lamp : lamps) {
+						const V3 d { lamp->position.x - p.x, lamp->position.y - p.y, lamp->position.z - p.z };
+						const float d2 = d.x * d.x + d.y * d.y + d.z * d.z;
+						if (d2 >= lamp->reach * lamp->reach)
+							continue;
+						float seen = 0;
+						for (const V3 &f : Flame)
+							seen += occluders.Transmission({ lamp->position.x + f.x, lamp->position.y + f.y, lamp->position.z + f.z }, p, 0.1F);
+						if (seen <= 0)
+							continue;
+						const float distance = std::sqrt(d2);
+						// A window's light: out of it only.
+						const float out = lamp->facing.x == 0 && lamp->facing.y == 0 && lamp->facing.z == 0 ? 1.0F : -(d.x * lamp->facing.x + d.y * lamp->facing.y + d.z * lamp->facing.z) / distance;
+						if (out <= 0)
+							continue;
+						const float fade = 1.0F - d2 / (lamp->reach * lamp->reach);
+						const float light = out * LampPower * lamp->strength * seen / static_cast<float>(Flame.size()) * fade * fade / (1.0F + d2 / (lamp->half * lamp->half)) / distance;
+						sum = { sum.x + d.x * light, sum.y + d.y * light, sum.z + d.z * light };
+					}
+					auto unit = [](float v) { return static_cast<int16_t>(std::clamp(v * LightUnit, -32767.0F, 32767.0F)); };
+					grid.light[(static_cast<size_t>(k) * grid.ny + j) * grid.nx + i] = { unit(sum.x), unit(sum.y), unit(sum.z) };
+				}
+			}
+		};
+		std::vector<std::thread> threads;
+		const unsigned count = std::clamp(std::thread::hardware_concurrency(), 1U, 16U);
+		for (unsigned t = 0; t < count; t++)
+			threads.emplace_back(work);
+		for (std::thread &thread : threads)
+			thread.join();
+		grid.lit2d.assign(static_cast<size_t>(grid.nx) * grid.ny, 0);
+		for (int k = 0; k < grid.nz; k++)
+			for (int j = 0; j < grid.ny; j++)
+				for (int i = 0; i < grid.nx; i++) {
+					const auto &c = grid.light[(static_cast<size_t>(k) * grid.ny + j) * grid.nx + i];
+					if ((c[0] | c[1] | c[2]) == 0)
+						continue;
+					for (int dj = -1; dj <= 0; dj++)
+						for (int di = -1; di <= 0; di++)
+							if (i + di >= 0 && j + dj >= 0)
+								grid.lit2d[static_cast<size_t>(j + dj) * grid.nx + i + di] = 1;
+				}
+		LightGrids.push_back(std::move(grid));
+	}
+	const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+	LogInfo("fp: {} lamps lit their surroundings in {:.0f} ms", Lamps.size(), ms);
 }
 
 /** Props farther than this (tiles) are lost in the fog. */
@@ -5487,14 +8764,13 @@ constexpr float PropDrawRange = 48.0F;
 
 void DrawTownProps(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer)
 {
-	static const bool noTrees = std::getenv("FP_NO_TREES") != nullptr; // debug: time them
-	static const bool noHulls = std::getenv("FP_NO_HULLS") != nullptr;
+	static const bool noHulls = std::getenv("FP_NO_HULLS") != nullptr; // debug: time them
+	if (noHulls)
+		return;
 	// Near to far, so the depth test turns hidden pixels away before they are shaded.
 	static std::vector<std::pair<float, const TownProp *>> order;
 	order.clear();
 	for (const TownProp &prop : TownProps) {
-		if ((noTrees && prop.kind == PropKind::Tree) || (noHulls && prop.kind != PropKind::Tree))
-			continue;
 		const float distance = std::hypot(prop.middle.x - proj.pos.x, prop.middle.y - proj.pos.y) - prop.radius;
 		if (distance <= PropDrawRange)
 			order.emplace_back(distance, &prop);
@@ -5503,36 +8779,15 @@ void DrawTownProps(const Surface &out, const Projection &proj, std::vector<float
 	for (const auto &[distance, propPointer] : order) {
 		const TownProp &prop = *propPointer;
 		const bool far = distance > PropFarDistance && !prop.farMesh.empty();
-		const float boost = far ? FarFoliageBoost : 1.0F;
 		int left;
 		int top;
 		int right;
 		int bottom;
 		if (!ScreenBounds(prop.art, proj, left, top, right, bottom))
 			continue;
-		const Building &b = prop.art;
 		const PieceTextures *columnFor = nullptr;
 		Point columnTile { -1, -1 };
-		const std::vector<WorldTriangle> &mesh = far ? prop.farMesh : b.mesh;
-		// A near tree's leaves front to back: the near ones turn the far ones away by depth where they cover them.
-		static std::vector<std::pair<float, uint32_t>> byDistance;
-		static std::vector<uint32_t> sorted;
-		const std::vector<uint32_t> *order = nullptr;
-		if (prop.kind == PropKind::Tree && !far) {
-			byDistance.clear();
-			for (uint32_t i = 0; i < mesh.size(); i++) {
-				const WorldTriangle &tri = mesh[i];
-				const float dx = (tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F - proj.pos.x;
-				const float dy = (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F - proj.pos.y;
-				const float dz = (tri.p[0].z + tri.p[1].z + tri.p[2].z) / 3.0F - EyeHeight;
-				byDistance.emplace_back(dx * dx + dy * dy + dz * dz, i);
-			}
-			std::sort(byDistance.begin(), byDistance.end());
-			sorted.clear();
-			for (const auto &[d, i] : byDistance)
-				sorted.push_back(i);
-			order = &sorted;
-		}
+		const std::vector<WorldTriangle> &mesh = far ? prop.farMesh : prop.art.mesh;
 		RasterizeTriangles(out, proj, depthBuffer, mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
 			float x = wx;
 			float y = wy;
@@ -5541,44 +8796,52 @@ void DrawTownProps(const Surface &out, const Projection &proj, std::vector<float
 				x -= 2.0F * d * tri.normalX;
 				y -= 2.0F * d * tri.normalY;
 			}
-			int leaf = -1;
-			if (tri.mapping == MeshFoliage) {
-				leaf = FoliageColor(prop.foliage[tri.arch], tri, wx, wy, wz, boost);
-				if (leaf < 0)
-					return -1; // between the leaves
-			}
 			const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
 			const uint8_t level = InDungeonBounds(lit) ? std::min<uint8_t>(LightAt(lit), LightsMax) : LightsMax;
-			if (leaf >= 0)
-				return static_cast<int>(LightTables[level][leaf]);
 			if (tri.mapping == MeshSolid)
-				return static_cast<int>(LightTables[level][ShadeColor(tri.fallback, tri.darkness)]);
-			int16_t art = NoPixel;
+				return static_cast<int>(FpLightTable(level)[ShadeColor(tri.fallback, tri.darkness)]);
+			if (tri.mapping == MeshTiled && tri.texture >= 0 && static_cast<size_t>(tri.texture) < MeshTextures.size()) {
+				// The stone tiled over the wall: along it and up its sides, across its top.
+				constexpr float Repeat = 0.7F; // texture repeats per tile
+				float u;
+				float v;
+				if (std::abs(tri.normal.z) > 0.6F) {
+					u = wx * Repeat;
+					v = wy * Repeat;
+				} else if (std::abs(tri.normal.x) > std::abs(tri.normal.y)) {
+					u = wy * Repeat;
+					v = wz * Repeat;
+				} else {
+					u = wx * Repeat;
+					v = wz * Repeat;
+				}
+				const MeshTexture &tex = MeshTextures[tri.texture];
+				const float distance = std::hypot(wx - proj.pos.x, wy - proj.pos.y, wz - EyeHeight);
+				const float footprint = Repeat * static_cast<float>(tex.width) * distance / proj.focal;
+				return static_cast<int>(FpLightTable(level)[WallStoneColor(MeshTexel(tex, u, v, footprint), tri.darkness + WallStoneDarkness)]);
+			}
 			if (prop.ownCanvas) {
-				const int px = static_cast<int>(std::floor((x - y) * 32.0F)) - b.originX;
-				const int py = static_cast<int>(std::floor((x + y) * 16.0F - wz * HeightPixels)) - b.originY;
-				if (px >= 0 && py >= 0 && px < b.canvasWidth && py < b.canvasHeight)
-					art = b.canvas[static_cast<size_t>(py) * b.canvasWidth + px];
-			} else {
-				const Point tile { tri.artX, tri.artY };
-				if (tile != columnTile) {
-					columnTile = tile;
-					columnFor = &GetPieceTextures(dPiece[tile.x][tile.y]);
-				}
-				art = ColumnArtAt(*columnFor, tile, x, y, wz);
-				if (art <= 0 && tri.mapping != MeshProjectiveCut) {
-					// Just off the art's edge: the nearest art pixel above (the hull's cells overreach a little).
-					for (int k = 1; k <= 3 && art <= 0; k++)
-						art = ColumnArtAt(*columnFor, tile, x, y, wz + static_cast<float>(k) / HeightPixels);
-				}
+				const int16_t art = CanvasArtAt(prop.art, wx, wy, wz);
+				return static_cast<int>(FpLightTable(level)[ShadeColor(art > 0 ? PatchColor(art) : tri.fallback, tri.darkness)]);
+			}
+			const Point tile { tri.artX, tri.artY };
+			if (tile != columnTile) {
+				columnTile = tile;
+				columnFor = &GetPieceTextures(dPiece[tile.x][tile.y]);
+			}
+			int16_t art = ColumnArtAt(*columnFor, tile, x, y, wz);
+			if (art <= 0 && tri.mapping != MeshProjectiveCut) {
+				// Just off the art's edge: the nearest art pixel above (the hull's cells overreach a little).
+				for (int k = 1; k <= 3 && art <= 0; k++)
+					art = ColumnArtAt(*columnFor, tile, x, y, wz + static_cast<float>(k) / HeightPixels);
 			}
 			if (art <= 0) {
 				if (tri.mapping == MeshProjectiveCut)
 					return -1;
 				art = tri.fallback;
 			}
-			return static_cast<int>(LightTables[level][ShadeColor(PatchColor(art), tri.darkness)]);
-		}, 1.0F, order);
+			return static_cast<int>(FpLightTable(level)[ShadeColor(PatchColor(art), tri.darkness)]);
+		}, 1.0F);
 	}
 }
 
@@ -5699,6 +8962,14 @@ const uint8_t *BuildingTileMap()
 	return BuildingTiles.data();
 }
 
+const uint16_t *FloorSourceMap()
+{
+	if (leveltype != DTYPE_TOWN || !BuildingsEnabled())
+		return nullptr;
+	EnsureBuilt();
+	return FloorSources.empty() ? nullptr : FloorSources.data();
+}
+
 bool IsBuildingTile(Point tile)
 {
 	EnsureBuilt();
@@ -5708,6 +8979,7 @@ bool IsBuildingTile(Point tile)
 void DrawBuildings(const Surface &out, const Projection &proj, const std::vector<float> &zBuffer, std::vector<float> &depthBuffer)
 {
 	EnsureBuilt();
+	UpdateWindowFlicker();
 	for (const Building &building : Buildings) {
 		int left;
 		int top;
@@ -5724,6 +8996,246 @@ void DrawBuildings(const Surface &out, const Projection &proj, const std::vector
 			DrawBuilding(out, proj, zBuffer, depthBuffer, building);
 	}
 	DrawTownProps(out, proj, depthBuffer);
+}
+
+void ApplyWindowGlow(const Surface &out, const Projection &proj, const std::vector<float> &depthBuffer)
+{
+	if (leveltype != DTYPE_TOWN || !BuildingsEnabled() || !WindowLightOn)
+		return;
+	EnsureBuilt();
+	if (!LightReady || LightGrids.empty())
+		return;
+	// The screen rectangle the grids can show in.
+	int left = proj.width;
+	int right = -1;
+	int top = proj.height;
+	int bottom = -1;
+	for (const LightGrid &grid : LightGrids) {
+		Building box {};
+		box.x0 = grid.x0;
+		box.y0 = grid.y0;
+		box.x1 = grid.x0 + static_cast<float>(grid.nx - 1) * LampCell;
+		box.y1 = grid.y0 + static_cast<float>(grid.ny - 1) * LampCell;
+		box.lowestZ = 0;
+		box.highestZ = static_cast<float>(grid.nz - 1) * LampLayer;
+		int l;
+		int t;
+		int r;
+		int b;
+		if (!ScreenBounds(box, proj, l, t, r, b))
+			continue;
+		left = std::min(left, l);
+		right = std::max(right, r);
+		top = std::min(top, t);
+		bottom = std::max(bottom, b);
+	}
+	left = std::max(left, 0);
+	top = std::max(top, 0);
+	right = std::min(right, proj.width - 1);
+	bottom = std::min(bottom, proj.height - 1);
+	if (left > right || top > bottom)
+		return;
+	std::array<std::array<const uint8_t *, GlowLevels>, LitLandmarks.size()> tables;
+	for (size_t f = 0; f < LitLandmarks.size(); f++)
+		for (int l = 0; l < GlowLevels; l++)
+			tables[f][l] = GlowColors(static_cast<int>(f), l).data();
+	std::array<float, LitLandmarks.size()> flicker;
+	for (size_t i = 0; i < flicker.size(); i++)
+		flicker[i] = (1.0F + LampFlicker * FlickerNow[i]) / LightUnit;
+	static std::vector<Vec2> rays;
+	rays.resize(static_cast<size_t>(proj.width));
+	for (int x = 0; x < proj.width; x++)
+		rays[x] = proj.columnRay(x);
+	auto depthAt = [&](int x, int y) { return depthBuffer[static_cast<size_t>(y) * proj.width + x]; };
+	auto worldAt = [&](int x, int y, float depth) {
+		return V3 { proj.pos.x + rays[x].x * depth, proj.pos.y + rays[x].y * depth, EyeHeight + proj.rowSlope(y) * depth };
+	};
+	static const bool debugSeen = std::getenv("FP_LAMP_SEEN") != nullptr; // debug: the lamps' light, whichever way surfaces face
+	// The light on the surface seen at a pixel.
+	int litAt = 0; // the building whose light is the most at the last point lightAt worked out
+	auto lightAt = [&](int x, int y, float depth) {
+		const V3 p = worldAt(x, y, depth);
+		const float pz = std::max(p.z, 0.0F);
+		float light = 0;
+		for (const LightGrid &grid : LightGrids) {
+			const float fx = (p.x - grid.x0) * (1.0F / LampCell);
+			const float fy = (p.y - grid.y0) * (1.0F / LampCell);
+			const float fz = pz * (1.0F / LampLayer);
+			if (!(fx >= 0 && fy >= 0 && fx < static_cast<float>(grid.nx - 1) && fy < static_cast<float>(grid.ny - 1) && fz < static_cast<float>(grid.nz - 1)))
+				continue;
+			const int i = static_cast<int>(fx);
+			const int j = static_cast<int>(fy);
+			if (grid.lit2d[static_cast<size_t>(j) * grid.nx + i] == 0)
+				continue;
+			const int k = static_cast<int>(fz);
+			const size_t row = static_cast<size_t>(grid.nx);
+			const size_t layer = row * grid.ny;
+			const std::array<int16_t, 3> *cell = &grid.light[(static_cast<size_t>(k) * grid.ny + j) * grid.nx + i];
+			const std::array<const std::array<int16_t, 3> *, 8> corners { cell, cell + 1, cell + row, cell + row + 1, cell + layer, cell + layer + 1, cell + layer + row, cell + layer + row + 1 };
+			bool any = false;
+			for (const auto *c : corners)
+				any = any || ((*c)[0] | (*c)[1] | (*c)[2]) != 0;
+			if (!any)
+				continue;
+			const float tx = fx - static_cast<float>(i);
+			const float ty = fy - static_cast<float>(j);
+			const float tz = fz - static_cast<float>(k);
+			const std::array<float, 8> weight { (1 - tx) * (1 - ty) * (1 - tz), tx * (1 - ty) * (1 - tz), (1 - tx) * ty * (1 - tz), tx * ty * (1 - tz), (1 - tx) * (1 - ty) * tz, tx * (1 - ty) * tz, (1 - tx) * ty * tz, tx * ty * tz };
+			V3 e { 0, 0, 0 };
+			for (size_t c = 0; c < corners.size(); c++)
+				e = { e.x + weight[c] * (*corners[c])[0], e.y + weight[c] * (*corners[c])[1], e.z + weight[c] * (*corners[c])[2] };
+			if (debugSeen) {
+				light += std::sqrt(e.x * e.x + e.y * e.y + e.z * e.z) * flicker[grid.lit];
+				litAt = grid.lit;
+				continue;
+			}
+			// The surface's normal, from the neighbouring pixels' points (on the side whose depth is nearer this one's).
+			V3 n { 0, 0, 1 };
+			const int ax = x + 1 < proj.width && (x == 0 || std::abs(depthAt(x + 1, y) - depth) <= std::abs(depthAt(x - 1, y) - depth)) ? x + 1 : x - 1;
+			const int ay = y + 1 < proj.height && (y == 0 || std::abs(depthAt(x, y + 1) - depth) <= std::abs(depthAt(x, y - 1) - depth)) ? y + 1 : y - 1;
+			if (ax >= 0 && ay >= 0) {
+				const float da = depthAt(ax, y);
+				const float db = depthAt(x, ay);
+				if (da < MaxRayDistance && db < MaxRayDistance && std::abs(da - depth) < 0.05F * depth && std::abs(db - depth) < 0.05F * depth) {
+					const V3 a = worldAt(ax, y, da);
+					const V3 b = worldAt(x, ay, db);
+					const V3 u { a.x - p.x, a.y - p.y, a.z - p.z };
+					const V3 v { b.x - p.x, b.y - p.y, b.z - p.z };
+					const V3 c { u.y * v.z - u.z * v.y, u.z * v.x - u.x * v.z, u.x * v.y - u.y * v.x };
+					const float length = std::sqrt(c.x * c.x + c.y * c.y + c.z * c.z);
+					if (length > 1e-9F) {
+						const float towards = c.x * (proj.pos.x - p.x) + c.y * (proj.pos.y - p.y) + c.z * (EyeHeight - p.z) < 0 ? -1.0F : 1.0F;
+						n = { c.x * towards / length, c.y * towards / length, c.z * towards / length };
+					}
+				}
+			}
+			const float here = std::max(0.0F, n.x * e.x + n.y * e.y + n.z * e.z) * flicker[grid.lit];
+			if (here > light)
+				litAt = grid.lit;
+			light += here;
+		}
+		return light;
+	};
+	static constexpr std::array<std::array<float, 4>, 4> Bayer { { { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 } } };
+	// Brighter light saturates: the pools under the windows keep their texture instead of going flat.
+	constexpr int ToneSteps = 256;
+	constexpr float ToneTop = 4.0F;
+	static const std::array<float, ToneSteps + 1> Tone = [] {
+		std::array<float, ToneSteps + 1> tone {};
+		for (int i = 0; i <= ToneSteps; i++)
+			tone[i] = (1.0F - std::exp(-1.6F * ToneTop * static_cast<float>(i) / ToneSteps)) * static_cast<float>(GlowLevels - 1);
+		return tone;
+	}();
+	auto apply = [&](int x, int y, float light, int lit) {
+		if (light <= 0)
+			return;
+		const float level = Tone[std::min(static_cast<int>(light * (ToneSteps / ToneTop)), ToneSteps)];
+		const int step = std::min(static_cast<int>(level + Bayer[y & 3][x & 3] / 16.0F), GlowLevels - 1);
+		if (step > 0) {
+			uint8_t *dst = out.at(x, y);
+			*dst = tables[lit][step][*dst];
+		}
+	};
+	// Worked out every Step pixels and blended in between, where the pixels between are on the same surface as
+	// those around them (the light changes slowly over a surface); exactly at the edges of surfaces. Cells whose
+	// corners are all dark on one surface are left alone.
+	constexpr int Step = 4;
+	const int x0 = left - left % Step;
+	const int y0 = top - top % Step;
+	const int columns = (right - x0) / Step + 2;
+	const int rows = (bottom - y0) / Step + 2;
+	static std::vector<float> sampleLight;
+	static std::vector<float> sampleDepth;
+	static std::vector<uint8_t> sampleLit;
+	sampleLight.assign(static_cast<size_t>(columns) * rows, 0.0F);
+	sampleLit.assign(sampleLight.size(), 0);
+	sampleDepth.assign(static_cast<size_t>(columns) * rows, std::numeric_limits<float>::infinity());
+	auto sampleX = [&](int c) { return std::min(x0 + c * Step, proj.width - 1); };
+	auto sampleY = [&](int r) { return std::min(y0 + r * Step, proj.height - 1); };
+	for (int r = 0; r < rows; r++) {
+		for (int c = 0; c < columns; c++) {
+			const int x = sampleX(c);
+			const int y = sampleY(r);
+			const float depth = depthAt(x, y);
+			if (!(depth < MaxRayDistance))
+				continue;
+			sampleDepth[static_cast<size_t>(r) * columns + c] = depth;
+			sampleLight[static_cast<size_t>(r) * columns + c] = lightAt(x, y, depth);
+			sampleLit[static_cast<size_t>(r) * columns + c] = static_cast<uint8_t>(litAt);
+		}
+	}
+	for (int r = 0; r + 1 < rows; r++) {
+		const int ya = sampleY(r);
+		const int yb = sampleY(r + 1);
+		for (int c = 0; c + 1 < columns; c++) {
+			const int xa = sampleX(c);
+			const int xb = sampleX(c + 1);
+			const size_t at = static_cast<size_t>(r) * columns + c;
+			const std::array<float, 4> depth { sampleDepth[at], sampleDepth[at + 1], sampleDepth[at + columns], sampleDepth[at + columns + 1] };
+			const std::array<float, 4> light { sampleLight[at], sampleLight[at + 1], sampleLight[at + columns], sampleLight[at + columns + 1] };
+			const std::array<size_t, 4> corner { at, at + 1, at + columns, at + columns + 1 };
+			const int cellLit = sampleLit[corner[std::max_element(light.begin(), light.end()) - light.begin()]];
+			const float nearest = std::min({ depth[0], depth[1], depth[2], depth[3] });
+			const float farthest = std::max({ depth[0], depth[1], depth[2], depth[3] });
+			const bool smooth = farthest < MaxRayDistance && farthest - nearest < 0.1F * nearest;
+			const bool dark = light[0] <= 0 && light[1] <= 0 && light[2] <= 0 && light[3] <= 0;
+			if (smooth && dark)
+				continue;
+			for (int y = ya; y < (r + 2 == rows ? yb + 1 : yb) && y <= bottom; y++) {
+				const float ty = yb > ya ? static_cast<float>(y - ya) / static_cast<float>(yb - ya) : 0.0F;
+				for (int x = xa; x < (c + 2 == columns ? xb + 1 : xb) && x <= right; x++) {
+					if (x < left || y < top)
+						continue;
+					const float d = depthAt(x, y);
+					if (!(d < MaxRayDistance))
+						continue;
+					const float tx = xb > xa ? static_cast<float>(x - xa) / static_cast<float>(xb - xa) : 0.0F;
+					if (smooth) {
+						const float da = depth[0] + (depth[1] - depth[0]) * tx;
+						const float db = depth[2] + (depth[3] - depth[2]) * tx;
+						if (std::abs(da + (db - da) * ty - d) < 0.015F * d) {
+							const float la = light[0] + (light[1] - light[0]) * tx;
+							const float lb = light[2] + (light[3] - light[2]) * tx;
+							apply(x, y, la + (lb - la) * ty, cellLit);
+							continue;
+						}
+					}
+					const float exact = lightAt(x, y, d);
+					apply(x, y, exact, litAt);
+				}
+			}
+		}
+	}
+}
+
+void CollectTreeSprites(Vec2 viewerPos, std::vector<Entity> &entities)
+{
+	if (leveltype != DTYPE_TOWN || !BuildingsEnabled())
+		return;
+	EnsureBuilt();
+	for (const TreeSprite &tree : TreeSprites) {
+		if (std::hypot(tree.foot.x - viewerPos.x, tree.foot.y - viewerPos.y) > PropDrawRange)
+			continue;
+		Entity entity {};
+		entity.kind = EntityKind::Prop;
+		entity.id = -1;
+		entity.tile = { static_cast<int>(tree.foot.x), static_cast<int>(tree.foot.y) };
+		entity.pos = tree.foot;
+		entity.width = static_cast<float>(tree.width) / SpritePixelsPerTileX;
+		entity.height = static_cast<float>(tree.height) / SpritePixelsPerTileY;
+		entity.bottom = -static_cast<float>(tree.belowFoot) / SpritePixelsPerTileY;
+		entity.pixels = &tree.pixels;
+		entity.pixelsWidth = tree.width;
+		entity.pixelsHeight = tree.height;
+		entity.lit = true;
+		entity.facing = true;
+		entities.push_back(entity);
+	}
+}
+
+void SetWindowLightEnabled(bool enabled)
+{
+	WindowLightOn = enabled;
 }
 
 std::string TakeRasterStats(int frames)

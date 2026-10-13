@@ -209,6 +209,11 @@ their creators, who made them available free of charge: Dmitriy Chugai ([texture
 [mb3d.co.uk](http://www.mb3d.co.uk/mb3d), [texturez.com](http://texturez.com/), and borysses and Obsidian Dawn on
 DeviantArt. Details: [`assets/fp/CREDITS.md`](assets/fp/CREDITS.md).
 
+**Town sky: Back to Saturn X, via SevBox.** The night sky over town is sky 1 of SeventhSentinel's SevBox-BTSX
+skyboxes, made from the [Back to Saturn X texture resource](https://esselfortium.net/wasd/mysteryproject-tex-phase1.zip)
+by Sarah "Esselfortium" Mancuso, Sven "ptoing" Ruthner, moekki and Xaser Acheron; its planets painted out,
+darkened nearly to black and converted to the town palette for this mod. Details: [`assets/fp/CREDITS.md`](assets/fp/CREDITS.md).
+
 **First-person weapons: The Elder Scrolls II: Daggerfall.** The weapon art (`WEAPON*.CIF`) and its palette
 (`ART_PAL.COL`) are from *The Elder Scrolls II: Daggerfall* by Bethesda Softworks (© 1996 Bethesda Softworks LLC,
 a ZeniMax Media company), which Bethesda has made available for free. None of it is included in this

@@ -38,3 +38,12 @@ their creators, who made them available free of charge:
 - http://www.mb3d.co.uk/mb3d
 - http://texturez.com/
 - Deviant Art: borysses, Obsidian Dawn
+
+## Sky
+
+`sky.bin` is the town's night sky: sky 1 of SevBox's BTSX skyboxes with its ringed planet and moon painted out,
+graded nearly black, its stars redrawn finer and quantized to the town palette by `fp-tools/export/export_sky.py`.
+
+- **Original assets** (the Back to Saturn X texture resource, https://esselfortium.net/wasd/mysteryproject-tex-phase1.zip):
+  Sarah "Esselfortium" Mancuso, Sven "ptoing" Ruthner, moekki, Xaser Acheron
+- **Skybox conversion:** SeventhSentinel (SevBox-BTSX v1.0.1)
