@@ -45,7 +45,7 @@ All first-person code lives in `Source/fp/` of each checkout:
 
 | File | Responsibility |
 |---|---|
-| `fp_view.cpp` | the frame: floor/ceiling pass, wall raycaster for town, caves and hell (art faces, recesses, doors), sprite pass, phase timers |
+| `fp_view.cpp` | the frame: floor/ceiling pass, wall raycaster for town, caves and hell (art faces, recesses, doors), sprite pass, phase timers; outlines (as the iso view: the item under the crosshair in its quality's colour; enemies in melee range, next to the player, in red: `OutlineColor`) and the items' name labels (the game's item highlighting key and option, `AddItemToLabelQueueAt`) |
 | `fp_dungeon.cpp/.hpp` | **the clean dungeon** (cathedral, catacombs, crypt): tile kinds, texture sets, its floor/ceiling and wall passes, the geometry of its pillars, arches and stairwells |
 | `fp_raycast.cpp/.hpp` | camera projection, `CastRay`, what counts as a wall (`IsOpaque`), `WallHeight()`, `VerticalScale()` |
 | `fp_textures.cpp/.hpp` | turns each tile piece's iso art into wall-face, floor and column textures; detects pillars, lava and recesses; supplies the filler wall pair (the clean dungeon reads it only to classify tiles) |
@@ -312,7 +312,8 @@ geometry. The art is only read to tell what a tile is.
 ### 5.2 Sprites (monsters, NPCs, objects)
 - Sizes are `MonsterScale` and `TownerScale` in `fp_world.cpp`.
 - Objects whose sprite is mostly empty below (torch flames) keep the original alignment. Others are "grounded" and
-  sink to the middle of their base (`BaseSinkPixels`).
+  sink to the middle of their base (`BaseSinkPixels`), but chests: their bottom edge is a shallow V that would all go
+  under the floor, so their front corner stands on it.
 - To make an object a 3D box instead of a billboard, add its type to `IsBoxObject` in `fp_buildings.cpp` (that is how
   sarcophagi work). The box is measured from the sprite.
 

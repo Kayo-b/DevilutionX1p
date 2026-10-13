@@ -27,7 +27,13 @@
 #include "fp/fp_buildings.hpp"
 #include "fp/fp_doors.hpp"
 #include "fp/fp_dungeon.hpp"
+#include "cursor.h"
+#include "items.h"
+#include "monster.h"
 #include "objects.h"
+#include "player.h"
+#include "qol/itemlabels.h"
+#include "stores.h"
 #include "utils/log.hpp"
 #include "fp/fp_raycast.hpp"
 #include "fp/fp_textures.hpp"
@@ -588,7 +594,20 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 	}
 }
 
-void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::vector<float> &zBuffer, const std::vector<float> *depthBuffer, const Entity &entity, const BillboardRect &rect)
+/** @brief Where a billboard's pixels landed on screen (the ones not hidden behind walls). */
+struct SpriteCoverage {
+	bool drawn = false;
+	int left = std::numeric_limits<int>::max();
+	int right = std::numeric_limits<int>::min(); // inclusive
+	int top = std::numeric_limits<int>::max();
+};
+
+/**
+ * @brief Draws a billboard. With an `outline` colour, it is traced round with a line of that colour one sprite pixel
+ * wide (1 to 3 screen pixels), as the iso view outlines what is under the cursor (the line can go a little into the
+ * floor under the sprite's foot).
+ */
+SpriteCoverage DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::vector<float> &zBuffer, const std::vector<float> *depthBuffer, const Entity &entity, const BillboardRect &rect, uint8_t outline = 0)
 {
 	static std::vector<int16_t> decoded;
 	const std::vector<int16_t> *source = entity.pixels;
@@ -612,6 +631,60 @@ void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::
 	const int y1 = std::min(proj.height, rect.bottom);
 	const int fogStep = FogStep(rect.depth);
 	const uint8_t *fog = fogStep > 0 ? FogTables()[fogStep].data() : nullptr;
+	SpriteCoverage coverage;
+	if (x0 >= x1 || y0 >= y1)
+		return coverage;
+	// With an outline: which pixels the sprite covers, with a clear border as wide as the line round them.
+	const int thickness = std::clamp((screenHeight + spriteHeight / 2) / std::max(spriteHeight, 1), 1, 3);
+	static std::vector<uint8_t> mask;
+	static std::vector<uint8_t> grown;
+	const int maskWidth = x1 - x0 + 2 * thickness;
+	const int maskHeight = y1 - y0 + 2 * thickness;
+	if (outline != 0)
+		mask.assign(static_cast<size_t>(maskWidth) * maskHeight, 0);
+	auto cover = [&](int x, int y) {
+		coverage.drawn = true;
+		coverage.left = std::min(coverage.left, x);
+		coverage.right = std::max(coverage.right, x);
+		coverage.top = std::min(coverage.top, y);
+		if (outline != 0)
+			mask[static_cast<size_t>(y - y0 + thickness) * maskWidth + (x - x0 + thickness)] = 1;
+	};
+	// The line: what the sprite covers grown by its thickness (across, then down), less the sprite, where nothing
+	// nearer hides it.
+	auto drawOutline = [&]() {
+		if (outline == 0 || !coverage.drawn)
+			return;
+		grown.assign(mask.size(), 0);
+		for (int my = 0; my < maskHeight; my++) {
+			const uint8_t *row = &mask[static_cast<size_t>(my) * maskWidth];
+			for (int mx = 0; mx < maskWidth; mx++) {
+				if (row[mx] == 0)
+					continue;
+				for (int k = std::max(0, mx - thickness); k <= std::min(maskWidth - 1, mx + thickness); k++)
+					grown[static_cast<size_t>(my) * maskWidth + k] = 1;
+			}
+		}
+		constexpr float FootTolerance = 0.2F; // tiles: the line under the foot is not lost in the floor
+		for (int my = 0; my < maskHeight; my++) {
+			const int y = y0 - thickness + my;
+			if (y < 0 || y >= proj.height)
+				continue;
+			for (int mx = 0; mx < maskWidth; mx++) {
+				const int x = x0 - thickness + mx;
+				if (x < 0 || x >= proj.width || mask[static_cast<size_t>(my) * maskWidth + mx] != 0)
+					continue;
+				bool edge = false;
+				for (int k = std::max(0, my - thickness); k <= std::min(maskHeight - 1, my + thickness) && !edge; k++)
+					edge = grown[static_cast<size_t>(k) * maskWidth + mx] != 0;
+				if (!edge)
+					continue;
+				if (depthBuffer != nullptr ? rect.depth > (*depthBuffer)[static_cast<size_t>(y) * proj.width + x] + FootTolerance : zBuffer[x] < rect.depth)
+					continue;
+				*out.at(x, y) = outline;
+			}
+		}
+	};
 	auto shade = [&](int16_t pixel) {
 		uint8_t color = static_cast<uint8_t>(pixel);
 		if (entity.trn != nullptr)
@@ -704,9 +777,11 @@ void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::
 				if (fog != nullptr)
 					color = fog[color];
 				dst[x] = color;
+				cover(x, y);
 			}
 		}
-		return;
+		drawOutline();
+		return coverage;
 	}
 
 	for (int x = x0; x < x1; x++) {
@@ -725,8 +800,11 @@ void DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::
 			if (fog != nullptr)
 				color = fog[color];
 			*out.at(x, y) = color;
+			cover(x, y);
 		}
 	}
+	drawOutline();
+	return coverage;
 }
 
 /**
@@ -801,6 +879,30 @@ void DrawFlatSprite(const Surface &out, const Projection &proj, const std::vecto
 	}
 }
 
+/** @brief Whether a monster is an enemy the player can hit without a step: next to the player, as a melee attack checks. */
+bool InMeleeRange(const Monster &monster)
+{
+	if (monster.hasNoLife() || monster.isPlayerMinion() || CanTalkToMonst(monster) || MyPlayer == nullptr)
+		return false;
+	const Point player = MyPlayer->position.tile;
+	return std::abs(player.x - monster.position.future.x) <= 1 && std::abs(player.y - monster.position.future.y) <= 1;
+}
+
+/** @brief The colour an entity is outlined in (0: none): the item under the cursor in its quality's colour, as the iso view does; enemies in melee range in red. */
+uint8_t OutlineColor(const Entity &entity)
+{
+	// The iso view's outline of a monster under the cursor (OutlineColorsMonster in scrollrt.cpp).
+	constexpr uint8_t MonsterOutline = PAL16_RED + 9;
+	switch (entity.kind) {
+	case EntityKind::Item:
+		return entity.id == pcursitem && !IsPlayerInStore() ? GetOutlineColor(Items[entity.id], false) : 0;
+	case EntityKind::Monster:
+		return InMeleeRange(Monsters[entity.id]) ? MonsterOutline : 0;
+	default:
+		return 0;
+	}
+}
+
 void DrawEntities(const Surface &out, const Projection &proj, const std::vector<float> &zBuffer, const std::vector<float> *depthBuffer)
 {
 	static std::vector<Entity> entities;
@@ -825,8 +927,16 @@ void DrawEntities(const Surface &out, const Projection &proj, const std::vector<
 	// Far to near, so nearer sprites overwrite farther ones.
 	std::sort(sorted.begin(), sorted.end(), [](const auto &a, const auto &b) { return a.first.depth > b.first.depth; });
 
-	for (const auto &[rect, entity] : sorted)
-		DrawSpriteBillboard(out, proj, zBuffer, depthBuffer, *entity, rect);
+	for (const auto &[rect, entity] : sorted) {
+		const SpriteCoverage coverage = DrawSpriteBillboard(out, proj, zBuffer, depthBuffer, *entity, rect, OutlineColor(*entity));
+		// Items' name labels (shown with the item highlighting key or option), over what can be seen of the item, once it
+		// has landed (as the iso view queues them); not in the dark.
+		if (entity->kind == EntityKind::Item && coverage.drawn && LightAt(entity->tile) < LightsMax) {
+			const Item &item = Items[entity->id];
+			if (item.AnimInfo.isLastFrame() || item._iCurs == ICURS_MAGIC_ROCK)
+				AddItemToLabelQueueAt(entity->id, { (coverage.left + coverage.right) / 2, coverage.top - 2 });
+		}
+	}
 }
 
 void DrawCrosshair(const Surface &out)

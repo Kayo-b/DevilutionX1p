@@ -229,10 +229,13 @@ void CollectObjects(std::vector<Entity> &entities)
 		const bool grounded = FootPadding(sprite) * 10 < sprite.height() * 3;
 		Entity entity = MakeSpriteEntity(EntityKind::Object, id, object.position, TileCenter(object.position), sprite, 1.0F, grounded);
 		// A grounded object (a sarcophagus, a barrel) stands on the middle of its base, not on its front corner;
-		// the floor hides the part that sinks below it.
-		if (grounded)
-			entity.bottom -= static_cast<float>(BaseSinkPixels(sprite)) / SpritePixelsPerTileY;
-		else {
+		// the floor hides the part that sinks below it. Not a chest: a low box with a shallow V for a bottom edge (its
+		// front corner lowest), all of which would go under the floor and leave it cut off straight; its front corner
+		// stands on the floor instead.
+		if (grounded) {
+			if (!object.IsChest())
+				entity.bottom -= static_cast<float>(BaseSinkPixels(sprite)) / SpritePixelsPerTileY;
+		} else {
 			// The iso renderer puts the sprite's bottom at the tile's front corner. These sprites belong to the tile's
 			// art (a torch stand's flame), which is drawn stretched up: stretch them with it.
 			entity.bottom = -static_cast<float>(TILE_HEIGHT / 2) / SpritePixelsPerTileY * VerticalScale();

@@ -74,6 +74,14 @@ private:
 	std::vector<int> data_;
 };
 
+/** @brief What an item's label says: its name, or for gold how much there is. */
+StringOrView LabelText(const Item &item)
+{
+	if (item._itype == ItemType::Gold)
+		return FormatRuntime(_("{:s} gold"), FormatInteger(item._ivalue));
+	return item.getName();
+}
+
 } // namespace
 
 void ToggleItemLabelHighlight()
@@ -107,12 +115,7 @@ void AddItemToLabelQueue(int id, Point position)
 		return;
 	Item &item = Items[id];
 
-	StringOrView textOnGround;
-	if (item._itype == ItemType::Gold) {
-		textOnGround = FormatRuntime(_("{:s} gold"), FormatInteger(item._ivalue));
-	} else {
-		textOnGround = item.getName();
-	}
+	StringOrView textOnGround = LabelText(item);
 
 	int nameWidth = GetLineWidth(textOnGround);
 	nameWidth += MarginX * 2;
@@ -130,6 +133,15 @@ void AddItemToLabelQueue(int id, Point position)
 	position.x -= nameWidth / 2;
 	position.y -= LabelHeight();
 	labelQueue.push_back(ItemLabel { id, nameWidth, position, std::move(textOnGround) });
+}
+
+void AddItemToLabelQueueAt(int id, Point bottomMiddle)
+{
+	if (!IsHighlightingLabelsEnabled())
+		return;
+	StringOrView text = LabelText(Items[id]);
+	const int width = GetLineWidth(text) + MarginX * 2;
+	labelQueue.push_back(ItemLabel { id, width, { bottomMiddle.x - width / 2, bottomMiddle.y - LabelHeight() }, std::move(text) });
 }
 
 bool IsMouseOverGameArea()
