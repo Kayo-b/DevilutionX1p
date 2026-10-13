@@ -86,6 +86,7 @@ set(libdevilutionx_SRCS
   fp/fp_buildings.cpp
   fp/fp_controls.cpp
   fp/fp_doors.cpp
+  fp/fp_dungeon.cpp
   fp/fp_pick.cpp
   fp/fp_raycast.cpp
   fp/fp_textures.cpp

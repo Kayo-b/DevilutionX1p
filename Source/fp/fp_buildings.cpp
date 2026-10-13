@@ -23,6 +23,7 @@
 #include "engine/light_tables.hpp"
 #include "engine/palette.h"
 #include "fp/fp_doors.hpp"
+#include "fp/fp_dungeon.hpp"
 #include "fp/fp_textures.hpp"
 #include "fp/fp_world.hpp"
 #include "levels/gendung.h"
@@ -128,6 +129,7 @@ struct WorldTriangle {
 	float arcSpring = 0; // MeshArcade: the arch wall's springing height
 	int16_t arch = -1;   // MeshArch: index into ArchSlabs
 	uint8_t fallback;   // colour where the art has no pixel
+	CleanSurface cleanSurface = CleanSurface::Wall; // MeshClean: the texture, laid on by uv (tiles)
 };
 
 enum : uint8_t {
@@ -143,6 +145,7 @@ enum : uint8_t {
 	MeshFloorArt,   // the floor art under the point (what the art paints on the floor, raised into 3D: the stairs' fan)
 	MeshSolid,      // one colour (fallback) for the whole triangle, shaded by its darkness: the kit's ceiling vaults
 	MeshArch,       // an arch over a walkable tile (ArchSlabs[arch]): its face art, open where it has none; faceX: its underside or top
+	MeshClean,      // the clean dungeon's pillars and arches (fp_dungeon.cpp): a surface of its texture set, by uv
 };
 
 struct Building {
@@ -320,8 +323,10 @@ uint8_t ShadeColor(uint8_t color, int darkness)
 	return table[std::min<size_t>(darkness, SurfaceShade.size() - 1)][color];
 }
 
-/** World size of a screen pixel at the point being shaded (set by RasterizeTriangles). */
+/** World size of a screen pixel at the point being shaded, and its screen position (set by RasterizeTriangles). */
 float ShadePixelWorld = 0;
+int ShadeX = 0;
+int ShadeY = 0;
 /**
  * @brief Whether SampleArt may read the art's UpscaledTexture up close: not on levels that cycle their palettes, whose
  * structures (and art) are rebuilt every frame.
@@ -2419,6 +2424,8 @@ void RasterizeTriangles(const Surface &out, const Projection &proj, std::vector<
 					const float wz = (w0 * v0.worldOverDepth.z + w1 * v1.worldOverDepth.z + w2 * v2.worldOverDepth.z) * distance;
 					RasterStats[1]++;
 					ShadePixelWorld = distance / proj.focal;
+					ShadeX = x;
+					ShadeY = y;
 					const int color = shade(tri, wx, wy, wz);
 					if (color < 0)
 						continue;
@@ -4076,6 +4083,81 @@ void BuildSpecialArches()
 	LogInfo("fp: {} arches", ArchSlabs.size());
 }
 
+void FinishStructureBounds();
+
+/** @brief The cathedral's stairs, up and down, at its stairs triggers. */
+void BuildCathedralStairs()
+{
+	for (int i = 0; i < numtrigs; i++) {
+		Structure st;
+		if (trigs[i]._tmsg == WM_DIABPREVLVL && BuildStairsUp(st, trigs[i].position)) {
+			SetStructureFallbacks(st);
+			Structures.push_back(std::move(st));
+		} else if (trigs[i]._tmsg == WM_DIABNEXTLVL && BuildStairsDown(st, trigs[i].position)) {
+			SetStructureFallbacks(st);
+			Structures.push_back(std::move(st));
+		}
+	}
+}
+
+/**
+ * @brief The clean dungeon's structures (fp_dungeon.hpp): the cathedral's stairs, the torch stands (their 3D model
+ * read off the art, as before), and the pillars and arches, gathered in chunks of tiles so they are culled together.
+ */
+void BuildCleanStructures()
+{
+	if (leveltype == DTYPE_CATHEDRAL)
+		BuildCathedralStairs();
+	std::vector<CleanQuad> quads;
+	std::vector<Point> stands;
+	std::vector<std::array<float, 4>> holes;
+	BuildCleanGeometry(quads, stands, holes);
+	FloorHoles.insert(FloorHoles.end(), holes.begin(), holes.end());
+	for (const Point tile : stands) {
+		uint8_t &mark = StructureTiles[static_cast<size_t>(tile.y) * MAXDUNX + tile.x];
+		Structure st;
+		if (mark != 0 || !BuildColumn(st, tile))
+			continue;
+		SetStructureFallbacks(st);
+		mark = 1;
+		Structures.push_back(std::move(st));
+	}
+	const float stretch = VerticalScale();
+	constexpr int Chunk = 4;
+	std::unordered_map<int, size_t> chunks;
+	for (const CleanQuad &quad : quads) {
+		const Point tile { static_cast<int>(std::floor((quad.p[0][0] + quad.p[2][0]) / 2.0F)), static_cast<int>(std::floor((quad.p[0][1] + quad.p[2][1]) / 2.0F)) };
+		if (!InDungeonBounds(tile) || StructureTiles[static_cast<size_t>(tile.y) * MAXDUNX + tile.x] != 0)
+			continue; // under a stairs model
+		const int key = (tile.y / Chunk) * (MAXDUNX / Chunk + 1) + tile.x / Chunk;
+		auto [it, added] = chunks.try_emplace(key, Structures.size());
+		if (added)
+			Structures.emplace_back();
+		Building &b = Structures[it->second].art;
+		// Meshes are kept in art units, stretched up when drawn: so are the normals (for culling).
+		const auto at = [&](int k) { return V3 { quad.p[k][0], quad.p[k][1], quad.p[k][2] / stretch }; };
+		const size_t first = b.mesh.size();
+		AddStructureFace(b, { at(0), at(1), at(2), at(3) }, { quad.normal[0], quad.normal[1], quad.normal[2] * stretch }, { 0, 0 }, MeshClean);
+		for (size_t t = first; t < b.mesh.size(); t++) {
+			WorldTriangle &tri = b.mesh[t];
+			// AddStructureFace fans the quad from its first corner: (0, 1, 2), then (0, 2, 3).
+			const std::array<int, 3> corners { 0, static_cast<int>(t - first) + 1, static_cast<int>(t - first) + 2 };
+			for (int v = 0; v < 3; v++) {
+				tri.uv[v * 2] = quad.uv[corners[v]][0];
+				tri.uv[v * 2 + 1] = quad.uv[corners[v]][1];
+			}
+			tri.cleanSurface = quad.surface;
+			// Half a light level per step: undersides, and the inside of stairwells.
+			tri.darkness = static_cast<uint8_t>((quad.normal[2] < -0.5F ? 3 : 0) + std::lround(quad.darkness * 2.0F));
+			PrepareUvLookup(tri);
+		}
+	}
+	for (int y = 0; y < MAXDUNY; y++)
+		for (int x = 0; x < MAXDUNX; x++)
+			if (CleanKindAt({ x, y }) == CleanKind::Pillar)
+				StructureTiles[static_cast<size_t>(y) * MAXDUNX + x] = 1;
+}
+
 void BuildStructures()
 {
 	PrepareKitSurfaces();
@@ -4093,6 +4175,12 @@ void BuildStructures()
 	StructureTiles.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY, 0);
 	if (leveltype == DTYPE_TOWN)
 		return;
+	if (IsCleanDungeon()) {
+		BuildCleanStructures();
+		FinishStructureBounds();
+		LogInfo("fp: {} dungeon structures drawn as meshes (clean dungeon)", Structures.size());
+		return;
+	}
 	if (leveltype == DTYPE_CATHEDRAL) {
 		for (int i = 0; i < numtrigs; i++) {
 			if (trigs[i]._tmsg == WM_DIABPREVLVL) {
@@ -4181,6 +4269,13 @@ void BuildStructures()
 	}
 	VaultChunks.clear();
 	BuildCeilingVaults();
+	FinishStructureBounds();
+	LogInfo("fp: {} dungeon structures drawn as meshes ({} arcade pillars)", Structures.size(), pillars.size());
+}
+
+/** @brief Each structure's bounds, for culling it on screen. */
+void FinishStructureBounds()
+{
 	for (Structure &st : Structures) {
 		float lowest = 0;
 		float highest = 0;
@@ -4205,13 +4300,15 @@ void BuildStructures()
 		st.art.lowestZ = lowest;
 		st.art.highestZ = highest;
 	}
-	LogInfo("fp: {} dungeon structures drawn as meshes ({} arcade pillars)", Structures.size(), pillars.size());
 }
 
 void EnsureStructures()
 {
-	NotePaletteChange();
-	const LevelKey key { pDungeonCels.get(), currlevel, static_cast<int>(leveltype), setlevel, PaletteVersion() };
+	// The clean dungeon is rebuilt when its map changes (doors, levers) and not with the crypt's cycling lava colours.
+	const bool clean = IsCleanDungeon();
+	if (!clean)
+		NotePaletteChange();
+	const LevelKey key { pDungeonCels.get(), currlevel, static_cast<int>(leveltype), setlevel, clean ? CleanDungeonVersion() : PaletteVersion() };
 	if (key == StructuresFor)
 		return;
 	StructuresFor = key;
@@ -4280,6 +4377,15 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 	if (!ScreenBounds(st.art, proj, left, top, right, bottom))
 		return;
 	RasterizeTriangles(out, proj, depthBuffer, st.art.mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
+		if (tri.mapping == MeshClean) {
+			const auto [da, db] = DropAxis(tri.bakeAxis, wx - tri.p[0].x, wy - tri.p[0].y, wz - tri.p[0].z);
+			const float w1 = tri.bakeInv[0] * da + tri.bakeInv[1] * db;
+			const float w2 = tri.bakeInv[2] * da + tri.bakeInv[3] * db;
+			const float w0 = 1.0F - w1 - w2;
+			const float u = w0 * tri.uv[0] + w1 * tri.uv[2] + w2 * tri.uv[4];
+			const float v = w0 * tri.uv[1] + w1 * tri.uv[3] + w2 * tri.uv[5];
+			return static_cast<int>(CleanColor(tri.cleanSurface, u, v, ShadePixelWorld, CleanLightAt(wx, wy) + tri.darkness * 0.5F, ShadeX, ShadeY));
+		}
 		if (tri.mapping == MeshSolid) {
 			const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
 			const uint8_t level = InDungeonBounds(lit) ? std::min<uint8_t>(LightAt(lit) + CeilingExtraDarkness, LightsMax) : LightsMax;
@@ -4499,9 +4605,16 @@ void DrawDoorLeaves(const Surface &out, const Projection &proj, std::vector<floa
 		if (leaf.angle != angle || leaf.side != side)
 			BuildDoorLeaf(leaf, door, angle, side);
 		const int faceHeight = FaceTextureHeight();
+		const bool clean = IsCleanDungeon();
 		RasterizeTriangles(out, proj, depthBuffer, leaf.mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
 			uint8_t darkness = tri.darkness;
 			const float offset = (wx - leaf.hinge.x) * leaf.direction.x + (wy - leaf.hinge.y) * leaf.direction.y;
+			if (clean) {
+				// The clean dungeon's door texture over the whole leaf (its planks and irons are painted on).
+				const float u = std::clamp(offset / std::max(leaf.width, 0.01F), 0.0F, 0.999F);
+				const float v = std::clamp(1.0F - wz / std::max(leaf.height, 0.01F), 0.0F, 0.999F);
+				return static_cast<int>(CleanColor(CleanSurface::Door, u, v, ShadePixelWorld, CleanLightAt(wx, wy) + static_cast<float>(darkness) * 0.5F, ShadeX, ShadeY));
+			}
 			const float plank = offset / leaf.width * DoorPlanks;
 			if (plank - std::floor(plank) < DoorSeamShare && tri.darkness == 0)
 				darkness = DoorSeamDarkness;
@@ -4839,6 +4952,11 @@ void DrawStructures(const Surface &out, const Projection &proj, std::vector<floa
 bool IsObjectDrawnAsMesh(int id)
 {
 	return leveltype != DTYPE_TOWN && id >= 0 && id < MAXOBJECTS && IsBoxObject(Objects[id]);
+}
+
+FILE *OpenFpAsset(const char *envName, const char *fileName)
+{
+	return OpenHouseAsset(envName, fileName);
 }
 
 int BuildingCount()

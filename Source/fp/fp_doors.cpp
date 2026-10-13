@@ -10,6 +10,7 @@
 #include <cmath>
 
 #include "fp/fp_controls.hpp"
+#include "fp/fp_dungeon.hpp"
 #include "fp/fp_textures.hpp"
 #include "levels/dun_tile_data.hpp"
 #include "levels/gendung.h"
@@ -99,6 +100,29 @@ void DefaultOpening(Doorway &door, int rows)
 	}
 }
 
+/**
+ * @brief The clean dungeon's doorway (fp_dungeon.hpp): the round-arched opening of CleanDoorOpening, centred on the
+ * door tile and no wider than it. No art: the wall around it is the clean wall, and the leaf wears its own texture.
+ */
+bool BuildCleanDoorway(Doorway &door)
+{
+	const int faceHeight = FaceTextureHeight();
+	const CleanOpening opening = CleanDoorOpening();
+	door.hasPartner = false;
+	door.face.clear();
+	door.artFrom = 0.0F;
+	door.artTo = 1.0F;
+	door.openFrom = 0.5F - opening.halfWidth;
+	door.openTo = 0.5F + opening.halfWidth;
+	door.opening.assign(FaceTextureWidth, faceHeight);
+	for (int u = 0; u < FaceTextureWidth; u++) {
+		const float top = CleanOpeningTop(opening, (static_cast<float>(u) + 0.5F) / FaceTextureWidth);
+		if (top > 0.0F)
+			door.opening[u] = std::clamp(WallArtRow(top / VerticalScale()) + 1, 0, faceHeight);
+	}
+	return true;
+}
+
 bool BuildDoorway(Doorway &door, int objectId)
 {
 	const Object &object = Objects[objectId];
@@ -120,6 +144,8 @@ bool BuildDoorway(Doorway &door, int objectId)
 	door.hasPartner = partner >= 0 && partner < MAXTILES && InDungeonBounds(partnerTile)
 	    && (door.alongX ? partnerTile.y == t.y : partnerTile.x == t.x);
 	door.partner = partnerTile;
+	if (IsCleanDungeon())
+		return BuildCleanDoorway(door);
 
 	// The closed art along the wall: the partner's face then the door's, in world-axis order.
 	const int faceHeight = FaceTextureHeight();

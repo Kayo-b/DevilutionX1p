@@ -26,6 +26,7 @@
 #include "fp/fp_controls.hpp"
 #include "fp/fp_buildings.hpp"
 #include "fp/fp_doors.hpp"
+#include "fp/fp_dungeon.hpp"
 #include "objects.h"
 #include "utils/log.hpp"
 #include "fp/fp_raycast.hpp"
@@ -931,9 +932,18 @@ void DrawFirstPersonView(const Surface &out)
 		t0 = t;
 	};
 	depthBuffer.assign(static_cast<size_t>(proj.width) * proj.height, std::numeric_limits<float>::infinity());
-	DrawFloorAndCeiling(out, proj, depthBuffer);
+	const bool clean = IsCleanDungeon();
+	if (clean)
+		PrepareCleanDungeon();
+	if (clean)
+		DrawCleanFloorAndCeiling(out, proj, depthBuffer);
+	else
+		DrawFloorAndCeiling(out, proj, depthBuffer);
 	lap(0);
-	DrawWalls(out, proj, zBuffer, depthBuffer);
+	if (clean)
+		DrawCleanWalls(out, proj, zBuffer, depthBuffer);
+	else
+		DrawWalls(out, proj, zBuffer, depthBuffer);
 	lap(1);
 	if (leveltype == DTYPE_TOWN && BuildingsEnabled())
 		DrawBuildings(out, proj, zBuffer, depthBuffer);

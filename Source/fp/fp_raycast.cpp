@@ -12,6 +12,7 @@
 
 #include "fp/fp_controls.hpp"
 #include "fp/fp_doors.hpp"
+#include "fp/fp_dungeon.hpp"
 #include "fp/fp_textures.hpp"
 #include "levels/dun_tile_data.hpp"
 #include "levels/gendung.h"
@@ -57,6 +58,11 @@ bool IsOpaque(Point tile)
 		return true;
 	if (!IsTileSolid(tile))
 		return false;
+	if (IsCleanDungeon()) {
+		// Pillars and torch stands are meshes; lava and water are floor; the stairs' tiles are their models.
+		const CleanKind kind = CleanKindAt(tile);
+		return (kind == CleanKind::Wall || kind == CleanKind::Stairs) && !IsStructureTile(tile);
+	}
 	// Free-standing columns and the stairs down are drawn as meshes (or billboards), so rays pass them.
 	if (IsArchPillarTile(tile))
 		return true;
@@ -114,6 +120,8 @@ bool IsHoleAt(const RayHit &hit, float height)
 		return false;
 	if (DoorwaySpanAt(hit.tile).door != nullptr && IsDoorwayHole(hit, height))
 		return true;
+	if (IsCleanDungeon())
+		return false; // clean walls are solid: aiming at a stairwell walks to its trigger
 	const PieceTextures &textures = GetPieceTextures(dPiece[hit.tile.x][hit.tile.y]);
 	const bool wantX = hit.xSide;
 	const bool ownUsable = wantX ? textures.faceXUsable : textures.faceYUsable;

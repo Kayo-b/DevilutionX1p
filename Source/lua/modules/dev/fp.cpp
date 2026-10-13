@@ -13,11 +13,13 @@
 
 #include "fp/fp_buildings.hpp"
 #include "fp/fp_controls.hpp"
+#include "fp/fp_dungeon.hpp"
 #include "fp/fp_raycast.hpp"
 #include "fp/fp_textures.hpp"
 #include "fp/fp_view.hpp"
 #include "fp/fp_weapon.hpp"
 #include "fp/fp_world.hpp"
+#include "engine/load_file.hpp"
 #include "engine/palette.h"
 #include "lua/metadoc.hpp"
 #include "monster.h"
@@ -300,6 +302,11 @@ std::string DebugCmdFpTileMap(int x0, int y0, int x1, int y1)
 	return fp::TileMap(x0, y0, x1, y1);
 }
 
+std::string DebugCmdFpCleanMap(int x0, int y0, int x1, int y1)
+{
+	return fp::CleanTileMap(x0, y0, x1, y1);
+}
+
 std::string DebugCmdFpFeatures()
 {
 	std::string out;
@@ -407,6 +414,21 @@ std::string DebugCmdFpModKit(bool enabled)
 	return enabled ? "Mod-kit dungeon surfaces on." : "Mod-kit dungeon surfaces off (entrance stairs and sarcophagus remain independent).";
 }
 
+std::string DebugCmdFpDumpFile(std::string gamePath, std::string outPath)
+{
+	// Copies a file from the game data (e.g. a palette, levels\\l1data\\l1_1.pal) to disk, for offline tools.
+	size_t size = 0;
+	const std::unique_ptr<std::byte[]> data = LoadFileInMem<std::byte>(gamePath.c_str(), &size);
+	if (data == nullptr)
+		return "Not found.";
+	FILE *f = std::fopen(outPath.c_str(), "wb");
+	if (f == nullptr)
+		return "Could not write.";
+	std::fwrite(data.get(), 1, size, f);
+	std::fclose(f);
+	return StrCat("Dumped ", size, " bytes.");
+}
+
 std::string DebugCmdFpSarcophagus(bool enabled)
 {
 	fp::SetSarcophagusKitEnabled(enabled);
@@ -432,6 +454,7 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "housemeshes", "(enabled: boolean)", "Draw the house models as textured triangle meshes (default) or as voxels.", &DebugCmdFpHouseMeshes);
 	LuaSetDocFn(table, "dumpiso", "(x0: number, y0: number, x1: number, y1: number, path: string, uprightOnly: boolean = false)", "Dump the original iso art of a tile rectangle (PPM); uprightOnly leaves the ground out.", &DebugCmdFpDumpIso);
 	LuaSetDocFn(table, "tilemap", "(x0: number, y0: number, x1: number, y1: number)", "ASCII map of solid (#, s), tall-art (a) and building (B) tiles.", &DebugCmdFpTileMap);
+	LuaSetDocFn(table, "cleanmap", "(x0: number, y0: number, x1: number, y1: number)", "ASCII map of the clean dungeon's tile kinds (# wall, l low wall, o pillar, t torch stand, D doorway, S stairs, ~ lava, ^ arch).", &DebugCmdFpCleanMap);
 	LuaSetDocFn(table, "features", "()", "List stairs triggers, free-standing column pieces and objects (with sprite size and bottom padding).", &DebugCmdFpFeatures);
 	LuaSetDocFn(table, "dumpfaces", "(x0: number, y0: number, x1: number, y1: number, path: string)", "Dump the wall face textures (x face, y face) of the tiles in a rectangle; openings red (PPM).", &DebugCmdFpDumpFaces);
 	LuaSetDocFn(table, "recesses", "(enabled: boolean)", "Carve blind arches and niches into the walls (default) or draw them flat.", &DebugCmdFpRecesses);
@@ -439,6 +462,7 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "where", "()", "Player tile and camera position (x100).", &DebugCmdFpWhere);
 	LuaSetDocFn(table, "modeltextures", "(enabled: boolean)", "Texture town buildings with the 3D models' own textures (default) or their projected iso art.", &DebugCmdFpModelTextures);
 	LuaSetDocFn(table, "modkit", "(enabled: boolean)", "Dungeon kit walls, floors, ceilings, columns, and arcade pillars (default off); entrance stairs and sarcophagus are independent.", &DebugCmdFpModKit);
+	LuaSetDocFn(table, "dumpfile", "(gamePath: string, outPath: string)", "Copy a file from the game data (a palette, a .dun) to disk.", &DebugCmdFpDumpFile);
 	LuaSetDocFn(table, "sarcophagus", "(enabled: boolean)", "Use the dungeon kit's 3D sarcophagus model, independently of the rest of the mod kit.", &DebugCmdFpSarcophagus);
 	LuaSetDocFn(table, "operate", "(x: number, y: number)", "Operate the object at a tile, as a click on it does (open a sarcophagus, a door...).", &DebugCmdFpOperate);
 	LuaSetDocFn(table, "weapon", "(file: number = nil, record: number = 0, frame: number = 0)", "Show a Daggerfall weapon frame instead of the held one; no file to go back.", &DebugCmdFpWeapon);

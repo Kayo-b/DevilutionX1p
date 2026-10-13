@@ -10,6 +10,7 @@
  */
 #pragma once
 
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -89,6 +90,12 @@ void DrawStructures(const Surface &out, const Projection &proj, std::vector<floa
 
 /** @brief Debug: mesh rasterizer counters per frame since the last call, as text. */
 std::string TakeRasterStats(int frames);
+
+/**
+ * @brief Opens one of the mod's asset files (assets/fp/<fileName>, or the path in the environment variable `envName`)
+ * for reading; null if it is missing.
+ */
+FILE *OpenFpAsset(const char *envName, const char *fileName);
 
 /** @brief Number of reconstructed buildings in the current level (debug). */
 [[nodiscard]] int BuildingCount();

@@ -19,6 +19,7 @@
 #include "missiles.h"
 #include "monster.h"
 #include "fp/fp_buildings.hpp"
+#include "fp/fp_dungeon.hpp"
 #include "fp/fp_textures.hpp"
 #include "utils/clx_decode.hpp"
 #include "objects.h"
@@ -280,6 +281,8 @@ void CollectCorpses(Vec2 viewerPos, std::vector<Entity> &entities)
 void CollectProps(Vec2 viewerPos, std::vector<Entity> &entities)
 {
 	const bool town = leveltype == DTYPE_TOWN;
+	if (IsCleanDungeon())
+		return; // its pillars and torch stands are meshes, and nothing else is drawn from the tile art
 	const Point center { static_cast<int>(viewerPos.x), static_cast<int>(viewerPos.y) };
 	for (int y = center.y - PropSearchRadius; y <= center.y + PropSearchRadius; y++) {
 		for (int x = center.x - PropSearchRadius; x <= center.x + PropSearchRadius; x++) {
