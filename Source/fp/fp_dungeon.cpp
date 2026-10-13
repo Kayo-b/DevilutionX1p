@@ -560,9 +560,10 @@ void ClassifyTiles()
 			} else if (IsTileSolid(tile)) {
 				const PieceTextures &textures = GetPieceTextures(dPiece[x][y]);
 				const bool lone = !solid(tile + Displacement { 1, 0 }) && !solid(tile + Displacement { -1, 0 }) && !solid(tile + Displacement { 0, 1 }) && !solid(tile + Displacement { 0, -1 });
-				// Lava and water lie beside the floor; flat solid pieces walled in are the inside of thick walls.
+				// The crypt's lava lies beside the floor; flat solid pieces walled in are the inside of thick walls. The
+				// cathedral and the catacombs have no lava or water: their flat solid pieces are walls too.
 				const bool besideFloor = !solid(tile + Displacement { 1, 0 }) || !solid(tile + Displacement { -1, 0 }) || !solid(tile + Displacement { 0, 1 }) || !solid(tile + Displacement { 0, -1 });
-				if (textures.isFlatSolid && besideFloor)
+				if (textures.isFlatSolid && besideFloor && leveltype == DTYPE_CRYPT)
 					kind = CleanKind::Flat;
 				else if (lone && HasLightObject(tile))
 					kind = CleanKind::Stand;

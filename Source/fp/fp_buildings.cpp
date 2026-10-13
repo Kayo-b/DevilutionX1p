@@ -4085,16 +4085,55 @@ void BuildSpecialArches()
 
 void FinishStructureBounds();
 
-/** @brief The cathedral's stairs, up and down, at its stairs triggers. */
+/**
+ * @brief Lays the clean dungeon's textures on a kept model (the cathedral's stairs) by the way each triangle faces, in
+ * world coordinates: `vertical` on its sides (`pillar` on round parts), `top` on what faces up, `under` below; parts
+ * under the floor (a pit) darken with their depth.
+ */
+void RetextureClean(Structure &st, CleanSurface vertical, CleanSurface pillar, CleanSurface top, CleanSurface under)
+{
+	const float stretch = VerticalScale();
+	for (WorldTriangle &tri : st.art.mesh) {
+		const V3 n = tri.normal;
+		const bool up = n.z > 0.5F;
+		const bool down = n.z < -0.5F;
+		const bool round = !up && !down && std::abs(n.x) > 0.2F && std::abs(n.y) > 0.2F;
+		tri.cleanSurface = up ? top : (down ? under : (round ? pillar : vertical));
+		float lowest = 0;
+		for (int k = 0; k < 3; k++) {
+			const V3 &p = tri.p[k];
+			lowest = std::min(lowest, p.z);
+			if (up || down) {
+				tri.uv[k * 2] = p.x;
+				tri.uv[k * 2 + 1] = p.y;
+			} else {
+				tri.uv[k * 2] = std::abs(n.x) >= std::abs(n.y) ? p.y : p.x;
+				tri.uv[k * 2 + 1] = -p.z * stretch;
+			}
+		}
+		// Half light levels: the original's shading (undersides, faces turned away), and down in the pit.
+		tri.darkness = static_cast<uint8_t>(std::min(tri.darkness + static_cast<int>(-lowest * stretch * 3.0F), 24));
+		tri.mapping = MeshClean;
+		tri.texture = 0;
+		PrepareUvLookup(tri);
+	}
+}
+
+/** @brief The cathedral's stairs, up and down, at its stairs triggers (in the clean dungeon, with its textures). */
 void BuildCathedralStairs()
 {
+	const bool clean = IsCleanDungeon();
 	for (int i = 0; i < numtrigs; i++) {
 		Structure st;
 		if (trigs[i]._tmsg == WM_DIABPREVLVL && BuildStairsUp(st, trigs[i].position)) {
 			SetStructureFallbacks(st);
+			if (clean)
+				RetextureClean(st, CleanSurface::Arch, CleanSurface::Arch, CleanSurface::Pillar, CleanSurface::Arch);
 			Structures.push_back(std::move(st));
 		} else if (trigs[i]._tmsg == WM_DIABNEXTLVL && BuildStairsDown(st, trigs[i].position)) {
 			SetStructureFallbacks(st);
+			if (clean)
+				RetextureClean(st, CleanSurface::Wall, CleanSurface::Pillar, CleanSurface::Pillar, CleanSurface::Arch);
 			Structures.push_back(std::move(st));
 		}
 	}

@@ -165,34 +165,35 @@ def cathedral():
 
 def catacombs():
     out = {}
-    # A burial crypt: dark, cold, rough stone blocks; cobbles underfoot; rough rock overhead.
+    # A burial crypt: dark, cold, soft-edged stone blocks; packed earth underfoot; rough rock overhead.
     cold = (0.92, 0.97, 1.08)
-    wall = sbs('Brick', 12)
-    out['wall'] = (blur(grade(tiles(wall, 2, 2), 44, 1.0, 0.25, cold), 0.6), 2.0, 2.0)
-    floor = sbs('Tile', 6)
-    out['floor'] = (blur(grade(tiles(floor, 2, 2), 38, 0.7, 0.2, cold), 0.6), 2.0, 2.0)
+    wall = sbs('Brick', 10)
+    out['wall'] = (blur(grade(tiles(wall, 2, 2), 42, 1.0, 0.25, cold), 0.6), 2.0, 2.0)
+    floor = sbs('Dirt', 8)
+    out['floor'] = (blur(grade(tiles(floor, 2, 2), 36, 0.9, 0.25, cold), 0.6), 2.0, 2.0)
     ceiling = sbs('Stone', 11)
     out['ceiling'] = (blur(grade(tiles(ceiling, 2, 2), 28, 1.1, 0.4, cold), 0.6), 2.0, 2.0)
     pillar = sbs('Stone', 5)
-    out['pillar'] = (blur(grade(tiles(pillar, 2, 2), 48, 1.0, 0.25, cold), 0.5), 2.0, 2.0)
-    out['arch'] = (blur(grade(tiles(wall, 2, 2), 40, 1.0, 0.25, cold), 0.6), 2.0, 2.0)
+    out['pillar'] = (blur(grade(tiles(pillar, 2, 2), 46, 1.0, 0.25, cold), 0.5), 2.0, 2.0)
+    out['arch'] = (blur(grade(tiles(wall, 2, 2), 38, 1.0, 0.25, cold), 0.6), 2.0, 2.0)
     out['door'] = (blur(grade(resize(door_texture(), 128, 256), 60, 1.0, 0.6, (0.95, 0.92, 0.85)), 0.4), 1.0, 1.0)
     return out
 
 
 def crypt():
     out = {}
-    # Hellfire's crypt: pale bone-coloured marble blocks veined with red, dark red rock above.
-    bone = (1.04, 0.97, 0.9)
-    wall = sbs('Brick', 18)
-    out['wall'] = (blur(grade(tiles(wall, 2, 2), 54, 0.9, 0.5, bone), 0.6), 2.0, 2.0)
-    floor = sbs('Tile', 14)
-    out['floor'] = (blur(grade(tiles(floor, 2, 2), 44, 0.8, 0.45, bone), 0.6), 2.0, 2.0)
+    # Hellfire's crypt: large veined marble blocks, dark granite squares underfoot, dark red rock above. (Its palette
+    # turns every pale stone rose-brown; the floor is kept darker than the walls so the two read apart.)
+    bone = (1.05, 1.0, 0.92)
+    wall = sbs('Brick', 17)
+    out['wall'] = (blur(grade(tiles(wall, 2, 2), 60, 0.95, 0.35, bone), 0.6), 2.0, 2.0)
+    floor = sbs('Tile', 16)
+    out['floor'] = (blur(grade(tiles(floor, 2, 2), 44, 0.9, 0.3, bone), 0.6), 2.0, 2.0)
     ceiling = sbs('Stone', 17)
     out['ceiling'] = (blur(grade(tiles(ceiling, 2, 2), 30, 1.0, 0.6, (1.0, 0.9, 0.85)), 0.6), 2.0, 2.0)
-    pillar = sbs('Stone', 15)
-    out['pillar'] = (blur(grade(tiles(pillar, 2, 2), 58, 0.9, 0.45, bone), 0.5), 2.0, 2.0)
-    out['arch'] = (blur(grade(tiles(wall, 2, 2), 48, 0.9, 0.5, bone), 0.6), 2.0, 2.0)
+    pillar = sbs('Stone', 16)
+    out['pillar'] = (blur(grade(tiles(pillar, 2, 2), 64, 0.95, 0.35, bone), 0.5), 2.0, 2.0)
+    out['arch'] = (blur(grade(tiles(wall, 2, 2), 52, 0.95, 0.35, bone), 0.6), 2.0, 2.0)
     out['door'] = (blur(grade(resize(door_texture(), 128, 256), 64, 1.0, 0.7, (1.0, 0.9, 0.8)), 0.4), 1.0, 1.0)
     return out
 

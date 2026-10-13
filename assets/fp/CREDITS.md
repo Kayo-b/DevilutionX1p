@@ -54,7 +54,7 @@ change and redistribute, commercially or not, with no attribution required; cred
   texture (`Door_Diffuse_256x512.png`).
 - **"Tiny Texture Pack 2" (512x512)** by Screaming Brain Studios. License: CC0 1.0 (`License.txt` in the pack: "All
   Screaming Brain Studios assets have been released under the CC0/Public Domain License"). Used: `Tile_03` (cathedral
-  flagstones), `Brick_12`, `Tile_06`, `Stone_05`, `Stone_11` (catacombs), `Brick_18`, `Tile_14`, `Stone_15`,
+  flagstones), `Brick_10`, `Dirt_08`, `Stone_05`, `Stone_11` (catacombs), `Brick_17`, `Tile_16`, `Stone_16`,
   `Stone_17` (crypt).
 
 No Daggerfall data and no original Diablo art is in this file.
