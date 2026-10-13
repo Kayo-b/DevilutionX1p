@@ -38,3 +38,23 @@ their creators, who made them available free of charge:
 - http://www.mb3d.co.uk/mb3d
 - http://texturez.com/
 - Deviant Art: borysses, Obsidian Dawn
+
+# Dungeon texture credits (`dungeontex.bin`)
+
+`dungeontex.bin` holds the texture sets of the first-person dungeon: the cathedral (levels 1-4), the catacombs (5-8)
+and Hellfire's crypt (21-24). Walls, floors, ceilings, pillars, the inside of arches and doorways, and the door leaves
+wear them instead of the original game's art. They were cut, scaled to 128 texels per tile, colour graded and softened
+by `fp-tools/export/export_dungeon_textures.py` from two packs released under **CC0 1.0** (public domain, free to use,
+change and redistribute, commercially or not, with no attribution required; credited here all the same):
+
+- **"Modular Dungeon Kit v1.0"** by Kevin Barany / SigilsVault (05/31/2026), https://sigilsvault.itch.io/ and
+  https://sigilsvault.gumroad.com/. License: CC0 1.0 (`LICENSE.txt` in the pack,
+  https://creativecommons.org/publicdomain/zero/1.0/legalcode.txt). Used: the trim sheet
+  (`TrimSheet_1024x1024.png`: the ashlar block band, the moulded base band, the frieze, the plain stone) and the door
+  texture (`Door_Diffuse_256x512.png`).
+- **"Tiny Texture Pack 2" (512x512)** by Screaming Brain Studios. License: CC0 1.0 (`License.txt` in the pack: "All
+  Screaming Brain Studios assets have been released under the CC0/Public Domain License"). Used: `Tile_03` (cathedral
+  flagstones), `Brick_12`, `Tile_06`, `Stone_05`, `Stone_11` (catacombs), `Brick_18`, `Tile_14`, `Stone_15`,
+  `Stone_17` (crypt).
+
+No Daggerfall data and no original Diablo art is in this file.

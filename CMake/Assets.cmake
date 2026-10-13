@@ -45,6 +45,7 @@ endif()
 
 set(devilutionx_assets
   fp/dungeonkit.bin
+  fp/dungeontex.bin
   fp/housemesh.bin
   fp/landmarks.bin
   fp/houses.bin
