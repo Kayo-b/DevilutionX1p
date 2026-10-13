@@ -1,7 +1,7 @@
 # 3D asset credits
 
-The mesh files in this folder (`houses.bin`, `housemesh.bin`, `landmarks.bin`, `dungeonkit.bin`) are derived from a
-fan-made rebuild of Diablo 1's assets:
+The mesh files in this folder (`houses.bin`, `housemesh.bin`, `landmarks.bin`, `dungeonkit.bin`) and the dungeon's
+textures (`dungeontex.bin`) are derived from a fan-made rebuild of Diablo 1's assets:
 
 - **Source:** "Rebuild of Diablo 1 assets in FBX and OBJ format", Nexus Mods (Skyrim), mod 67266:
   https://www.nexusmods.com/skyrim/mods/67266
@@ -19,8 +19,8 @@ The author's instructions:
 > You may use the meshes any way you like as long as your final product is provided free of charge. You are not
 > allowed to use the meshes in commercial products or to sell them.
 
-This first-person mod is free and non-commercial. It must stay that way while it includes these meshes; anything
-built from it is under the same restriction.
+This first-person mod is free and non-commercial. It must stay that way while it includes these meshes and
+textures; anything built from it is under the same restriction.
 
 ## Textures
 
@@ -43,18 +43,18 @@ their creators, who made them available free of charge:
 
 `dungeontex.bin` holds the texture sets of the first-person dungeon: the cathedral (levels 1-4), the catacombs (5-8)
 and Hellfire's crypt (21-24). Walls, floors, ceilings, pillars, the inside of arches and doorways, and the door leaves
-wear them instead of the original game's art. They were cut, scaled to 128 texels per tile, colour graded and softened
-by `fp-tools/export/export_dungeon_textures.py` from two packs released under **CC0 1.0** (public domain, free to use,
-change and redistribute, commercially or not, with no attribution required; credited here all the same):
+wear them instead of the original game's art. They are (but for the four below) the textures of the same release's dungeon kit
+(`Dungeon Pieces-67266-.7z`), under the terms above: its stone blocks (`Modern-Cream-Blocks_seamless`, with its
+normal and specular maps), church pavement (`Pavement_01_UV_H_CM_1`), Diablo marble (`marble_diablo`), column-head
+stone (`d_column_extr`), door planks (`door_diff`, with its normal map), steel (`Steel_02_UV_H_CM_1`), black marble
+(`Black marble seamless`), white marble (`marble_06`), yellow stone (`yellow stone seamless`) and the carving of its
+sarcophagus lid (`capac_bump`). They were scaled, lit by their normal and relief maps and colour graded to the
+original tilesets' colours (measured on the original art, none of which is copied into the file) by
+`fp-tools/export/export_dungeon_textures.py`; their creators are the ones credited under Textures above.
 
-- **"Modular Dungeon Kit v1.0"** by Kevin Barany / SigilsVault (05/31/2026), https://sigilsvault.itch.io/ and
-  https://sigilsvault.gumroad.com/. License: CC0 1.0 (`LICENSE.txt` in the pack,
-  https://creativecommons.org/publicdomain/zero/1.0/legalcode.txt). Used: the trim sheet
-  (`TrimSheet_1024x1024.png`: the ashlar block band, the moulded base band, the frieze, the plain stone) and the door
-  texture (`Door_Diffuse_256x512.png`).
-- **"Tiny Texture Pack 2" (512x512)** by Screaming Brain Studios. License: CC0 1.0 (`License.txt` in the pack: "All
-  Screaming Brain Studios assets have been released under the CC0/Public Domain License"). Used: `Tile_03` (cathedral
-  flagstones), `Brick_10`, `Dirt_08`, `Stone_05`, `Stone_11` (catacombs), `Brick_17`, `Tile_16`, `Stone_16`,
-  `Stone_17` (crypt).
+Two pairs of the cathedral's textures are not the kit's: the sarcophagus's stone (`marble`, `marble2`) and the torch
+stands' bases (`ivory`, `ivory2`) are Screaming Brain Studios' "Tiny Texture Pack 2" (`Elements_11`, `Elements_12`,
+`Stone_07`, `Stone_08`, 512 x 512), released under CC0 1.0 (public domain, credit optional), graded by the same
+script.
 
 No Daggerfall data and no original Diablo art is in this file.

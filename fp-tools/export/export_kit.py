@@ -2,7 +2,9 @@
 """Export pieces of the Diablo dungeon kit (Dungeon Pieces-67266-.7z, dungeon_pieces.obj) for the first-person renderer.
 
 Same format as export_landmarks.py (FPL2: a texture table, then models with texture coordinates), file
-`dungeonkit.bin`. u and w run 0..1 over the piece's x and y extent; z is model units above its lowest point.
+`dungeonkit.bin`. u and w run 0..1 over the piece's x and y extent; z is model units above its lowest point. Each
+triangle's class byte tells the piece's parts apart (`CLASSES`: the sarcophagus's lid, iron fittings; and by their
+shape, `sarcophagus_parts`, its sunken panels and its hollow, which the game shades darker).
 
 A piece is either a named group, or an anchor group plus every group stacked on it (a column's shaft with its base
 and capital): all groups whose extent lies within the anchor's x and y extent grown by a margin.
@@ -41,6 +43,11 @@ TEXTURES = {
     'door': 'door_diff.tga', 'black_Marble': 'Black marble seamless.tga', 'Wood_cabinet': 'seamless-wood-texture-free-6.jpg',
     'grinzi': 'grinda_02.jpg', 'capac': 'marble_diablo.tga',
 }
+# Triangle classes by material (the game tells a piece's parts apart by them): 1 the sarcophagus's carved lid, 2 iron;
+# by shape (sarcophagus_parts): 3 its sunken panels, 4 its hollow.
+CLASSES = {'capac': 1, 'Metal_rust': 2, 'hinge_bars': 2}
+SUNKEN_PANEL = 3
+HOLLOW = 4
 # Textures that come out too dark in the dim dungeon light (the door is meant to stand out in its arch).
 BRIGHTEN = {'door_diff.tga': 2.4}
 SURFACES = ['dungeon_wall', 'podea_biserica', 'dungeon_wall']  # walls, floors, ceilings
@@ -139,8 +146,36 @@ def build_vault(faces, v, anchor='ceiling_big_master017'):
             for quad in (((i, j), (i + 1, j), (i + 1, j + 1)), ((i, j), (i + 1, j + 1), (i, j + 1))):
                 pos = np.array([corner(*q) for q in quad])
                 uv = np.array([uvf(*q) for q in quad])
-                out.append((pos, uv, tex))
+                out.append((pos, uv, tex, 0))
     return out
+
+
+def sarcophagus_parts(v, faces, group='sarcofag'):
+    """The classes of the sarcophagus's body by shape (face index: class), in model units from its lowest corner. Its
+    sunken panels: upright faces looking out, 0.11 to 0.14 in from the side they look at, between the plinth and the
+    rim (the panels lie 0.125 in, the frame round them 0.09, the pilasters 0.06). Its hollow: faces looking in or up
+    at least 0.13 in from every side (its walls stand 0.135 in). Every group of the kit's sarcophagus is closed and
+    wound counter-clockwise seen from outside, so a face's winding gives its outward normal."""
+    index = [i for i, f in enumerate(faces) if f[4] == group]
+    tris = np.array([v[[faces[i][0][0], faces[i][1][0], faces[i][2][0]]] for i in index])
+    lo = tris.reshape(-1, 3).min(axis=0)
+    tris = tris - lo
+    size = tris.reshape(-1, 3).max(axis=0)
+    n = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+    n /= np.linalg.norm(n, axis=1)[:, None] + 1e-12
+    centre = tris.mean(axis=1)
+    outward = (n[:, :2] * (centre[:, :2] - size[:2] / 2)).sum(axis=1) > 0
+    along_x = np.abs(n[:, 0]) > np.abs(n[:, 1])
+    depth = np.where(along_x, np.where(n[:, 0] > 0, size[0] - centre[:, 0], centre[:, 0]),
+                     np.where(n[:, 1] > 0, size[1] - centre[:, 1], centre[:, 1]))
+    inset = np.minimum.reduce([tris[:, :, 0].min(axis=1), size[0] - tris[:, :, 0].max(axis=1),
+                               tris[:, :, 1].min(axis=1), size[1] - tris[:, :, 1].max(axis=1)])
+    z0, z1 = tris[:, :, 2].min(axis=1), tris[:, :, 2].max(axis=1)
+    panel = (np.abs(n[:, 2]) < 0.3) & outward & (depth > 0.11) & (depth < 0.14) & (z0 > 0.2) & (z1 < 1.0)
+    hollow = (inset > 0.13) & (((np.abs(n[:, 2]) < 0.7) & ~outward) | (n[:, 2] > 0.7))
+    parts = {i: SUNKEN_PANEL for i, p in zip(index, panel) if p}
+    parts.update({i: HOLLOW for i, h in zip(index, hollow) if h})
+    return parts
 
 
 def front_to_max_x(tris):
@@ -152,7 +187,7 @@ def front_to_max_x(tris):
     near_hi = np.count_nonzero(xs > hi - 0.2)
     if near_hi >= near_lo:
         return tris
-    return [(np.array([[2 * (lo + hi) / 2 - p[0], p[1], p[2]] for p in pos]), uv, tex) for pos, uv, tex in tris]
+    return [(np.array([[2 * (lo + hi) / 2 - p[0], p[1], p[2]] for p in pos]), uv, tex, cls) for pos, uv, tex, cls in tris]
 
 
 def main():
@@ -163,6 +198,7 @@ def main():
         lo, hi = p.min(0), p.max(0)
         e = extent.get(g)
         extent[g] = (np.minimum(e[0], lo), np.maximum(e[1], hi)) if e else (lo, hi)
+    parts = sarcophagus_parts(v, faces)
     models = []
     for name, anchor, margin, *extra in PIECES:
         frame = extra[0] if extra else None
@@ -175,15 +211,15 @@ def main():
                       if lo[0] >= alo[0] - margin and hi[0] <= ahi[0] + margin and lo[1] >= alo[1] - margin and hi[1] <= ahi[1] + margin}
             groups -= leave_out
         tris = []
-        for a, b, c, m, g in faces:
+        for f, (a, b, c, m, g) in enumerate(faces):
             if g in groups:
                 uv = np.array([uvs[i[1]] if i[1] >= 0 else (0.0, 0.0) for i in (a, b, c)])
-                tris.append((v[[a[0], b[0], c[0]]], uv, texture_index(m)))
+                tris.append((v[[a[0], b[0], c[0]]], uv, texture_index(m), parts.get(f, CLASSES.get(m, 0))))
         if name.startswith('wall_'):
             tris = front_to_max_x(tris)
         models.append((name, tris, sorted(groups), frame))
     models.append(('vault', build_vault(faces, v), [], None))
-    surfaces = [(np.zeros((3, 3)), np.zeros((3, 2)), texture_index(m)) for m in SURFACES]
+    surfaces = [(np.zeros((3, 3)), np.zeros((3, 2)), texture_index(m), 0) for m in SURFACES]
     out = open(os.path.join(ASSETS, 'dungeonkit.bin'), 'wb')
     out.write(struct.pack('<4sI', b'FPL2', len(textures)))
     for t in textures:
@@ -198,7 +234,7 @@ def main():
         span = np.maximum(np.array([hi[0] - lo[0], hi[1] - lo[1], 1.0]), 1e-6)
         span[2] = 1.0
         q = (p - lo) / span
-        records = b''.join(struct.pack('<9f6fBh', *pos.reshape(-1).tolist(), *uv.reshape(-1).tolist(), 0, tex) for pos, (_, uv, tex) in zip(q, tris))
+        records = b''.join(struct.pack('<9f6fBh', *pos.reshape(-1).tolist(), *uv.reshape(-1).tolist(), cls, tex) for pos, (_, uv, tex, cls) in zip(q, tris))
         nm = name.encode()
         out.write(struct.pack('<B', len(nm)) + nm + struct.pack('<fI', float(hi[2] - lo[2]), len(tris)) + records)
         print(f'{name}: {len(tris)} triangles, size {(hi - lo).round(2)}, groups {groups[:8]}{"..." if len(groups) > 8 else ""}')

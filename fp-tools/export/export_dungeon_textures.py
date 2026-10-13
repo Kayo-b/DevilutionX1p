@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """Export the texture sets of the first-person dungeon (cathedral, catacombs, Hellfire's crypt): `dungeontex.bin`.
 
-The textures come from two CC0 packs (sources and terms in assets/fp/CREDITS.md), read from where they were
-unpacked (override with the environment variables below):
-- SigilsVault "Modular Dungeon Kit v1.0" (FP_SIGILS_KIT_DIR): its trim sheet (ashlar blocks, mouldings, plain
-  stone) and the door texture.
-- Screaming Brain Studios "Tiny Texture Pack 2", 512 x 512 (FP_SBS_DIR): bricks, stones and floor tiles.
+The textures are the Diablo 1 dungeon kit's: "Dungeon Pieces" of the fan rebuild of Diablo 1's assets (Nexus Mods,
+mod 67266; terms and credits in assets/fp/CREDITS.md), read from where it was unpacked (FP_DUNGEON_PIECES_DIR; a
+file missing there is extracted from the archive, FP_DUNGEON_PIECES_ARCHIVE, with 7z). Every tileset wears them the
+way the kit does: its stone blocks on the walls, arches and ceilings, its church pavement underfoot, its Diablo
+marble on the pillar shafts with its column-head stone above and below, its plank door with iron bands. The blocks
+repeat once a tile, as on the kit's own wall pieces (a wall is about three repeats high there and here), and the
+kit's normal and specular maps are baked in as light from above, so the blocks stand out of their joints like the
+original's pre-rendered art. The cathedral's sarcophagus stone and torch stand bases are from Screaming Brain
+Studios' "Tiny Texture Pack 2" (CC0), read from its 512 x 512 folder (FP_SBS_TEXTURES_DIR).
 
-Every texture is cut out, made to tile, scaled to TEXELS_PER_TILE texels per tile (the game's world unit; a wall
-face is one tile wide and about three tall) and graded for its tileset: colour, brightness, contrast and a light
-blur, so it reads as soft painted stone rather than as a photo or as big pixels. The game converts the RGB to the
-level's palette when the level loads (fp_dungeon.cpp).
+Every texture is then graded to the colours of its tileset's own art, measured on the original iso tiles (full
+light, levels 1, 5 and 21): its own pattern of light and dark, scaled to the art's mean and spread, in the art's hue
+with a little of its own (`match`). The game converts the RGB to the level's palette when the level loads
+(fp_dungeon.cpp).
 
 File format (little endian): "FPT1", uint32 texture count; per texture: uint8 name length, name, uint16 width,
 uint16 height, float32 tiles across, float32 tiles down (the world size one repeat covers), then width * height RGB
@@ -20,6 +24,7 @@ usage: export_dungeon_textures.py [--preview DIR PALETTE...]   (preview: quantiz
 """
 import os
 import struct
+import subprocess
 import sys
 
 import numpy as np
@@ -27,33 +32,31 @@ from PIL import Image, ImageFilter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, '..', '..', 'assets', 'fp')
-DOWNLOADS = os.path.expanduser('~/Downloads')
-SIGILS = os.environ.get('FP_SIGILS_KIT_DIR', os.path.join(DOWNLOADS, 'modular dungeon kit v1.0', 'modular dungeon kit'))
-SBS = os.environ.get('FP_SBS_DIR', os.path.join(DOWNLOADS, 'SBS - Tiny Texture Pack 2 - 512x512', '512x512'))
+KIT = os.environ.get('FP_DUNGEON_PIECES_DIR', os.path.expanduser('~/projects/diablo-hellfire-fp/research/dungeon_pieces'))
+ARCHIVE = os.environ.get('FP_DUNGEON_PIECES_ARCHIVE', os.path.expanduser('~/projects/diablo-hellfire-fp/Dungeon Pieces-67266-.7z'))
+# Screaming Brain Studios' "Tiny Texture Pack 2" (CC0), its 512 x 512 folder: the sarcophagus's stone and the torch
+# stands' bases.
+SBS = os.environ.get('FP_SBS_TEXTURES_DIR', os.path.expanduser('~/Downloads/SBS - Tiny Texture Pack 2 - 512x512/512x512'))
 
-# Texels per tile (world unit). Walls, floors and ceilings all use this density, so a wall face is 128 texels wide.
-TEXELS_PER_TILE = 128
-
-
-def load(path):
-    return np.asarray(Image.open(path).convert('RGB'), dtype=np.float32)
+LUMA = np.array([0.30, 0.59, 0.11], dtype=np.float32)
 
 
-def trim_sheet():
-    return load(os.path.join(SIGILS, 'Modular Dungeon Pieces', 'Textures', '1024 x 1024', 'TrimSheet_1024x1024.png'))
+def kit(name):
+    """Path of one of the kit's files, extracted from the archive first if it is not unpacked yet."""
+    path = os.path.join(KIT, name)
+    if not os.path.exists(path):
+        os.makedirs(KIT, exist_ok=True)
+        subprocess.run(['7z', 'e', '-y', f'-o{KIT}', ARCHIVE, name], check=True, stdout=subprocess.DEVNULL)
+    return path
 
 
-def mossy_trim_sheet():
-    im = Image.open(os.path.join(SIGILS, 'Modular Dungeon Pieces', 'Textures', '1024 x 1024', 'TrimSheet_Mossy_1024x1024.png')).convert('RGB')
-    return np.asarray(im.resize((1024, 1024), Image.LANCZOS), dtype=np.float32)
+def load(name):
+    return np.asarray(Image.open(kit(name)).convert('RGB'), dtype=np.float32)
 
 
-def sbs(group, number):
-    return load(os.path.join(SBS, group, f'{group}_{number:02d}-512x512.png'))
-
-
-def door_texture():
-    return load(os.path.join(SIGILS, 'Props', 'Textures', '512 x 512', 'Door_Diffuse_256x512.png'))
+def sbs(name):
+    """One of the Tiny Texture Pack's textures (they tile as they are)."""
+    return np.asarray(Image.open(os.path.join(SBS, name)).convert('RGB'), dtype=np.float32)
 
 
 def resize(rgb, width, height):
@@ -89,112 +92,319 @@ def seamless(rgb, border):
     return out
 
 
-def grade(rgb, mean, contrast=1.0, saturation=0.5, tint=(1.0, 1.0, 1.0), gamma=1.0):
-    """Colour grading: desaturate towards grey, set the contrast around the mean, tint, then bring the mean
-    luminance to `mean` (0-255, as the texture looks fully lit)."""
-    luma = rgb @ np.array([0.30, 0.59, 0.11], dtype=np.float32)
-    out = luma[..., None] + saturation * (rgb - luma[..., None])
+def match(rgb, color, spread, chroma=0.2):
+    """Grades a texture to a colour of the original art: its luminance keeps its own pattern, brought to the mean of
+    `color` (as the art looks fully lit) and to a standard deviation of `spread`; its hue is `color`'s, plus `chroma`
+    of its own variation around its grey."""
+    luma = rgb @ LUMA
     m = float(luma.mean())
-    out = m + contrast * (out - m)
-    out = out * np.array(tint, dtype=np.float32)
-    if gamma != 1.0:
-        out = 255.0 * np.power(np.clip(out, 0, 255) / 255.0, gamma)
-    m2 = float((out @ np.array([0.30, 0.59, 0.11], dtype=np.float32)).mean())
-    out = out * (mean / max(m2, 1.0))
+    k = spread / max(float(luma.std()), 1.0)
+    color = np.array(color, dtype=np.float32)
+    target = float(color @ LUMA)
+    out = color * ((target + (luma - m) * k) / target)[..., None] + chroma * k * (rgb - luma[..., None])
     return np.clip(out, 0, 255)
 
 
-def even_squares(rgb, count, variation=0.06):
-    """Evens out the tones of a texture's `count` x `count` squares (a checkerboard of flagstones), each to the mean
-    within +-`variation`, so the floor reads as one stone with its joints instead of a checkerboard."""
+def colour_ramp(rgb):
+    """A texture's colours by brightness: per luminance step (0..255), its mean colour divided by that luminance (a
+    hue of luminance 1), steps it has no texels at filled in from their neighbours; with the texture's luminance mean
+    and standard deviation, which say where along the ramp a texel of another texture falls (`recolor`)."""
+    luma = rgb @ LUMA
+    steps = np.clip(luma, 0, 255).astype(np.int32).ravel()
+    sums = np.zeros((256, 3), dtype=np.float64)
+    np.add.at(sums, steps, rgb.reshape(-1, 3))
+    counts = np.bincount(steps, minlength=256).astype(np.float64)
+    known = np.flatnonzero(counts >= 16)
+    hue = sums[known] / counts[known, None] / np.maximum(known[:, None], 1.0)
+    table = np.stack([np.interp(np.arange(256), known, hue[:, c]) for c in range(3)], axis=1)
+    return table.astype(np.float32), float(luma.mean()), max(float(luma.std()), 1.0)
+
+
+def recolor(rgb, ramp, mean, spread):
+    """Paints a texture in another one's colours (a `colour_ramp`): its own pattern of light and dark, brought to a
+    luminance `mean` and standard deviation `spread`, each texel in the ramp's colour as dark relative to the ramp's
+    texture as the texel is relative to its own."""
+    table, ramp_mean, ramp_spread = ramp
+    luma = rgb @ LUMA
+    z = (luma - float(luma.mean())) / max(float(luma.std()), 1.0)
+    at = np.clip(ramp_mean + z * ramp_spread, 0, 255).astype(np.int32)
+    return np.clip(table[at] * (mean + z * spread)[..., None], 0, 255)
+
+
+# The original's sarcophagus (objects\sarc.cel, closed): its body neutral grey stone (its greys from 52 to 118 by
+# brightness, the darkest sixth, its shadows and outlines, left out: mean 86), its lid an olive bronze plate, (77, 68,
+# 43) +-19 with the dark lines of its carving (the plate itself a little lighter). The grey half a palette step darker
+# than the art's: the game shades the sunken panels, under the rim and towards the foot darker still. The stone is
+# the Tiny Texture Pack's mottled white (Elements_11, Elements_12) brought down to that grey, its mottling kept.
+SARCOPHAGUS_GREY = (81, 81, 81)
+SARCOPHAGUS_SPREAD = 10
+SARCOPHAGUS_BRONZE = (86, 76, 48)
+# The torch stands' bases: a pale, faintly warm grey (the art's are a pale grey; any brighter and they stand out of
+# the dark room), worn stone (the Tiny Texture Pack's Stone_07, Stone_08) in that colour.
+IVORY = (100, 97, 90)
+IVORY_SPREAD = 10
+# The plain margin of the lid's texture round the carving, in texels; the lid's edges take their colour from it
+# (LidPlainU, LidPlainV in fp_buildings.cpp).
+LID_MARGIN = 16
+
+# The original's marble: the shafts of the cathedral's pillars (level 1, seed 777: the six at 52,52 50,26 62,26 38,32
+# 80,40 86,40, read with dev.fp.dumpiso). A third of their texels are teal, the darker ones; the rest pinkish grey.
+# Each hue's colours from dark to light, each the mean of an eighth of its texels (the grey's darkest eighth, the
+# shaded edge of the round shaft, left out).
+DIABLO_MARBLE = [
+    (0.33, [(30, 51, 51), (44, 66, 66), (49, 72, 72), (52, 76, 76), (57, 81, 81), (61, 87, 87), (63, 89, 89), (70, 97, 97)]),
+    (0.67, [(83, 69, 69), (89, 79, 81), (93, 92, 96), (97, 96, 101), (97, 99, 104), (108, 104, 106), (116, 108, 110)]),
+]
+
+
+def rank_recolor(rgb, parts):
+    """Paints a texture in colours measured by brightness rank (`DIABLO_MARBLE`): its texels sorted from dark to light
+    are shared out between the parts (share, colours) in order, and within its part each texel takes the colour at its
+    rank. So the texture keeps its pattern (here its dark veins and what lies around them become the teal) and takes on
+    the measured texture's share of every hue, and its brightness."""
     h, w = rgb.shape[:2]
-    out = rgb.copy()
-    luma = rgb @ np.array([0.30, 0.59, 0.11], dtype=np.float32)
-    mean = float(luma.mean())
-    rng = np.random.default_rng(7)
-    for j in range(count):
-        for i in range(count):
-            ys, xs = slice(j * h // count, (j + 1) * h // count), slice(i * w // count, (i + 1) * w // count)
-            m = float(np.median(luma[ys, xs]))
-            target = mean * (1.0 + variation * (rng.random() * 2 - 1))
-            out[ys, xs] = rgb[ys, xs] * (target / max(m, 1.0))
-    return out
+    luma = (rgb @ LUMA).ravel()
+    rank = np.empty(luma.size, dtype=np.float32)
+    rank[np.argsort(luma, kind='stable')] = (np.arange(luma.size) + 0.5) / luma.size
+    out = np.zeros((luma.size, 3), dtype=np.float32)
+    start = 0.0
+    for share, colours in parts:
+        inside = (rank >= start) & (rank < start + share + 1e-6)
+        local = (rank[inside] - start) / share
+        colours = np.array(colours, dtype=np.float32)
+        centres = (np.arange(len(colours)) + 0.5) / len(colours)
+        out[inside] = np.stack([np.interp(local, centres, colours[:, c]) for c in range(3)], axis=1)
+        start += share
+    return out.reshape(h, w, 3)
 
 
-def tiles(rgb, across, down):
-    """Scales a texture covering `across` x `down` tiles to TEXELS_PER_TILE."""
-    return resize(rgb, int(round(across * TEXELS_PER_TILE)), int(round(down * TEXELS_PER_TILE)))
+def relief(rgb, normal, strength, light=(-0.3, 0.75, 0.6)):
+    """Bakes light from one of the kit's normal maps (red right, green down) into a texture: lit from above and a
+    little from the left, a flat surface unchanged; `strength` 1 is the full shading."""
+    n = normal / 127.5 - 1.0
+    n[..., 1] = -n[..., 1]
+    n = n / np.maximum(np.linalg.norm(n, axis=2, keepdims=True), 1e-3)
+    lv = np.array(light, dtype=np.float32)
+    lv = lv / np.linalg.norm(lv)
+    shade = np.maximum(n @ lv, 0.0) / lv[2]
+    return rgb * (1.0 + strength * (shade - 1.0))[..., None]
+
+
+def joint_mask(spec):
+    """The mortar joints of the kit's blocks, 0..1: black in their specular map."""
+    s = spec @ LUMA
+    return np.clip((60.0 - s) / 50.0, 0.0, 1.0)
+
+
+def block_tones(joints, variation, seed):
+    """A tone per block of the kit's running bond (0 joints, else 1 +- `variation`): the courses lie between joint
+    rows, the blocks between joint columns within a course. Courses and blocks cut by the texture's edges wrap round,
+    so the tones tile too."""
+    h, w = joints.shape
+    rng = np.random.default_rng(seed)
+    row_joint = joints.mean(axis=1) > 0.5
+    # Courses: runs of rows that are not joints; a course cut by the top and bottom edges is one course.
+    courses, y = [], 0
+    while y < h:
+        if row_joint[y]:
+            y += 1
+            continue
+        start = y
+        while y < h and not row_joint[y]:
+            y += 1
+        courses.append([np.arange(start, y)])
+    if len(courses) > 1 and not row_joint[0] and not row_joint[-1]:
+        courses[0] = courses.pop() + courses[0]
+    tones = np.ones((h, w), dtype=np.float32)
+    for parts in courses:
+        rows = np.concatenate(parts)
+        col_joint = joints[rows].mean(axis=0) > 0.5
+        x = 0
+        blocks = []
+        while x < w:
+            if col_joint[x]:
+                x += 1
+                continue
+            start = x
+            while x < w and not col_joint[x]:
+                x += 1
+            blocks.append((start, x))
+        if len(blocks) > 1 and not col_joint[0] and not col_joint[-1]:
+            (a0, a1), (b0, b1) = blocks[0], blocks.pop()
+            tone = 1.0 + variation * (rng.random() * 2 - 1)
+            tones[np.ix_(rows, np.arange(a0, a1))] = tone
+            tones[np.ix_(rows, np.arange(b0, b1))] = tone
+            blocks = blocks[1:]
+        for x0, x1 in blocks:
+            tones[np.ix_(rows, np.arange(x0, x1))] = 1.0 + variation * (rng.random() * 2 - 1)
+    return tones
+
+
+def grain(name, width, height, strength):
+    """A texture's luminance as a multiplier around 1 (`strength` its relative spread), scaled to width x height."""
+    rgb = resize(load(name), width, height)
+    luma = rgb @ LUMA
+    return 1.0 + strength * (luma - luma.mean()) / max(float(luma.std()), 1.0)
+
+
+# --- The kit's surfaces ----------------------------------------------------------------------------------------------
+
+def blocks(variation, seed, depth=0.55, rough=None):
+    """The kit's wall blocks (dungeon_wall): per-block tones, its normal map baked in as light from above, the joints
+    darkened by its specular map; optionally the kit's rough stone laid over them (`rough`: its strength). One repeat:
+    2 blocks across, 8 courses down (a running bond)."""
+    albedo = load('Modern-Cream-Blocks_seamless.tga')
+    normal = load('Modern-Cream-Blocks_seamless_nrm.tga')
+    joints = joint_mask(load('Modern-Cream-Blocks_seamless_spec.tga'))
+    rgb = albedo * block_tones(joints, variation, seed)[..., None]
+    rgb = relief(rgb, normal, 0.8)
+    rgb = rgb * (1.0 - depth * joints)[..., None]
+    if rough:
+        h, w = rgb.shape[:2]
+        rgb = rgb * grain('yellow stone seamless.tga', w, h, rough)[..., None]
+    return rgb
+
+
+def course_band(rgb, courses=1):
+    """`courses` whole courses of a block texture (from the top of its first full course), all the way across."""
+    joints = joint_mask(load('Modern-Cream-Blocks_seamless_spec.tga'))
+    row_joint = joints.mean(axis=1) > 0.5
+    rows = np.flatnonzero(row_joint)
+    # The joint rows group into joints; take the first joint's end and the end of the joint `courses` later.
+    starts = [rows[0]] + [r for p, r in zip(rows, rows[1:]) if r != p + 1]
+    ends = [p for p, r in zip(rows, rows[1:]) if r != p + 1] + [rows[-1]]
+    top = (starts[0] + ends[0]) // 2
+    bottom = (starts[courses] + ends[courses]) // 2
+    return rgb[top:bottom]
+
+
+def carving(stone, width, height):
+    """The kit's sarcophagus lid (capac): the saint under an arch of its relief map (capac_bump, white raised, its
+    engraved lines dark), cut to its panel, the lines thickened so they survive the scaling, and lit as relief from
+    the head end over `stone` (width x height)."""
+    bump = load('capac_bump.tga') @ LUMA
+    # The map's grain smoothed away first (thickening would darken it too), the background brought to 1.
+    panel = Image.fromarray(np.clip(bump[44:2012, 540:1536], 0, 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(2))
+    panel = panel.filter(ImageFilter.MinFilter(5))
+    lines = np.asarray(panel.resize((width, height), Image.LANCZOS), dtype=np.float32)
+    lines = np.clip(lines / np.percentile(lines, 75), 0.0, 1.0)
+    raised = np.asarray(panel.filter(ImageFilter.GaussianBlur(6)).resize((width, height), Image.LANCZOS), dtype=np.float32) / 255.0
+    # Light from the head end (the top of the texture) and a little from the left.
+    dy = np.gradient(raised, axis=0)
+    dx = np.gradient(raised, axis=1)
+    shade = 1.0 - 6.0 * (dy * 0.8 + dx * 0.3)
+    return stone * (shade * (0.45 + 0.55 * lines))[..., None]
+
+
+def lid_plate(colour, width, height, margin):
+    """The sarcophagus's bronze lid, width x height: the carving inset in a plain plate, `margin` texels of it all
+    round."""
+    plate = np.full((height, width, 3), colour, dtype=np.float32)
+    inner = (height - 2 * margin, width - 2 * margin)
+    plate[margin:height - margin, margin:width - margin] = carving(np.full(inner + (3,), colour, dtype=np.float32), inner[1], inner[0])
+    return plate
+
+
+def door(color, spread):
+    """The kit's door (door_dun): its planks, relief from its normal map, two iron bands across (its hinge straps, of
+    the kit's steel) and the dark ring of its handle; stretched over a whole leaf, 128 x 256."""
+    rgb = relief(load('door_diff.tga'), load('door_nrm.tga'), 0.7)
+    rgb = match(rgb, color, spread, 0.3)
+    h, w = rgb.shape[:2]
+    steel = match(seamless(load('Steel_02_UV_H_CM_1.jpg'), 48), (52, 52, 56), 10, 0.2)
+    for centre in (0.2, 0.8):
+        y0, y1 = int(h * (centre - 0.035)), int(h * (centre + 0.035))
+        rgb[y0:y1] = steel[y0:y1, :w]
+        rgb[y0:y0 + 3] *= 1.35  # lit top edge
+        rgb[y1 - 3:y1] *= 0.55  # shadow under it
+        for x in range(w // 10, w, w // 5):  # rivets
+            rgb[(y0 + y1) // 2 - 6:(y0 + y1) // 2 + 6, x - 6:x + 6] *= 1.4
+    yy, xx = np.mgrid[0:h, 0:w]
+    r = np.hypot(xx - w * 0.82, yy - h * 0.5)
+    ring = (r > h * 0.035) & (r < h * 0.05)
+    rgb[ring] = rgb[ring] * 0.35
+    return resize(rgb, 128, 256)
+
+
+def sized(rgb, texels_across, texels_down=None):
+    return resize(rgb, texels_across, texels_down or texels_across)
 
 
 # --- The sets ---------------------------------------------------------------------------------------------------
 # Each slot: (rgb, tiles across, tiles down). Slots: wall (the body, tiled), base (the plinth band at the foot of a
-# wall, tiled along it), top (the band under the ceiling), floor, ceiling, pillar, arch (an arch's underside),
-# door (a door leaf: stretched over the whole leaf, not tiled).
-
-# The trim sheet's ashlar band: four courses of blocks (rows 613-919, 77 px a course), seamless both ways at 1024
-# px across, laid over 4 tiles across and 1 down (a block a little over half a tile long, a course a quarter tile
-# high). The game wraps textures with bit masks: every size is a power of two.
-ASHLAR = (613, 920)
-
-
-def band(sheet, top, bottom, height, tiles_down):
-    """A strip of the trim sheet across its whole width, 4 tiles long, scaled to 512 x `height` texels."""
-    return resize(sheet[top:bottom], 4 * TEXELS_PER_TILE, height), 4.0, tiles_down
-
+# wall, tiled along it), top (the band under the ceiling), floor, ceiling, pillar (a pillar's shaft), stone (dressed
+# stone: pillar plinths and capitals, the tops of low walls, the treads of steps), arch (the inside of arches and
+# doorways), door (a door leaf: stretched over the whole leaf, not tiled), marble, lid and iron (the sarcophagus: its
+# stone, its bronze lid with the carving stretched over its top, its handles), ivory (the bases of the torch stands);
+# marble2 and ivory2 are second versions of those, each sarcophagus or stand wearing one or the other. Every size is a
+# power of two (the game wraps textures with bit masks).
+#
+# The colours (R, G, B) and spreads are the original art's, fully lit:
+#   cathedral: walls (77, 62, 62) +-26 (luminance 66: the brightness its walls keep in the floor's colours),
+#              floor (47, 52, 60) +-17, the marble shafts' green (39, 54, 55) +-20, the sarcophagus grey 86 +-21 and
+#              its lid's bronze (77, 68, 43) +-19
+#   catacombs: walls (58, 57, 58) +-29, floor (61, 68, 74) +-18
+#   crypt:     walls (64, 61, 73) +-20, floor (59, 32, 21) +-18
 
 def cathedral():
-    sheet = trim_sheet()
     out = {}
-    # Church stonework: warm grey ashlar, a moulded plinth and a frieze under the ceiling, square flagstones.
-    warm = (1.06, 1.0, 0.9)
-    rgb, w, h = band(sheet, *ASHLAR, 128, 1.0)
-    out['wall'] = (blur(grade(rgb, 56, 1.05, 0.0, warm), 0.5), w, h)
-    rgb, w, h = band(sheet, 920, 1024, 64, 0.4)
-    out['base'] = (blur(grade(rgb, 50, 1.0, 0.0, warm), 0.5), w, h)
-    rgb, w, h = band(sheet, 512, 612, 64, 0.4)
-    out['top'] = (blur(grade(rgb, 54, 1.0, 0.35, warm), 0.5), w, h)
-    floor = even_squares(sbs('Tile', 3), 2)
-    out['floor'] = (blur(grade(tiles(floor, 2, 2), 46, 0.8, 0.15, (1.0, 0.98, 0.94)), 0.6), 2.0, 2.0)
-    plain = seamless(sheet[0:480, 0:480], 48)
-    out['ceiling'] = (blur(grade(tiles(plain, 2, 2), 36, 1.1, 0.0, warm), 0.6), 2.0, 2.0)
-    out['pillar'] = (blur(grade(tiles(plain, 2, 2), 60, 1.15, 0.0, warm), 0.5), 2.0, 2.0)
-    out['arch'] = (blur(grade(tiles(plain, 2, 2), 50, 1.1, 0.0, warm), 0.5), 2.0, 2.0)
-    out['door'] = (blur(grade(resize(door_texture(), 128, 256), 70, 1.0, 0.8, (1.0, 0.92, 0.8)), 0.4), 1.0, 1.0)
+    # Blue-grey pavement, and brick, a coping of bigger blocks under the ceiling, the ceiling and the plain stone
+    # painted in the pavement's colours (as bright as the original's mauve walls); blue-grey cobbles at the foot of
+    # the walls, marble shafts in the original's marble colours, the sarcophagus in its grey and bronze.
+    pavement = load('Pavement_01_UV_H_CM_1.jpg')
+    floor = match(sized(pavement, 256), (47, 52, 60), 15, 0.2)
+    out['floor'] = (blur(floor, 0.4), 1.0, 1.0)
+    out['base'] = (blur(match(resize(pavement[:512], 256, 128), (50, 55, 63), 16, 0.2), 0.4), 0.5, 0.25)
+    grey = colour_ramp(floor)
+    wall = blocks(0.08, 1)
+    out['wall'] = (blur(recolor(sized(wall, 256), grey, 66, 22), 0.4), 1.0, 1.0)
+    out['arch'] = (blur(recolor(sized(wall, 128), grey, 58, 20), 0.4), 1.0, 1.0)
+    out['ceiling'] = (blur(recolor(sized(wall, 128), grey, 51, 16), 0.5), 1.0, 1.0)
+    coping = course_band(blocks(0.06, 2))
+    out['top'] = (blur(recolor(resize(coping, 256, 32), grey, 76, 18), 0.4), 2.0, 0.25)
+    # The kit's Diablo marble in the original's marble colours on the pillar shafts. The sarcophagus as the original
+    # paints it: grey stone (mottled, two versions), the kit's carving on its bronze lid, the kit's iron handles. The
+    # torch stands' bases in pale grey worn stone (two versions).
+    marble = rank_recolor(sized(load('marble_diablo.tga'), 128), DIABLO_MARBLE)
+    out['pillar'] = (blur(marble, 0.6), 0.5, 0.5)
+    for slot, name in (('marble', 'Elements_11'), ('marble2', 'Elements_12')):
+        out[slot] = (blur(match(sized(sbs(f'Elements/{name}-512x512.png'), 256), SARCOPHAGUS_GREY, SARCOPHAGUS_SPREAD, 0.0), 0.6), 1.0, 1.0)
+    out['lid'] = (blur(lid_plate(SARCOPHAGUS_BRONZE, 256, 512, LID_MARGIN), 0.5), 1.0, 1.0)
+    for slot, name in (('ivory', 'Stone_07'), ('ivory2', 'Stone_08')):
+        out[slot] = (blur(match(sized(sbs(f'Stone/{name}-512x512.png'), 256), IVORY, IVORY_SPREAD, 0.0), 0.4), 1.0, 1.0)
+    out['iron'] = (blur(match(sized(seamless(load('Steel_02_UV_H_CM_1.jpg'), 48), 64), (50, 48, 50), 12, 0.3), 0.4), 0.25, 0.25)
+    out['stone'] = (blur(recolor(sized(seamless(load('d_column_extr.tga'), 64), 128), grey, 68, 12), 0.4), 1.0, 1.0)
+    out['door'] = (blur(door((78, 54, 40), 18), 0.3), 1.0, 1.0)
     return out
 
 
 def catacombs():
     out = {}
-    # A burial crypt: dark, cold, soft-edged stone blocks; packed earth underfoot; rough rock overhead.
-    cold = (0.92, 0.97, 1.08)
-    wall = sbs('Brick', 10)
-    out['wall'] = (blur(grade(tiles(wall, 2, 2), 42, 1.0, 0.25, cold), 0.6), 2.0, 2.0)
-    floor = sbs('Dirt', 8)
-    out['floor'] = (blur(grade(tiles(floor, 2, 2), 36, 0.9, 0.25, cold), 0.6), 2.0, 2.0)
-    ceiling = sbs('Stone', 11)
-    out['ceiling'] = (blur(grade(tiles(ceiling, 2, 2), 28, 1.1, 0.4, cold), 0.6), 2.0, 2.0)
-    pillar = sbs('Stone', 5)
-    out['pillar'] = (blur(grade(tiles(pillar, 2, 2), 46, 1.0, 0.25, cold), 0.5), 2.0, 2.0)
-    out['arch'] = (blur(grade(tiles(wall, 2, 2), 38, 1.0, 0.25, cold), 0.6), 2.0, 2.0)
-    out['door'] = (blur(grade(resize(door_texture(), 128, 256), 60, 1.0, 0.6, (0.95, 0.92, 0.85)), 0.4), 1.0, 1.0)
+    # Dark grey rubble: the kit's blocks, each stone its own tone, rough with the kit's yellow stone; teal-grey
+    # speckled floor (the kit's black marble), round pillars of the same rubble.
+    wall = blocks(0.3, 3, depth=0.7, rough=0.35)
+    out['wall'] = (blur(match(sized(wall, 256), (58, 57, 58), 24, 0.1), 0.4), 1.0, 1.0)
+    out['pillar'] = out['wall']
+    out['arch'] = (blur(match(sized(wall, 128), (50, 49, 50), 22, 0.1), 0.4), 1.0, 1.0)
+    out['ceiling'] = (blur(match(sized(wall, 128), (40, 39, 41), 16, 0.1), 0.5), 1.0, 1.0)
+    out['floor'] = (blur(match(sized(load('Black marble seamless.tga'), 256), (61, 68, 74), 18, 0.15), 0.4), 1.0, 1.0)
+    out['stone'] = (blur(match(sized(seamless(load('d_column_extr.tga'), 64), 128), (62, 60, 62), 14, 0.1), 0.4), 1.0, 1.0)
+    out['door'] = (blur(door((62, 50, 42), 16), 0.3), 1.0, 1.0)
     return out
 
 
 def crypt():
     out = {}
-    # Hellfire's crypt: large veined marble blocks, dark granite squares underfoot, dark red rock above. (Its palette
-    # turns every pale stone rose-brown; the floor is kept darker than the walls so the two read apart.)
-    bone = (1.05, 1.0, 0.92)
-    wall = sbs('Brick', 17)
-    out['wall'] = (blur(grade(tiles(wall, 2, 2), 60, 0.95, 0.35, bone), 0.6), 2.0, 2.0)
-    floor = sbs('Tile', 16)
-    out['floor'] = (blur(grade(tiles(floor, 2, 2), 44, 0.9, 0.3, bone), 0.6), 2.0, 2.0)
-    ceiling = sbs('Stone', 17)
-    out['ceiling'] = (blur(grade(tiles(ceiling, 2, 2), 30, 1.0, 0.6, (1.0, 0.9, 0.85)), 0.6), 2.0, 2.0)
-    pillar = sbs('Stone', 16)
-    out['pillar'] = (blur(grade(tiles(pillar, 2, 2), 64, 0.95, 0.35, bone), 0.5), 2.0, 2.0)
-    out['arch'] = (blur(grade(tiles(wall, 2, 2), 52, 0.95, 0.35, bone), 0.6), 2.0, 2.0)
-    out['door'] = (blur(grade(resize(door_texture(), 128, 256), 64, 1.0, 0.7, (1.0, 0.9, 0.8)), 0.4), 1.0, 1.0)
+    # Hellfire's crypt: big cool grey blocks (the kit's at twice the size), pillars of its white marble gone grey,
+    # dark red-brown rough floor (its yellow stone). (Its palette cycles colours 1-31: they are left out.)
+    wall = blocks(0.1, 4, depth=0.6)
+    out['wall'] = (blur(match(sized(wall, 256), (64, 61, 73), 20, 0.1), 0.4), 2.0, 2.0)
+    out['arch'] = (blur(match(sized(wall, 256), (56, 53, 64), 18, 0.1), 0.4), 2.0, 2.0)
+    out['ceiling'] = (blur(match(sized(wall, 128), (42, 40, 48), 14, 0.1), 0.5), 2.0, 2.0)
+    out['floor'] = (blur(match(sized(load('yellow stone seamless.tga'), 256), (50, 30, 22), 14, 0.15), 0.4), 1.0, 1.0)
+    out['pillar'] = (blur(match(sized(load('marble_06.jpg'), 128), (70, 67, 78), 16, 0.1), 0.4), 1.0, 1.0)
+    out['stone'] = (blur(match(sized(seamless(load('d_column_extr.tga'), 64), 128), (66, 63, 74), 12, 0.1), 0.4), 1.0, 1.0)
+    out['door'] = (blur(door((64, 50, 42), 16), 0.3), 1.0, 1.0)
     return out
 
 

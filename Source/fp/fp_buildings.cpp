@@ -129,6 +129,13 @@ struct WorldTriangle {
 	float arcSpring = 0; // MeshArcade: the arch wall's springing height
 	uint8_t fallback;   // colour where the art has no pixel
 	CleanSurface cleanSurface = CleanSurface::Wall; // MeshClean: the texture, laid on by uv (tiles)
+	// MeshClean: extra shade (light levels) at a point z high, the sum of two ramps max(0, at0 + perZ * z): a
+	// sarcophagus's shadow under its rim and towards its foot.
+	struct Ramp {
+		float at0 = 0;
+		float perZ = 0;
+	};
+	std::array<Ramp, 2> occlusion {};
 };
 
 enum : uint8_t {
@@ -2803,10 +2810,12 @@ int KitMeshColor(const WorldTriangle &tri, float wx, float wy, float wz)
 
 /**
  * @brief Adds a kit model with its u and w axes along axisU and axisW, spanning sizeU by sizeW around c and height up
- * from z0. If given, move takes each world point to where it is drawn (a lid lifted off its box).
+ * from z0. If given, move takes each world point to where it is drawn (a lid lifted off its box), and finish is called
+ * with each triangle added and the index of the model's triangle it came from. The model must be closed and wound the
+ * same way all over (the kit's sarcophagus pieces are): its triangles face out by their winding and are one-sided.
  */
 void AddKitModelOriented(Building &b, const LandmarkMesh &mesh, Vec2 c, Vec2 axisU, Vec2 axisW, float sizeU, float sizeW, float z0, float height, bool ownTextures,
-    const std::function<V3(V3)> &move = nullptr)
+    const std::function<V3(V3)> &move = nullptr, const std::function<void(WorldTriangle &, size_t)> &finish = nullptr)
 {
 	float modelHeight = 0;
 	for (const auto &t : mesh.triangles)
@@ -2820,44 +2829,104 @@ void AddKitModelOriented(Building &b, const LandmarkMesh &mesh, Vec2 c, Vec2 axi
 		const V3 p { c.x + axisU.x * u + axisW.x * w, c.y + axisU.y * u + axisW.y * w, z0 + q[2] / modelHeight * height };
 		return move ? move(p) : p;
 	};
-	const V3 middle = move ? move(V3 { c.x, c.y, z0 + height * 0.5F }) : V3 { c.x, c.y, z0 + height * 0.5F };
+	std::vector<std::array<V3, 3>> world(mesh.triangles.size());
+	// Which way the triangles wind seen from outside (laying the model down may mirror it): by the sign of the volume
+	// they enclose, measured around the model's middle for precision.
+	double volume = 0;
 	for (size_t t = 0; t < mesh.triangles.size(); t++) {
-		const V3 p0 = toWorld(&mesh.triangles[t][0]);
-		const V3 p1 = toWorld(&mesh.triangles[t][3]);
-		const V3 p2 = toWorld(&mesh.triangles[t][6]);
+		world[t] = { toWorld(&mesh.triangles[t][0]), toWorld(&mesh.triangles[t][3]), toWorld(&mesh.triangles[t][6]) };
+		std::array<V3, 3> r = world[t];
+		for (V3 &p : r)
+			p = { p.x - c.x, p.y - c.y, p.z - z0 };
+		volume += static_cast<double>(r[0].x) * (r[1].y * r[2].z - r[1].z * r[2].y) + static_cast<double>(r[0].y) * (r[1].z * r[2].x - r[1].x * r[2].z)
+		    + static_cast<double>(r[0].z) * (r[1].x * r[2].y - r[1].y * r[2].x);
+	}
+	const float outward = volume < 0 ? -1.0F : 1.0F;
+	for (size_t t = 0; t < mesh.triangles.size(); t++) {
+		const auto &[p0, p1, p2] = world[t];
 		const V3 e1 { p1.x - p0.x, p1.y - p0.y, p1.z - p0.z };
 		const V3 e2 { p2.x - p0.x, p2.y - p0.y, p2.z - p0.z };
-		V3 n { e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x };
-		const V3 centroid { (p0.x + p1.x + p2.x) / 3.0F, (p0.y + p1.y + p2.y) / 3.0F, (p0.z + p1.z + p2.z) / 3.0F };
-		if (n.x * (centroid.x - middle.x) + n.y * (centroid.y - middle.y) + n.z * (centroid.z - middle.z) < 0)
-			n = { -n.x, -n.y, -n.z };
+		const V3 n { (e1.y * e2.z - e1.z * e2.y) * outward, (e1.z * e2.x - e1.x * e2.z) * outward, (e1.x * e2.y - e1.y * e2.x) * outward };
 		const size_t before = b.mesh.size();
 		AddStructureFace(b, { p0, p1, p2 }, n, c, MeshProjective);
 		if (b.mesh.size() == before)
 			continue;
 		WorldTriangle &tri = b.mesh.back();
-		tri.cull = false; // kit models are not all closed: draw both sides
 		if (ownTextures && !mesh.textures.empty()) {
 			tri.texture = mesh.textures[t];
 			tri.uv = mesh.uvs[t];
 			PrepareUvLookup(tri);
 		}
+		if (finish)
+			finish(tri, t);
 	}
 }
 
-/**
- * @brief Adds a kit model to a structure, its footprint spanning size x by size y around c (x and y swapped if asked)
- * from z0 up height (art units), textured with its own textures.
- */
-void AddKitModel(Building &b, const LandmarkMesh &mesh, Vec2 c, float sizeX, float sizeY, float z0, float height, bool swap, bool ownTextures = true)
+/** @brief Where a column's axis stands, given its art's middle (twice, in px): off the tile's middle by d px on screen is off by d / 32 in x - y. */
+Vec2 ColumnAxis(Point tile, int axisTwice)
 {
-	if (swap)
-		AddKitModelOriented(b, mesh, c, { 0, 1 }, { 1, 0 }, sizeY, sizeX, z0, height, ownTextures);
-	else
-		AddKitModelOriented(b, mesh, c, { 1, 0 }, { 0, 1 }, sizeX, sizeY, z0, height, ownTextures);
+	const float offset = static_cast<float>(axisTwice - ColumnWidth) / 2.0F / 64.0F;
+	return { static_cast<float>(tile.x) + 0.5F + offset, static_cast<float>(tile.y) + 0.5F - offset };
 }
 
-bool BuildColumn(Structure &st, Point tile)
+/** @brief Whether the object at `tile` wears the second version of its texture (scattered, so neighbours differ). */
+bool SecondVersionAt(Point tile)
+{
+	const uint32_t hash = (static_cast<uint32_t>(tile.x) * 73856093U) ^ (static_cast<uint32_t>(tile.y) * 19349663U);
+	return ((hash >> 4) & 1) != 0;
+}
+
+/**
+ * Torch stands' ivory bases: half their side and their height (art units), a broad low pyramid (its sides about 30
+ * degrees from the floor as drawn), and how much darker (half light levels) the sides turned away from the light are,
+ * the art's light coming from the left (-x, +y).
+ */
+constexpr float StandBaseHalf = 0.25F;
+constexpr float StandBaseHeight = 0.08F;
+constexpr uint8_t StandShadowSide = 2;
+
+/**
+ * @brief A low square pyramid of a clean texture (a torch stand's base): half side `half` on the floor, cut off at
+ * `topHalf` (where the pole comes out, a flat top there) `height` up; lit from the left as the art is.
+ */
+void AddCleanPyramid(Building &b, Vec2 c, float half, float topHalf, float height, CleanSurface surface)
+{
+	const float slope = (half - topHalf) / height;
+	const float len = std::hypot(1.0F, slope);
+	// The faces added since `first`: in the surface, laid on from above (the sides are low), `darkness` darker.
+	auto finish = [&](size_t first, uint8_t darkness) {
+		for (size_t t = first; t < b.mesh.size(); t++) {
+			WorldTriangle &tri = b.mesh[t];
+			for (int k = 0; k < 3; k++) {
+				tri.uv[k * 2] = tri.p[k].x;
+				tri.uv[k * 2 + 1] = tri.p[k].y;
+			}
+			tri.cleanSurface = surface;
+			tri.darkness = darkness;
+			PrepareUvLookup(tri);
+		}
+	};
+	for (const auto &[dx, dy] : { std::pair { 1.0F, 0.0F }, std::pair { 0.0F, 1.0F }, std::pair { -1.0F, 0.0F }, std::pair { 0.0F, -1.0F } }) {
+		const float sx = -dy; // along the side
+		const float sy = dx;
+		auto corner = [&](float h, float along, float z) { return V3 { c.x + dx * h + sx * along * h, c.y + dy * h + sy * along * h, z }; };
+		const std::array<V3, 4> p { corner(half, -1, 0), corner(half, 1, 0), corner(topHalf, 1, height), corner(topHalf, -1, height) };
+		const size_t first = b.mesh.size();
+		AddStructureFace(b, { p[0], p[1], p[2], p[3] }, { dx / len, dy / len, slope / len }, c, MeshClean);
+		finish(first, dx > 0 || dy < 0 ? StandShadowSide : 0);
+	}
+	// The cut-off tip, round the pole's foot.
+	const size_t first = b.mesh.size();
+	AddStructureFace(b, { V3 { c.x - topHalf, c.y - topHalf, height }, V3 { c.x + topHalf, c.y - topHalf, height }, V3 { c.x + topHalf, c.y + topHalf, height }, V3 { c.x - topHalf, c.y + topHalf, height } }, { 0, 0, 1 }, c, MeshClean);
+	finish(first, 0);
+}
+
+/**
+ * @brief Builds a column's mesh at its tile from the profile of its art. With `ivoryBase` (the clean dungeon's torch
+ * stands), the base the art shows under the pole (read as round, with the floor around it, it comes out a wide flared
+ * blob) is a low square pyramid of the texture set's ivory instead, broad and flat, the pole going down into it.
+ */
+bool BuildColumn(Structure &st, Point tile, bool ivoryBase = false)
 {
 	const PieceTextures &textures = GetPieceTextures(dPiece[tile.x][tile.y]);
 	int axisTwice = ColumnWidth;
@@ -2879,7 +2948,24 @@ bool BuildColumn(Structure &st, Point tile)
 		}
 		clamped.push_back(slice);
 	}
-	return BuildColumnSlices(st, tile, clamped, axisTwice);
+	if (!ivoryBase || clamped.empty())
+		return BuildColumnSlices(st, tile, clamped, axisTwice);
+	// The base: the slices at the foot wider than twice the pole (its narrowest).
+	auto reach = [](const ColumnSlice &slice) { return std::max(slice.size0, slice.size1) * (slice.square ? 1.41F : 1.0F); };
+	float pole = reach(clamped.front());
+	for (const ColumnSlice &slice : clamped)
+		pole = std::min({ pole, slice.size0, slice.size1 });
+	size_t base = 0;
+	while (base < clamped.size() && reach(clamped[base]) > 2.0F * pole)
+		base++;
+	if (base == 0 || base == clamped.size())
+		return BuildColumnSlices(st, tile, clamped, axisTwice);
+	std::vector<ColumnSlice> upper(clamped.begin() + static_cast<std::ptrdiff_t>(base), clamped.end());
+	upper.front().z0 = std::min(upper.front().z0, StandBaseHeight);
+	if (!BuildColumnSlices(st, tile, upper, axisTwice))
+		return false;
+	AddCleanPyramid(st.art, ColumnAxis(tile, axisTwice), StandBaseHalf, pole, StandBaseHeight, SecondVersionAt(tile) ? CleanSurface::IvoryAlt : CleanSurface::Ivory);
+	return true;
 }
 
 bool BuildColumnSlices(Structure &st, Point tile, const std::vector<ColumnSlice> &slices, int axisTwice)
@@ -2887,9 +2973,7 @@ bool BuildColumnSlices(Structure &st, Point tile, const std::vector<ColumnSlice>
 	if (slices.empty())
 		return false;
 	BuildCanvas(st.art, { tile }, {});
-	// An axis off the tile's middle by d px on screen is off by d / 32 in x - y.
-	const float offset = static_cast<float>(axisTwice - ColumnWidth) / 2.0F / 64.0F;
-	const Vec2 c { static_cast<float>(tile.x) + 0.5F + offset, static_cast<float>(tile.y) + 0.5F - offset };
+	const Vec2 c = ColumnAxis(tile, axisTwice);
 	auto reach = [](const ColumnSlice &slice, bool atTop) { return (atTop ? slice.size1 : slice.size0) * (slice.square ? 1.41F : 1.0F); };
 	for (size_t i = 0; i < slices.size(); i++) {
 		const ColumnSlice &slice = slices[i];
@@ -3305,6 +3389,119 @@ void SetStructureFallbacks(Structure &st)
 	}
 }
 
+/** Where the edges of the sarcophagus's lid take their colour in its texture: the plain margin round the carving. */
+constexpr float LidPlainU = 0.5F;
+constexpr float LidPlainV = 0.015F;
+/** How much darker (half light levels, besides their facing) the sarcophagus's sunken panels and its hollow are. */
+constexpr uint8_t SunkenPanelShade = 3;
+constexpr uint8_t HollowShade = 6;
+/**
+ * The shadow under the sarcophagus's rim: RimShade light levels right under it, gone RimShadeBand of its height lower
+ * down; and towards its foot, FootShade light levels on the floor, gone FootShadeBand of its height up.
+ */
+constexpr float RimShade = 3.0F;
+constexpr float RimShadeBand = 0.25F;
+constexpr float FootShade = 2.0F;
+constexpr float FootShadeBand = 0.4F;
+
+/**
+ * @brief In the clean dungeon, how a kit sarcophagus (or its body or lid, of the same frame) laid sizeU by sizeW and
+ * height high wears its texture set instead of the sprite's art (null elsewhere): the kit's classes tell its parts
+ * apart (1 the lid, 2 the iron handles, 3 the sunken panels, 4 the hollow); the rest is `stone` (Marble or its second
+ * version, MarbleAlt). Stone and iron are laid on by facing, in
+ * tiles of the closed box's frame (so they stay on a lid that moves); the lid's carving is stretched over its top, its
+ * edges take the plain margin round it. A light from above shades the rounded edges (sides a light level darker than
+ * the tops, undersides two), and the body is shaded where less light gets in: its sunken panels, its hollow, under
+ * its rim and at its foot.
+ */
+std::function<void(WorldTriangle &, size_t)> CleanSarcophagus(const LandmarkMesh &mesh, float sizeU, float sizeW, float height, CleanSurface stone)
+{
+	if (!IsCleanDungeon() || mesh.classes.size() != mesh.triangles.size())
+		return nullptr;
+	float modelHeight = 0;
+	for (const auto &t : mesh.triangles)
+		modelHeight = std::max({ modelHeight, t[2], t[5], t[8] });
+	if (modelHeight <= 0)
+		return nullptr;
+	// The bottom of the rim: of the body's outermost faces (at the edge of the model's u or w) in its upper half.
+	float rimBottom = modelHeight;
+	for (size_t t = 0; t < mesh.triangles.size(); t++) {
+		const std::array<float, 9> &m = mesh.triangles[t];
+		auto atEdge = [&](int axis) {
+			return std::max({ m[axis], m[3 + axis], m[6 + axis] }) <= 1e-3F || std::min({ m[axis], m[3 + axis], m[6 + axis] }) >= 1.0F - 1e-3F;
+		};
+		if (mesh.classes[t] == 0 && (atEdge(0) || atEdge(1)) && std::min({ m[2], m[5], m[8] }) > modelHeight / 2)
+			rimBottom = std::min({ rimBottom, m[2], m[5], m[8] });
+	}
+	// The lid's extent in the model's u and w (0..1): the carving spans it.
+	float lidU0 = 1;
+	float lidU1 = 0;
+	float lidW0 = 1;
+	float lidW1 = 0;
+	for (size_t t = 0; t < mesh.triangles.size(); t++) {
+		if (mesh.classes[t] != 1)
+			continue;
+		for (int k = 0; k < 3; k++) {
+			lidU0 = std::min(lidU0, mesh.triangles[t][k * 3]);
+			lidU1 = std::max(lidU1, mesh.triangles[t][k * 3]);
+			lidW0 = std::min(lidW0, mesh.triangles[t][k * 3 + 1]);
+			lidW1 = std::max(lidW1, mesh.triangles[t][k * 3 + 1]);
+		}
+	}
+	return [&mesh, sizeU, sizeW, height, stone, modelHeight, rimBottom, lidU0, lidU1, lidW0, lidW1](WorldTriangle &tri, size_t t) {
+		const std::array<float, 9> &m = mesh.triangles[t];
+		std::array<V3, 3> q; // tiles in the model's frame: u, w across, z up
+		for (int k = 0; k < 3; k++)
+			q[k] = { (m[k * 3] - 0.5F) * sizeU, (m[k * 3 + 1] - 0.5F) * sizeW, m[k * 3 + 2] / modelHeight * height };
+		const V3 e1 { q[1].x - q[0].x, q[1].y - q[0].y, q[1].z - q[0].z };
+		const V3 e2 { q[2].x - q[0].x, q[2].y - q[0].y, q[2].z - q[0].z };
+		const float nx = std::abs(e1.y * e2.z - e1.z * e2.y);
+		const float ny = std::abs(e1.z * e2.x - e1.x * e2.z);
+		const float nz = std::abs(e1.x * e2.y - e1.y * e2.x);
+		const bool flat = nz >= nx && nz >= ny;
+		const uint8_t part = mesh.classes[t];
+		const bool carving = part == 1 && flat && tri.normal.z > 0 && lidU1 > lidU0 && lidW1 > lidW0;
+		tri.cleanSurface = part == 2 ? CleanSurface::Iron : (part == 1 ? CleanSurface::Lid : stone);
+		for (int k = 0; k < 3; k++) {
+			float u;
+			float v;
+			if (carving) {
+				u = (m[k * 3 + 1] - lidW0) / (lidW1 - lidW0);
+				v = (m[k * 3] - lidU0) / (lidU1 - lidU0);
+			} else if (part == 1) {
+				u = LidPlainU;
+				v = LidPlainV;
+			} else if (flat) {
+				u = q[k].x;
+				v = q[k].y;
+			} else {
+				u = nx >= ny ? q[k].y : q[k].x;
+				v = -q[k].z;
+			}
+			tri.uv[k * 2] = u;
+			tri.uv[k * 2 + 1] = v;
+		}
+		tri.darkness = static_cast<uint8_t>(std::lround((1.0F - std::clamp(tri.normal.z, -1.0F, 1.0F)) * 2.0F));
+		if (part == 3)
+			tri.darkness += SunkenPanelShade;
+		if (part == 4)
+			tri.darkness += HollowShade;
+		// The body's shadows: under the rim (on what lies below it), and towards the foot.
+		if (part == 0 || part == 3 || part == 4) {
+			const float rim = rimBottom * height / modelHeight;
+			if (std::max({ m[2], m[5], m[8] }) * height / modelHeight <= rim + 1e-4F) {
+				tri.occlusion[0].perZ = RimShade / (RimShadeBand * height);
+				tri.occlusion[0].at0 = RimShade - tri.occlusion[0].perZ * rim;
+			}
+			tri.occlusion[1].perZ = -FootShade / (FootShadeBand * height);
+			tri.occlusion[1].at0 = FootShade;
+		}
+		tri.mapping = MeshClean;
+		tri.texture = 0;
+		PrepareUvLookup(tri);
+	};
+}
+
 /** @brief An object drawn as a box textured with its own sprite (a sarcophagus), rebuilt when its frame changes. */
 struct ObjectBox {
 	const uint8_t *frame = nullptr;
@@ -3391,9 +3588,17 @@ bool BuildObjectBox(ObjectBox &box, const Object &object, ClxSprite sprite)
 	const float opened = object._oAnimLen > 1 ? std::clamp(static_cast<float>(object._oAnimFrame - 1) / static_cast<float>(object._oAnimLen - 1), 0.0F, 1.0F) : 0.0F;
 	const LandmarkMesh *body = KitMesh("sarcophagus_body");
 	const LandmarkMesh *lid = KitMesh("sarcophagus_lid");
+	// The kit's sarcophagus is long along its x: laid along the box's longer side.
+	const bool swap = lx < ly;
+	const Vec2 axisU = swap ? Vec2 { 0, 1 } : Vec2 { 1, 0 };
+	const Vec2 axisW = swap ? Vec2 { 1, 0 } : Vec2 { 0, 1 };
+	const float sizeU = swap ? ly : lx;
+	const float sizeW = swap ? lx : ly;
+	const CleanSurface stone = SecondVersionAt(tile) ? CleanSurface::MarbleAlt : CleanSurface::Marble;
 	if (const LandmarkMesh *mesh = SarcophagusKitOn ? KitMesh("sarcophagus") : nullptr; mesh != nullptr && (opened <= 0.0F || body == nullptr || lid == nullptr)) {
-		// The kit's sarcophagus (long along its x) over the box the sprite shows.
-		AddKitModel(b, *mesh, { cx, cy }, lx, ly, 0.0F, height, lx < ly, false); // with the sprite's own stone
+		// The kit's sarcophagus over the box the sprite shows: in the clean dungeon in its texture set's marble, with
+		// the carving and the iron handles; elsewhere in the sprite's own stone.
+		AddKitModelOriented(b, *mesh, { cx, cy }, axisU, axisW, sizeU, sizeW, 0.0F, height, false, nullptr, CleanSarcophagus(*mesh, sizeU, sizeW, height, stone));
 	} else if (mesh != nullptr) {
 		// Opening: the body, and the lid slid off sideways, turned a little and tipped over the edge it rests on.
 		// Both pieces are placed in the closed sarcophagus's frame; the body stops below the lid.
@@ -3404,12 +3609,8 @@ bool BuildObjectBox(ObjectBox &box, const Object &object, ClxSprite sprite)
 			return z;
 		};
 		const float full = std::max(top(*lid), 1e-3F);
-		const bool swap = lx < ly;
-		const Vec2 axisU = swap ? Vec2 { 0, 1 } : Vec2 { 1, 0 };
-		const Vec2 axisW = swap ? Vec2 { 1, 0 } : Vec2 { 0, 1 };
-		const float sizeU = swap ? ly : lx;
-		const float sizeW = swap ? lx : ly;
-		AddKitModelOriented(b, *body, { cx, cy }, axisU, axisW, sizeU, sizeW, 0.0F, height * top(*body) / full, false);
+		const float bodyHeight = height * top(*body) / full;
+		AddKitModelOriented(b, *body, { cx, cy }, axisU, axisW, sizeU, sizeW, 0.0F, bodyHeight, false, nullptr, CleanSarcophagus(*body, sizeU, sizeW, bodyHeight, stone));
 		const float yaw = 0.3F * opened;
 		const float tilt = 0.18F * std::clamp(opened * 2.0F - 1.0F, 0.0F, 1.0F);
 		const float slideU = 0.12F * sizeU * opened;
@@ -3430,7 +3631,7 @@ bool BuildObjectBox(ObjectBox &box, const Object &object, ClxSprite sprite)
 			z = height + dz * std::cos(tilt) - dw * std::sin(tilt);
 			return V3 { cx + axisU.x * u + axisW.x * w, cy + axisU.y * u + axisW.y * w, z };
 		};
-		AddKitModelOriented(b, *lid, { cx, cy }, axisU, axisW, sizeU, sizeW, 0.0F, height, false, moveLid);
+		AddKitModelOriented(b, *lid, { cx, cy }, axisU, axisW, sizeU, sizeW, 0.0F, height, false, moveLid, CleanSarcophagus(*lid, sizeU, sizeW, height, stone));
 	} else {
 		AddStructureBox(b, cx - lx / 2.0F, cy - ly / 2.0F, 0.0F, cx + lx / 2.0F, cy + ly / 2.0F, height);
 	}
@@ -3666,12 +3867,12 @@ void BuildCathedralStairs()
 		if (trigs[i]._tmsg == WM_DIABPREVLVL && BuildStairsUp(st, trigs[i].position)) {
 			SetStructureFallbacks(st);
 			if (clean)
-				RetextureClean(st, CleanSurface::Arch, CleanSurface::Arch, CleanSurface::Pillar, CleanSurface::Arch);
+				RetextureClean(st, CleanSurface::Arch, CleanSurface::Arch, CleanSurface::Stone, CleanSurface::Arch);
 			Structures.push_back(std::move(st));
 		} else if (trigs[i]._tmsg == WM_DIABNEXTLVL && BuildStairsDown(st, trigs[i].position)) {
 			SetStructureFallbacks(st);
 			if (clean)
-				RetextureClean(st, CleanSurface::Wall, CleanSurface::Pillar, CleanSurface::Pillar, CleanSurface::Arch);
+				RetextureClean(st, CleanSurface::Wall, CleanSurface::Stone, CleanSurface::Stone, CleanSurface::Arch);
 			Structures.push_back(std::move(st));
 		}
 	}
@@ -3693,7 +3894,7 @@ void BuildCleanStructures()
 	for (const Point tile : stands) {
 		uint8_t &mark = StructureTiles[static_cast<size_t>(tile.y) * MAXDUNX + tile.x];
 		Structure st;
-		if (mark != 0 || !BuildColumn(st, tile))
+		if (mark != 0 || !BuildColumn(st, tile, true))
 			continue;
 		SetStructureFallbacks(st);
 		mark = 1;
@@ -3899,7 +4100,8 @@ uint8_t StructureColor(const Structure &st, const WorldTriangle &tri, float wx, 
 	return tri.fallback;
 }
 
-void DrawStructure(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer, const Structure &st, float stretch = VerticalScale())
+void DrawStructure(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer, const Structure &st, float stretch = VerticalScale(),
+    const std::vector<uint32_t> *order = nullptr)
 {
 	const ArcadeArt &arcade = GetArcadeArt();
 	int left;
@@ -3916,7 +4118,9 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 			const float w0 = 1.0F - w1 - w2;
 			const float u = w0 * tri.uv[0] + w1 * tri.uv[2] + w2 * tri.uv[4];
 			const float v = w0 * tri.uv[1] + w1 * tri.uv[3] + w2 * tri.uv[5];
-			return static_cast<int>(CleanColor(tri.cleanSurface, u, v, ShadePixelWorld, CleanLightAt(wx, wy) + tri.darkness * 0.5F, ShadeX, ShadeY));
+			const float shade = tri.darkness * 0.5F + std::max(0.0F, tri.occlusion[0].at0 + tri.occlusion[0].perZ * wz)
+			    + std::max(0.0F, tri.occlusion[1].at0 + tri.occlusion[1].perZ * wz);
+			return static_cast<int>(CleanColor(tri.cleanSurface, u, v, ShadePixelWorld, CleanLightAt(wx, wy) + shade, ShadeX, ShadeY));
 		}
 		if (tri.mapping == MeshArcade) {
 			const float along = (wx - tri.mirrorX) * tri.downX + (wy - tri.mirrorY) * tri.downY;
@@ -3998,7 +4202,7 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 		const Point tile { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
 		const uint8_t level = InDungeonBounds(tile) ? LightAt(tile) : LightsMax;
 		return static_cast<int>(LightTables[std::min<uint8_t>(level, LightsMax)][ShadeColor(color, darkness)]);
-	}, stretch);
+	}, stretch, order);
 }
 
 /** Iron straps across a door leaf: their middles as shares of the leaf's height, and their half height (tiles). */
@@ -4075,7 +4279,24 @@ void DrawObjectBoxes(const Surface &out, const Projection &proj, std::vector<flo
 			if (!BuildObjectBox(box, object, sprite))
 				continue;
 		}
-		DrawStructure(out, proj, depthBuffer, box.st, 1.0F); // objects keep their own size
+		// Nearest first, so the depth test turns hidden pixels away before they are shaded: close up, a sarcophagus fills
+		// much of the view, its lid over the top of its body and its handles over its sides.
+		const std::vector<WorldTriangle> &mesh = box.st.art.mesh;
+		static std::vector<std::pair<float, uint32_t>> byDistance;
+		static std::vector<uint32_t> order;
+		byDistance.clear();
+		for (uint32_t t = 0; t < mesh.size(); t++) {
+			const WorldTriangle &tri = mesh[t];
+			const float dx = (tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F - proj.pos.x;
+			const float dy = (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F - proj.pos.y;
+			const float dz = (tri.p[0].z + tri.p[1].z + tri.p[2].z) / 3.0F - EyeHeight;
+			byDistance.emplace_back(dx * dx + dy * dy + dz * dz, t);
+		}
+		std::sort(byDistance.begin(), byDistance.end());
+		order.clear();
+		for (const auto &[distance, t] : byDistance)
+			order.push_back(t);
+		DrawStructure(out, proj, depthBuffer, box.st, 1.0F, &order); // objects keep their own size
 	}
 }
 

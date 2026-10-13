@@ -13,6 +13,7 @@
 #include <limits>
 #include <string>
 #include <unordered_map>
+#include <utility>
 
 #include "engine/light_tables.hpp"
 #include "engine/palette.h"
@@ -57,13 +58,23 @@ constexpr float StairsRise = 1.4F;
 constexpr int StairsSteps = 6;
 constexpr float StairwellDarkness = 2.5F;
 
-/** How a tileset's pillars are shaped. */
+/**
+ * How a tileset's pillars are shaped: a base block, the shaft, and either a capital block under the ceiling or (the
+ * cathedral's, as its art draws them) a thin collar and a block flaring out on top of a shorter shaft, nearly to the
+ * tile's width. Arches resting on such a pillar spring from the top of its block, which is of their bricks; over the
+ * block a pier goes on up to the ceiling (of the arches' bricks under arches, else of stone).
+ */
 struct PillarStyle {
 	bool round;
 	float shaft;   // half width (square) or radius (round)
-	float plinth;  // half width of the base block and of the capital
+	float plinth;  // half width of the base block, the capital and the collar
 	float base;    // height of the base block
 	float capital; // height of the capital block (under the ceiling)
+	float top = 0;       // the flared block: the height of its top (0: none, a capital instead)
+	float blockFrom = 0; // where it starts
+	float blockFoot = 0; // its half width there
+	float blockHalf = 0; // its half width at the top, and the pier's over it
+	float collar = 0;    // the height of the collar under it
 };
 
 PillarStyle PillarStyleFor(dungeon_type type)
@@ -71,9 +82,12 @@ PillarStyle PillarStyleFor(dungeon_type type)
 	switch (type) {
 	case DTYPE_CATACOMBS: return { true, 0.22F, 0.27F, 0.24F, 0.22F };
 	case DTYPE_CRYPT: return { false, 0.22F, 0.29F, 0.3F, 0.3F };
-	default: return { false, 0.2F, 0.27F, 0.26F, 0.3F };
+	default: return { true, 0.2F, 0.27F, 0.3F, 0.0F, 2.0F, 1.42F, 0.23F, 0.46F, 0.1F };
 	}
 }
+
+/** Light levels added to the sloping sides of a pillar's stone block (they face a little down; brick ones go on into their arches unshaded). */
+constexpr float FlareDarkness = 0.5F;
 
 // --- Ordered dither ------------------------------------------------------------------------------------------------
 
@@ -182,7 +196,7 @@ const char *SetName(dungeon_type type)
 	}
 }
 
-constexpr std::array<const char *, static_cast<size_t>(CleanSurface::Count)> SlotNames { "wall", "base", "top", "floor", "ceiling", "pillar", "arch", "door" };
+constexpr std::array<const char *, static_cast<size_t>(CleanSurface::Count)> SlotNames { "wall", "base", "top", "floor", "ceiling", "pillar", "stone", "arch", "door", "marble", "lid", "iron", "ivory", "marble2", "ivory2" };
 
 /** The palette colours textures may use: the level's ramps (not the near-blacks 112-127, nor colours the level cycles) and the shared ramps 160-254. */
 bool IsAllowedColor(int index)
@@ -377,6 +391,12 @@ void EnsureTextures()
 			Textures.baseBand = source != nullptr ? source->tilesDown : 0.0F;
 		if (surface == CleanSurface::Top)
 			Textures.topBand = source != nullptr ? source->tilesDown : 0.0F;
+		if (source == nullptr && (surface == CleanSurface::Lid || surface == CleanSurface::MarbleAlt))
+			source = find("marble");
+		if (source == nullptr && surface == CleanSurface::IvoryAlt)
+			source = find("ivory");
+		if (source == nullptr && (surface == CleanSurface::Stone || surface == CleanSurface::Marble || surface == CleanSurface::Lid || surface == CleanSurface::Ivory || surface == CleanSurface::MarbleAlt || surface == CleanSurface::IvoryAlt))
+			source = find("pillar");
 		if (source == nullptr && surface != CleanSurface::Base && surface != CleanSurface::Top)
 			source = find("wall");
 		const SourceTexture plain = PlainTexture(surface);
@@ -630,6 +650,20 @@ inline float TileLight(int x, int y)
 	return static_cast<float>(dLight[x][y]);
 }
 
+/**
+ * The light at the four tile centres around the last point CleanLightAt looked up: kept while the points stay between
+ * them (they are looked up pixel by pixel), forgotten every frame.
+ */
+struct LightCell {
+	int x = std::numeric_limits<int>::min();
+	int y = 0;
+	float l00 = 0;
+	float l10 = 0;
+	float l01 = 0;
+	float l11 = 0;
+};
+LightCell LastLightCell;
+
 /** The light of a wall face at a point along it: interpolated along the open tiles in front of it. */
 float FaceLight(const RayHit &hit, const Vec2 &ray)
 {
@@ -685,6 +719,7 @@ void PrepareCleanDungeon()
 {
 	EnsureKinds();
 	EnsureTextures();
+	LastLightCell.x = std::numeric_limits<int>::min(); // the light moves between frames
 }
 
 CleanKind CleanKindAt(Point tile)
@@ -738,10 +773,13 @@ float CleanLightAt(float x, float y)
 	const float fy = y - 0.5F;
 	const int ix = static_cast<int>(std::floor(fx));
 	const int iy = static_cast<int>(std::floor(fy));
+	if (ix != LastLightCell.x || iy != LastLightCell.y)
+		LastLightCell = { ix, iy, TileLight(ix, iy), TileLight(ix + 1, iy), TileLight(ix, iy + 1), TileLight(ix + 1, iy + 1) };
+	const LightCell &c = LastLightCell;
 	const float tx = fx - static_cast<float>(ix);
 	const float ty = fy - static_cast<float>(iy);
-	const float top = TileLight(ix, iy) + (TileLight(ix + 1, iy) - TileLight(ix, iy)) * tx;
-	const float bottom = TileLight(ix, iy + 1) + (TileLight(ix + 1, iy + 1) - TileLight(ix, iy + 1)) * tx;
+	const float top = c.l00 + (c.l10 - c.l00) * tx;
+	const float bottom = c.l01 + (c.l11 - c.l01) * tx;
 	return top + (bottom - top) * ty;
 }
 
@@ -993,7 +1031,7 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 				const int from = std::max(0, static_cast<int>(std::ceil(static_cast<float>(proj.horizon) + (EyeHeight - wallTop) * proj.focal / std::max(leave, 0.01F) - 0.5F)));
 				const int to = std::min(proj.height - 1, top - 1);
 				Sampler capSampler;
-				capSampler.Prepare(Textures.surfaces[static_cast<size_t>(CleanSurface::Pillar)], (d + leave) * 0.5F / proj.focal);
+				capSampler.Prepare(Textures.surfaces[static_cast<size_t>(CleanSurface::Stone)], (d + leave) * 0.5F / proj.focal);
 				for (int y = from; y <= to; y++) {
 					if (filled[y] != 0)
 						continue;
@@ -1046,6 +1084,29 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 		else
 			quads.push_back({ { P3 { x0, y0, z }, P3 { x0, y1, z }, P3 { x1, y1, z }, P3 { x1, y0, z } }, P3 { 0, 0, -1 }, { { { x0, y0 }, { x0, y1 }, { x1, y1 }, { x1, y0 } } }, surface });
 	};
+	// A square block around (cx, cy) widening from half width h0 at z0 to h1 at z1: its four sloping sides, its top if
+	// `top` and its underside. The texture runs along each side's horizontal axis and down from the top.
+	auto addFlare = [&](float cx, float cy, float h0, float h1, float z0, float z1, CleanSurface surface, bool top, float darkness) {
+		const float slope = (h1 - h0) / (z1 - z0);
+		const float len = std::hypot(1.0F, slope);
+		const float nz = -slope / len;
+		// Each side: its outward direction (x, y) and the corner it starts from, turning counter-clockwise.
+		for (const auto &[dx, dy] : { std::pair { 0.0F, 1.0F }, std::pair { 0.0F, -1.0F }, std::pair { 1.0F, 0.0F }, std::pair { -1.0F, 0.0F } }) {
+			const int axis = dx == 0 ? 0 : 1; // the horizontal axis along the side
+			// Along the side: from -h to +h (counter-clockwise seen from outside).
+			const float sx = -dy;
+			const float sy = dx;
+			auto corner = [&](float h, float along, float z) { return P3 { cx + dx * h + sx * along * h, cy + dy * h + sy * along * h, z }; };
+			const P3 p0 = corner(h0, -1, z0);
+			const P3 p1 = corner(h0, 1, z0);
+			const P3 p2 = corner(h1, 1, z1);
+			const P3 p3 = corner(h1, -1, z1);
+			quads.push_back({ { p0, p1, p2, p3 }, P3 { dx / len, dy / len, nz }, { { { p0[axis], -z0 }, { p1[axis], -z0 }, { p2[axis], -z1 }, { p3[axis], -z1 } } }, surface, darkness });
+		}
+		if (top)
+			addFlat(cx - h1, cy - h1, cx + h1, cy + h1, z1, true, surface);
+		addFlat(cx - h0, cy - h0, cx + h0, cy + h0, z0, false, surface);
+	};
 	// An axis-aligned box's four sides, its top if `top`, its underside if `under`.
 	auto addBox = [&](float cx, float cy, float half, float z0, float z1, CleanSurface surface, bool top, bool under) {
 		const float x0 = cx - half;
@@ -1062,39 +1123,56 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 			addFlat(x0, y0, x1, y1, z0, false, surface);
 	};
 
-	for (int y = 0; y < MAXDUNY; y++) {
-		for (int x = 0; x < MAXDUNX; x++) {
-			const CleanKind kind = Kinds[static_cast<size_t>(y) * MAXDUNX + x];
-			const float cx = static_cast<float>(x) + 0.5F;
-			const float cy = static_cast<float>(y) + 0.5F;
-			if (kind == CleanKind::Stand) {
+	for (int y = 0; y < MAXDUNY; y++)
+		for (int x = 0; x < MAXDUNX; x++)
+			if (Kinds[static_cast<size_t>(y) * MAXDUNX + x] == CleanKind::Stand)
 				stands.push_back({ x, y });
-			} else if (kind == CleanKind::Pillar) {
-				// A plinth, the shaft, and a capital under the ceiling.
-				addBox(cx, cy, style.plinth, 0.0F, style.base, CleanSurface::Pillar, true, false);
-				addBox(cx, cy, style.plinth, ceiling - style.capital, ceiling, CleanSurface::Pillar, false, true);
-				if (style.round) {
-					constexpr int Sides = 10;
-					constexpr float Pi = 3.14159265F;
-					float u = 0;
-					for (int i = 0; i < Sides; i++) {
-						const float a0 = 2.0F * Pi * static_cast<float>(i) / Sides;
-						const float a1 = 2.0F * Pi * static_cast<float>(i + 1) / Sides;
-						const float am = (a0 + a1) / 2.0F;
-						const P3 p0 { cx + style.shaft * std::cos(a0), cy + style.shaft * std::sin(a0), 0 };
-						const P3 p1 { cx + style.shaft * std::cos(a1), cy + style.shaft * std::sin(a1), 0 };
-						addWall(p0, p1, style.base, ceiling - style.capital, { std::cos(am), std::sin(am), 0 }, CleanSurface::Pillar, -1, u);
-						u += std::hypot(p1[0] - p0[0], p1[1] - p0[1]);
-					}
-				} else {
-					addBox(cx, cy, style.shaft, style.base, ceiling - style.capital, CleanSurface::Pillar, false, false);
-				}
-			}
+	// A pillar, given the sides arches rest on it (1 +x, 2 -x, 4 +y, 8 -y): a plinth, the shaft, and a capital under
+	// the ceiling, or a collar, a flared block and a pier up to the ceiling (but its sides inside an arch's masonry).
+	auto addPillar = [&](float cx, float cy, uint8_t arches) {
+		addBox(cx, cy, style.plinth, 0.0F, style.base, CleanSurface::Stone, true, false);
+		float shaftTop = ceiling - style.capital;
+		if (style.top > 0) {
+			shaftTop = style.blockFrom - style.collar;
+			addBox(cx, cy, style.plinth, shaftTop, style.blockFrom, CleanSurface::Stone, false, true);
+			const CleanSurface block = arches != 0 ? CleanSurface::Wall : CleanSurface::Stone;
+			addFlare(cx, cy, style.blockFoot, style.blockHalf, style.blockFrom, style.top, block, false, arches != 0 ? 0.0F : FlareDarkness);
+			const float h = style.blockHalf;
+			const CleanSurface pier = CleanSurface::Wall;
+			if ((arches & 4) == 0)
+				addWall({ cx - h, cy + h, 0 }, { cx + h, cy + h, 0 }, style.top, ceiling, { 0, 1, 0 }, pier, 0);
+			if ((arches & 8) == 0)
+				addWall({ cx + h, cy - h, 0 }, { cx - h, cy - h, 0 }, style.top, ceiling, { 0, -1, 0 }, pier, 0);
+			if ((arches & 1) == 0)
+				addWall({ cx + h, cy + h, 0 }, { cx + h, cy - h, 0 }, style.top, ceiling, { 1, 0, 0 }, pier, 1);
+			if ((arches & 2) == 0)
+				addWall({ cx - h, cy - h, 0 }, { cx - h, cy + h, 0 }, style.top, ceiling, { -1, 0, 0 }, pier, 1);
+		} else {
+			addBox(cx, cy, style.plinth, ceiling - style.capital, ceiling, CleanSurface::Stone, false, true);
 		}
-	}
+		if (style.round) {
+			constexpr int Sides = 10;
+			constexpr float Pi = 3.14159265F;
+			float u = 0;
+			for (int i = 0; i < Sides; i++) {
+				const float a0 = 2.0F * Pi * static_cast<float>(i) / Sides;
+				const float a1 = 2.0F * Pi * static_cast<float>(i + 1) / Sides;
+				const float am = (a0 + a1) / 2.0F;
+				const P3 p0 { cx + style.shaft * std::cos(a0), cy + style.shaft * std::sin(a0), 0 };
+				const P3 p1 { cx + style.shaft * std::cos(a1), cy + style.shaft * std::sin(a1), 0 };
+				addWall(p0, p1, style.base, shaftTop, { std::cos(am), std::sin(am), 0 }, CleanSurface::Pillar, -1, u);
+				u += std::hypot(p1[0] - p0[0], p1[1] - p0[1]);
+			}
+		} else {
+			addBox(cx, cy, style.shaft, style.base, shaftTop, CleanSurface::Pillar, false, false);
+		}
+	};
 
 	// Arches over walkable tiles (special arch cels): one per run of walkable tiles between two supports.
 	std::vector<uint8_t> done(static_cast<size_t>(MAXDUNX) * MAXDUNY, 0);
+	// Pillars with flared blocks that arches rest on: on which sides (1 +x, 2 -x, 4 +y, 8 -y).
+	std::vector<uint8_t> carrying(static_cast<size_t>(MAXDUNX) * MAXDUNY, 0);
+	int carriers = 0;
 	int arches = 0;
 	for (int y = 0; y < MAXDUNY; y++) {
 		for (int x = 0; x < MAXDUNX; x++) {
@@ -1149,21 +1227,32 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 			const CleanKind supportBefore = KindAt(first - step);
 			const CleanKind supportAfter = KindAt(last + step);
 			const auto isPost = [](CleanKind k) { return k == CleanKind::Pillar || k == CleanKind::Stand; };
-			// Along the axis: the opening runs between the supports' faces (a pillar's shaft, or a wall's face).
+			// A pillar's flared block, if it has one, carries the arch.
+			const auto isBlock = [&](CleanKind k) { return k == CleanKind::Pillar && style.top > 0; };
+			const auto postHalf = [&](CleanKind k) { return isBlock(k) ? style.blockHalf : style.shaft; };
+			const bool onBlock = isBlock(supportBefore) || isBlock(supportAfter);
+			// Along the axis: the opening runs between the supports' faces (a pillar's shaft or block, or a wall's face).
 			const float start = static_cast<float>(alongX ? first.x : first.y);
 			const float end = static_cast<float>(alongX ? last.x : last.y) + 1.0F;
-			const float a = isPost(supportBefore) ? start - 0.5F + style.shaft : start;
-			const float b = isPost(supportAfter) ? end + 0.5F - style.shaft : end;
-			// Across: as thick as the walls between two walls, else as the pillars.
+			const float a = isPost(supportBefore) ? start - 0.5F + postHalf(supportBefore) : start;
+			const float b = isPost(supportAfter) ? end + 0.5F - postHalf(supportAfter) : end;
+			// Across: as thick as the walls between two walls, else as the pillars (their blocks).
 			const float acrossMid = static_cast<float>(alongX ? y : x) + 0.5F;
-			const float half = isPost(supportBefore) || isPost(supportAfter) ? style.shaft : 0.5F;
+			const float half = onBlock ? style.blockHalf : (isPost(supportBefore) || isPost(supportAfter) ? style.shaft : 0.5F);
+			for (const auto &[support, side] : { std::pair { first - step, alongX ? 1 : 4 }, std::pair { last + step, alongX ? 2 : 8 } }) {
+				if (!isBlock(KindAt(support)))
+					continue;
+				uint8_t &sides = carrying[static_cast<size_t>(support.y) * MAXDUNX + support.x];
+				carriers += sides == 0 ? 1 : 0;
+				sides |= side;
+			}
 			const float c0 = acrossMid - half;
 			const float c1 = acrossMid + half;
 			const float radius = (b - a) / 2.0F;
 			const float middle = (a + b) / 2.0F;
-			// A half circle where it fits under the ceiling, else flattened to fit.
-			const float rise = std::min(radius, ceiling - ArchLintel - MinArchSpring);
-			const float spring = ceiling - ArchLintel - rise;
+			// A half circle where it fits under the ceiling, else flattened to fit; from the top of the pillars' blocks.
+			const float rise = std::min(radius, ceiling - ArchLintel - (onBlock ? style.top : MinArchSpring));
+			const float spring = onBlock ? style.top : ceiling - ArchLintel - rise;
 			auto archTop = [&](float s) {
 				const float q = std::clamp((s - middle) / radius, -1.0F, 1.0F);
 				return spring + rise * std::sqrt(1.0F - q * q);
@@ -1199,6 +1288,11 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 			arches++;
 		}
 	}
+	// The pillars, now that the arches resting on them are known.
+	for (int y = 0; y < MAXDUNY; y++)
+		for (int x = 0; x < MAXDUNX; x++)
+			if (Kinds[static_cast<size_t>(y) * MAXDUNX + x] == CleanKind::Pillar)
+				addPillar(static_cast<float>(x) + 0.5F, static_cast<float>(y) + 0.5F, carrying[static_cast<size_t>(y) * MAXDUNX + x]);
 	// Stairwells: steps inside the opening beside each stairs trigger, down into a pit or up into the dark.
 	for (const CleanStairs &stairs : Stairs) {
 		const Vec2 forward { static_cast<float>(stairs.tile.x - stairs.trigger.x), static_cast<float>(stairs.tile.y - stairs.trigger.y) };
@@ -1223,7 +1317,7 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 			const P3 t1 = at(in0, half, tread);
 			const P3 t2 = at(in1, half, tread);
 			const P3 t3 = at(in1, -half, tread);
-			quads.push_back({ { t0, t1, t2, t3 }, P3 { 0, 0, 1 }, { { { t0[0], t0[1] }, { t1[0], t1[1] }, { t2[0], t2[1] }, { t3[0], t3[1] } } }, CleanSurface::Pillar, darkness });
+			quads.push_back({ { t0, t1, t2, t3 }, P3 { 0, 0, 1 }, { { { t0[0], t0[1] }, { t1[0], t1[1] }, { t2[0], t2[1] }, { t3[0], t3[1] } } }, CleanSurface::Stone, darkness });
 		};
 		for (int k = 0; k < n; k++) {
 			const float in0 = static_cast<float>(k) / static_cast<float>(n);
@@ -1260,7 +1354,7 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 			holes.push_back({ std::min(c0[0], c1[0]), std::min(c0[1], c1[1]), std::max(c0[0], c1[0]), std::max(c0[1], c1[1]) });
 		}
 	}
-	LogInfo("fp: clean dungeon geometry: {} quads, {} arches, {} torch stands, {} stairs", quads.size(), arches, stands.size(), Stairs.size());
+	LogInfo("fp: clean dungeon geometry: {} quads, {} arches ({} pillars carrying them), {} torch stands, {} stairs", quads.size(), arches, carriers, stands.size(), Stairs.size());
 }
 
 #ifdef _DEBUG

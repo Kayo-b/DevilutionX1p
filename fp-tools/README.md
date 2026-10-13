@@ -5,8 +5,9 @@ how to build and run it, and how each kind of change was made, so you can carry 
 design decisions, see `PLAN.md`.
 
 **3D assets:** the meshes come from a fan rebuild of Diablo 1's assets (Nexus Mods, mod 67266), which may only be
-used in products given away free of charge. The clean dungeon's textures (`dungeontex.bin`) come from two CC0 packs.
-Source, terms and credits are in `assets/fp/CREDITS.md`; keep that file up to date when you add models or textures.
+used in products given away free of charge. The clean dungeon's textures (`dungeontex.bin`) are that release's dungeon
+kit's, under the same terms. Source, terms and credits are in `assets/fp/CREDITS.md`; keep that file up to date when
+you add models or textures.
 
 ---
 
@@ -37,7 +38,7 @@ Outside the repo (not committed: big source files):
 | `~/Downloads/devilutionX/` | game data: `DIABDAT.MPQ`, `hellfire.mpq`, `hf*.mpq` (override with `FP_DATA_DIR`) |
 | `~/.wine/drive_c/GOG Games/Daggerfall/arena2/` | Daggerfall's first-person weapon art (`WEAPON*.CIF`, `ART_PAL.COL`), read at run time from your own copy and **never committed or shipped** (override with `FP_DAGGERFALL_DIR`; empty: no weapon drawn) |
 | `~/projects/diablo-hellfire-fp/*.7z, *.rar` | fan-made 3D models (plaza, church, dungeon pieces, Adria's shack, hell stairs) from Nexus Mods 67266; **free, non-commercial use only**: see `assets/fp/CREDITS.md` |
-| `~/projects/diablo-hellfire-fp/research/{tristram_plaza,church,dungeon_pieces}/` | the extracted models the export scripts read (override with `FP_PLAZA_DIR`, `FP_CHURCH_DIR`, `FP_DUNGEON_PIECES_DIR`) |
+| `~/projects/diablo-hellfire-fp/research/{tristram_plaza,church,dungeon_pieces}/` | the extracted models and textures the export scripts read (override with `FP_PLAZA_DIR`, `FP_CHURCH_DIR`, `FP_DUNGEON_PIECES_DIR`; `export_dungeon_textures.py` extracts the kit textures it misses from `FP_DUNGEON_PIECES_ARCHIVE`, the `.7z`, with `7z`) |
 | `~/projects/diablo-hellfire-fp/` | the old working copy (`devilutionx/`, `devilutionx-buildings/`), kept as a backup; `PLAN.md` holds the original design decisions |
 
 All first-person code lives in `Source/fp/` of each checkout:
@@ -65,7 +66,7 @@ Assets the game loads come from `assets/fp/` and are listed in `CMake/Assets.cma
 | `housemesh.bin` | cottage triangle meshes | `fp-tools/export/export_meshes.py` |
 | `landmarks.bin` | every town building: the plaza's houses, smithy, tavern, fountain, and the church | `fp-tools/export/export_landmarks.py` |
 | `dungeonkit.bin` | dungeon kit pieces (the entrance stairs, the sarcophagus, the caves' door wood) | `fp-tools/export/export_kit.py` |
-| `dungeontex.bin` | the clean dungeon's texture sets (cathedral, catacombs, crypt; CC0, see `assets/fp/CREDITS.md`) | `fp-tools/export/export_dungeon_textures.py` |
+| `dungeontex.bin` | the clean dungeon's texture sets (cathedral, catacombs, crypt), made from the dungeon kit's textures | `fp-tools/export/export_dungeon_textures.py` |
 
 ---
 
@@ -226,18 +227,46 @@ geometry. The art is only read to tell what a tile is.
 - **Arches** over walkable tiles (Diablo's special arch cels, `dSpecial`): `BuildCleanGeometry` takes the run of
   walkable tiles under the arch between two supports (walls or pillars, along whichever axis is bounded) and builds a
   slab above a half circle (flattened where it would not fit, `ArchLintel` below the ceiling), as thick as the wall
-  between walls, as the pillars in an arcade.
-- **Pillars:** a plinth, a shaft and a capital, floor to ceiling (`PillarStyleFor`: square in the cathedral and the
-  crypt, ten-sided in the catacombs).
+  between walls, as the pillars in an arcade. In the cathedral an arch resting on a pillar springs from the top of its
+  flared block and is as thick as the block's top.
+- **Pillars** (`PillarStyleFor`, `addPillar`): in the catacombs (ten-sided) and the crypt (square), a plinth, a shaft
+  and a capital, floor to ceiling. In the cathedral, as its art draws them: a plinth, a round (ten-sided) shaft, a thin
+  collar, and a block flaring out on top, its sides straight (the art's are curved) from a little narrower than the
+  collar to nearly the tile's width, from 1.42 to 2.0 high; over it a square pier goes on up to the ceiling (its sides
+  but those inside an arch's masonry). The pillars are built after the arches: under an arch the block is of the
+  arch's bricks (`wall`, laid on in the same courses, so it reads as part of the arch), a lone pillar's is of `stone`;
+  the pier is of the bricks. The shaft wears the set's `pillar` texture, the plinth, the collar and the capital its
+  `stone`.
 - **Stairs:** the cathedral's are the kept models (5.6), re-textured with the clean stone (`RetextureClean`). Stairs
   without a model (the catacombs', the crypt's, quest entrances and exits: `IsUnmodelledStairs`) are a stairwell in the
   solid tile beside the trigger with the most solid tiles around it (`FindStairs`): a wide arched opening facing the
   trigger, steps inside going down into a pit (`StairsDrop`, the floor cut open over it) or up into the dark
   (`StairsRise`), darker towards the back. Aiming at it walks to the trigger.
-- **Textures** (`dungeontex.bin`, `fp-tools/export/export_dungeon_textures.py`; sources and CC0 licenses in
-  `assets/fp/CREDITS.md`): per tileset the slots `wall`, `base`, `top`, `floor`, `ceiling`, `pillar`, `arch`, `door`, at
-  128 texels per tile (a wall face is 128 texels wide, about 400 tall), powers of two, softened by a light blur. When a
-  level loads, `EnsureTextures` converts each to the level palette *once per light level*: the RGB darkened by the share
+- **Textures** (`dungeontex.bin`, `fp-tools/export/export_dungeon_textures.py`; terms and credits in
+  `assets/fp/CREDITS.md`): the Diablo 1 dungeon kit's textures (the Nexus rebuild's `Dungeon Pieces`), worn as the kit
+  wears them. The cathedral: its church pavement underfoot, its stone blocks on the walls (a coping of bigger blocks
+  under the ceiling, its pavement as blue-grey cobbles at the foot) and the ceiling, its Diablo marble on the pillar
+  shafts and its column-head stone on the pillars' plinths and capitals; the blocks, the ceiling
+  and the plain stone are painted in the pavement's own blue-greys (`colour_ramp`, `recolor`: each texel takes the
+  pavement's colour at the same relative darkness), as bright as the original's walls, and the marble in the colours
+  of the original's marble pillar shafts (`DIABLO_MARBLE`, `rank_recolor`: measured on six shafts of level 1 with
+  `dev.fp.dumpiso`; the marble's darkest third, its veins and what lies around them, takes their teal, the rest their
+  pinkish grey, each texel the colour at its rank of brightness); the catacombs: the blocks as grey rubble (a tone per
+  stone, the kit's rough yellow stone over them) on a teal-grey floor of its black marble; the crypt: the blocks at
+  twice the size in cool grey, pillars of its white marble, a red-brown floor of its yellow stone. Doors are its planks
+  with two iron bands of its steel. The blocks repeat once a tile as on the kit's own walls, and its normal and
+  specular maps are baked in as light from above (raised blocks, dark joints, like the original's pre-rendered art).
+  The other textures are graded to the colours of their tileset's original art (`match`: the art's mean and spread, measured on
+  the iso tiles of levels 1, 5 and 21 with `dev.fp.dumpiso`, in the art's hue). Slots per tileset: `wall`, `base`,
+  `top`, `floor`, `ceiling`, `pillar` (shafts), `stone` (plinths and capitals, the tops of low walls, the treads of
+  steps; falls back to `pillar`), `arch`, `door`, and for the sarcophagus `marble` (Screaming Brain Studios'
+  mottled white, Tiny Texture Pack 2's `Elements_11`, brought down to the original sarcophagus's grey a little darker:
+  `SARCOPHAGUS_GREY`, measured on its sprite; falls back to `pillar`) and `marble2` (the same of `Elements_12`), `lid` (its lid's bronze plate,
+  `SARCOPHAGUS_BRONZE`, with the kit's carving inset: the saint under an arch of its lid's relief map, lit as relief;
+  the plain margin round it, `LID_MARGIN`, colours the lid's edges) and `iron` (its handles, the kit's steel), and `ivory`, `ivory2` (the torch stands' bases: the same pack's worn `Stone_07` and `Stone_08` in a pale,
+  faintly warm grey, `IVORY`: lighter than the floor, not so bright it stands out). The pack is CC0, read from `FP_SBS_TEXTURES_DIR`. Each sarcophagus and
+  each stand wears one version or the other by its tile (`SecondVersionAt`; the second falls back to the first); 64 to 512 texels a side, powers of two, softened by a light blur.
+  When a level loads, `EnsureTextures` converts each to the level palette *once per light level*: the RGB darkened by the share
   of brightness the game's own light tables leave the colours its art uses (`LightFactors`), then the nearest allowed
   colour (`IsAllowedColor`: not the near-blacks 112-127, the UI ramps 128-159, white, nor the crypt's cycled lava 1-31).
   So walls fade smoothly, without the hue speckle of moving texels along palette ramps, and match the sprites' darkness.
@@ -375,11 +404,11 @@ All in `fp_buildings.cpp`, built per level in `BuildStructures`:
 | Structure | How it's made | Code |
 |---|---|---|
 | **Clean pillars, arches, stairwells** (cathedral, catacombs, crypt) | the quads of `BuildCleanGeometry` (fp_dungeon.cpp, 5.1), gathered per 4 x 4 tiles, textured with the set's surfaces by their texture coordinates | `BuildCleanStructures`, `MeshClean` shader |
-| **Torch stands** (the cathedral's) and **free-standing columns** (caves, hell) | shape read off the art row by row (the widest pixels give the size at each height; square or round) and turned into a lathe mesh with the art projected onto it, clamped at the ceiling. In the clean dungeon only the torch stands are built this way | `ColumnProfile`, `BuildColumn` |
+| **Torch stands** (the cathedral's) and **free-standing columns** (caves, hell) | shape read off the art row by row (the widest pixels give the size at each height; square or round) and turned into a lathe mesh with the art projected onto it, clamped at the ceiling. In the clean dungeon only the torch stands are built this way, and their base is a broad, flat square pyramid of the set's `ivory` instead of what the art reads as (the art's pale pyramid, read as round with the floor around it, came out a wide flared blob): `StandBaseHalf`, `StandBaseHeight`, its texture laid on from above, its sides turned from the art's light (from the left) a light level darker | `ColumnProfile`, `BuildColumn`, `AddCleanPyramid` |
 | **Arcade pillars** (caves, hell) | a shaft from the symmetric lower art; neighbouring pillars joined by **arch walls** wearing the filler wall pair, the painted arch stretched to spring from the capitals and span the gap (`FitArcade`), cut open and an underside added | `BuildArcadePillar`, `AddArcadeWall`, `MeshArcade` shader |
 | **Stairs down (cathedral)** | built by hand from measurements of the art; the floor is cut open over the pit (the exported kit currently has no down-stair mesh); worn with the clean stone by facing (`RetextureClean`) | `BuildStairsDown`, `FloorHoles` |
 | **Stairs up / main entrance (cathedral)** | the kit's `stairs_01` mesh fitted over the stair tiles, worn with the clean stone | `BuildStairsUp` |
-| **Sarcophagus** | a box measured from its first (closed) frame; while it opens, the kit's body plus its lid slid off, turned and tipped over the edge, following the object's animation frame (`sarcophagus_body`, `sarcophagus_lid`, exported in the closed sarcophagus's frame); `dev.fp.sarcophagus(false)` draws the plain box of its sprite instead | `BuildObjectBox` |
+| **Sarcophagus** | the kit's model over a box measured from its first (closed) frame; while it opens, the kit's body plus its lid slid off, turned and tipped over the edge, following the object's animation frame (`sarcophagus_body`, `sarcophagus_lid`, exported in the closed sarcophagus's frame). In the clean dungeon it wears the texture set's `marble` or `marble2` (mottled grey stone), `lid` (a bronze plate, the carving over its top, its edges plain: `LidPlainU`, `LidPlainV`) and `iron` handles, told apart by the triangle classes `export_kit.py` writes (`CLASSES`: 1 the lid, 2 iron; by shape, `sarcophagus_parts`: 3 its sunken panels, 4 its hollow), and shaded by a light from above and where less light gets in (`CleanSarcophagus`): its sunken panels and its hollow darker, a shadow under its rim and towards its foot (`RimShade`, `FootShade`: per-pixel ramps over height, `WorldTriangle::occlusion`); elsewhere its sprite's art. Every part of the model is closed and wound outward, so it is one-sided (`AddKitModelOriented` takes each face's normal from its winding), and it is drawn nearest first: close up, that halves the pixels it shades. `dev.fp.sarcophagus(false)` draws the plain box of its sprite instead | `BuildObjectBox` |
 
 To add a new piece from `Dungeon Pieces-67266-.7z`:
 1. Add its group name to `PIECES` in `fp-tools/export/export_kit.py` and run it; it writes `assets/fp/dungeonkit.bin`.
@@ -425,6 +454,8 @@ Texturing modes for structure faces (`AddStructureFace(..., mapping)`):
   explicitly.
 - Big meshes are drawn front to back, and the rasterizer fills row spans. If a new big model is slow, check the
   triangle count, culling, and whether its colours can be baked.
+- Kit models (`AddKitModelOriented`, the sarcophagus) are culled by their winding too: a new one must be closed and
+  wound the same way all over, or it shows holes (check with `FP_NO_CULL=1`).
 
 ---
 

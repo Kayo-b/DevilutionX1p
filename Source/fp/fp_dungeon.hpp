@@ -70,9 +70,16 @@ enum class CleanSurface : uint8_t {
 	Top,     // the band under the ceiling (falls back to Wall)
 	Floor,
 	Ceiling,
-	Pillar,
+	Pillar,  // a pillar's shaft
+	Stone,   // dressed stone: pillar plinths and capitals, the tops of low walls, the treads of steps (falls back to Pillar)
 	Arch,    // the inside of doorways and arches
 	Door,    // a door leaf: u, v 0..1 over the leaf
+	Marble,  // the sarcophagus's stone (falls back to Pillar)
+	Lid,     // the sarcophagus's lid: the carving at u, v 0..1 over its top (v along it), a plain margin round it for its edges (falls back to Marble)
+	Iron,    // iron fittings: the sarcophagus's handles
+	Ivory,   // the bases of the torch stands (falls back to Pillar)
+	MarbleAlt, // a second version of Marble, for every other sarcophagus (falls back to Marble)
+	IvoryAlt,  // a second version of Ivory, for every other torch stand (falls back to Ivory)
 	Count
 };
 
