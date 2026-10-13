@@ -9,6 +9,7 @@
  */
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -63,6 +64,13 @@ struct PieceTextures {
 	int faceYRows;
 	/** The whole iso column (ColumnWidth x ColumnHeight, row 0 = top), for drawing the piece as a billboard. */
 	std::vector<int16_t> column;
+	/**
+	 * Town pieces with tall art: the column without its ground (the pixels the floor alone draws), and the floor
+	 * without what stands on it. For the props rebuilt as meshes (trees, rocks, walls), whose ground stays below them.
+	 */
+	std::vector<int16_t> upright;
+	std::vector<int16_t> groundFloor;
+	bool uprightGroundRemoved = false; // see RemoveUprightGround
 	/** Whether the piece draws art above its floor diamond (a tree, house, rock) rather than a flat floor. */
 	bool hasTallArt;
 	/** Dense tall art (walls, roofs) that is better rebuilt as part of a 3D building than drawn as a flat billboard. */
@@ -87,6 +95,13 @@ void SetWallRecessesEnabled(bool enabled);
 
 /** @brief Textures for a dPiece id, built on first use and cached until the level changes. */
 [[nodiscard]] const PieceTextures &GetPieceTextures(uint16_t pieceId);
+
+/**
+ * @brief For a town piece whose floor alone draws nothing (a solid piece: a wall, a boulder), takes the ground out of
+ * its upright art by colour: the pixels of its ground diamond in colours the town's ground uses (`ground`). Once
+ * per piece and level.
+ */
+void RemoveUprightGround(uint16_t pieceId, const std::array<bool, 256> &ground);
 
 /** @brief A wall face to use where a piece has no usable art for the face being drawn. */
 [[nodiscard]] const std::vector<int16_t> &GetFallbackFace();

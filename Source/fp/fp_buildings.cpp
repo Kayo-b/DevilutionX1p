@@ -127,6 +127,8 @@ struct WorldTriangle {
 	V3 unitNormal { 0, 0, 0 };       // for the mip level: surfaces seen at a slant cover more texels per pixel
 	float arcSpring = 0; // MeshArcade: the arch wall's springing height
 	int16_t arch = -1;   // MeshArch: index into ArchSlabs
+	int16_t artX = -1;   // town prop hulls: the tile whose own column of art they are textured from
+	int16_t artY = -1;
 	uint8_t fallback;   // colour where the art has no pixel
 };
 
@@ -143,6 +145,7 @@ enum : uint8_t {
 	MeshFloorArt,   // the floor art under the point (what the art paints on the floor, raised into 3D: the stairs' fan)
 	MeshSolid,      // one colour (fallback) for the whole triangle, shaded by its darkness: the kit's ceiling vaults
 	MeshArch,       // an arch over a walkable tile (ArchSlabs[arch]): its face art, open where it has none; faceX: its underside or top
+	MeshFoliage,    // a town tree's leaves (TownProp::foliage[arch]): leaf cells in space, coloured from its art, open between
 };
 
 struct Building {
@@ -1916,6 +1919,8 @@ Candidate MakeCandidate(const std::vector<Point> &art, int artMinX, int artMaxX,
 	return result;
 }
 
+void BuildTownProps();
+
 void BuildAll()
 {
 	Buildings.clear();
@@ -2037,6 +2042,7 @@ void BuildAll()
 		FilterPatch(b.roofPatchVoxel, static_cast<int>(std::lround(voxel * 32.0F)), static_cast<int>(std::lround(voxel * 32.0F)));
 		BuildMesh(b);
 	}
+	BuildTownProps();
 }
 
 void EnsureBuilt()
@@ -4544,6 +4550,1038 @@ void DrawObjectBoxes(const Surface &out, const Projection &proj, std::vector<flo
 	}
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Town props: the trees, boulders, low walls, gravestones and grass tufts that the iso art paints on single tiles.
+// They were billboards of each tile's own column (cardboards turning with the camera); here they are meshes:
+// trees a trunk and a canopy, the rest the visual hull of their art seen from the iso camera, a few tenths of a
+// tile deep. Both are textured by projecting the art back on (the far sides mirror it), so from the iso camera's
+// side they look as they did.
+
+enum class PropKind : uint8_t {
+	None,     // not a prop (no tall art)
+	Tree,     // a trunk and a canopy
+	Rock,     // a boulder: the hull of its art, as deep as a boulder
+	Wall,     // a low stone wall: a wall's thickness deep
+	Slab,     // a gravestone: a slab's thickness deep
+	Grass,    // a tuft: shallow, see-through where the art is
+	Leftover, // a piece of the church's art that its model stands in for: hidden
+};
+
+/** @brief Visual hull depth behind the art's front (tiles). */
+float PropThickness(PropKind kind)
+{
+	switch (kind) {
+	case PropKind::Rock: return 1.1F;
+	case PropKind::Wall: return 0.36F;
+	case PropKind::Slab: return 0.14F;
+	default: return 0.3F;
+	}
+}
+
+/** @brief The hull's grid cells per tile side: thin things need finer cells. */
+int PropCells(PropKind kind)
+{
+	return kind == PropKind::Wall || kind == PropKind::Slab ? 6 : 4;
+}
+
+/** @brief Mean colour, opaque pixel count and height (rows above the column's bottom) of a piece's upright art. */
+struct ArtStats {
+	int opaque = 0;
+	int rows = 0;
+	float r = 0;
+	float g = 0;
+	float b = 0;
+};
+
+ArtStats UprightStats(const PieceTextures &t)
+{
+	ArtStats s;
+	const int rows = static_cast<int>(t.upright.size() / ColumnWidth);
+	int top = rows;
+	for (int i = 0; i < static_cast<int>(t.upright.size()); i++) {
+		if (t.upright[i] <= 0)
+			continue;
+		const SDL_Color c = logical_palette[t.upright[i]];
+		s.r += c.r;
+		s.g += c.g;
+		s.b += c.b;
+		s.opaque++;
+		top = std::min(top, i / ColumnWidth);
+	}
+	if (s.opaque > 0) {
+		s.r /= static_cast<float>(s.opaque);
+		s.g /= static_cast<float>(s.opaque);
+		s.b /= static_cast<float>(s.opaque);
+	}
+	s.rows = rows - top;
+	return s;
+}
+
+/**
+ * @brief What a town piece's tall art shows. The pieces of Diablo's town are known (dev.fp.props lists those still
+ * drawn as billboards, with their colours); any other piece is told by its art: autumn foliage is warm, stone
+ * blue-grey, and small art is a tuft.
+ */
+PropKind TownPieceKind(uint16_t piece)
+{
+	const PieceTextures &t = GetPieceTextures(piece);
+	if (!t.hasTallArt || t.upright.empty())
+		return PropKind::None;
+	if (piece >= 104 && piece <= 114)
+		return PropKind::Grass;
+	if ((piece >= 116 && piece <= 216) || (piece >= 357 && piece <= 363))
+		return PropKind::Tree;
+	if ((piece >= 220 && piece <= 232) || piece == 556 || piece == 558 || piece == 835 || piece == 836 || piece == 1166 || piece >= 1202)
+		return PropKind::Rock;
+	if ((piece >= 837 && piece <= 847) || (piece >= 998 && piece <= 1029))
+		return PropKind::Leftover;
+	if (piece >= 957 && piece <= 1050)
+		return PropKind::Slab;
+	if (piece >= 1051 && piece <= 1112)
+		return PropKind::Wall;
+	const ArtStats s = UprightStats(t);
+	if (s.opaque == 0)
+		return PropKind::None;
+	if (s.opaque < 160 && s.rows < 24)
+		return PropKind::Grass;
+	return s.r > s.b + 4.0F ? PropKind::Tree : PropKind::Rock;
+}
+
+/** Screen pixels per tile of depth along the iso view (moving (1, 1) / sqrt 2 changes x + y by sqrt 2). */
+constexpr float IsoDepthPixels = 16.0F * 1.41421356F;
+
+/** @brief A prop mesh drawn as one piece: a tree, or the hulls of the props in a block of tiles. */
+/** @brief A tree's leaves: the colours of its art's foliage, dark to light, and how much of its canopy they fill. */
+struct Foliage {
+	std::vector<uint8_t> ramp;
+	float coverage = 0.5F; // share of the leaf cells that hold a leaf
+	float low = 0;         // the canopy's bottom and 1 / its height, for its light (the top catches more of it)
+	float perHeight = 1;
+	int seed = 0;
+};
+
+struct TownProp {
+	Building art {};        // bounds and mesh; for trees also the canvas the art is projected from
+	PropKind kind = PropKind::None;
+	bool ownCanvas = false; // trees: art.canvas; hulls: each triangle's tile column (WorldTriangle::artX, artY)
+	Vec2 middle { 0, 0 };   // for culling by distance
+	float radius = 0;
+	std::vector<Foliage> foliage; // trees: per tree (MeshFoliage triangles' WorldTriangle::arch)
+	std::vector<WorldTriangle> farMesh; // fewer triangles, for far away (PropFarDistance)
+};
+
+/** Props farther than this (tiles) are drawn from their far mesh: coarser hulls, trees without their inner leaves. */
+constexpr float PropFarDistance = 11.0F;
+/** Far trees show only the near side of their canopy: more of its leaf cells filled, so they look as full. */
+constexpr float FarFoliageBoost = 1.6F;
+
+std::vector<TownProp> TownProps;
+
+/** @brief A piece's hull in the tile's own frame (x, y in 0..1), with the point its far sides mirror through. */
+struct PropHull {
+	std::vector<WorldTriangle> triangles;
+	Vec2 middle { 0.5F, 0.5F };
+	float top = 0;
+};
+/** @brief A piece's hulls: for near, and coarser for far away. */
+struct PropHullPair {
+	PropHull near;
+	PropHull far;
+};
+std::unordered_map<uint16_t, PropHullPair> PropHulls;
+
+/** @brief Art pixel of a tile's upright column at the iso screen position of a world point (NoPixel if none). */
+int16_t ColumnArtAt(const PieceTextures &t, Point tile, float wx, float wy, float wz)
+{
+	const int rows = static_cast<int>(t.upright.size() / ColumnWidth);
+	const int cx = static_cast<int>(std::floor((wx - wy) * 32.0F)) - (tile.x - tile.y) * 32 + 32;
+	const int cy = static_cast<int>(std::floor((wx + wy) * 16.0F - wz * HeightPixels)) - (tile.x + tile.y + 2) * 16 + rows - 1;
+	if (cx < 0 || cy < 0 || cx >= ColumnWidth || cy >= rows)
+		return NoPixel;
+	return t.upright[static_cast<size_t>(cy) * ColumnWidth + cx];
+}
+
+/** @brief The commonest colour of some art pixels (0 if none). */
+uint8_t CommonestColor(const std::vector<int16_t> &pixels)
+{
+	std::array<int, 256> counts {};
+	for (const int16_t p : pixels)
+		if (p > 0)
+			counts[p]++;
+	const auto best = std::max_element(counts.begin() + 1, counts.end());
+	return *best > 0 ? static_cast<uint8_t>(best - counts.begin()) : uint8_t { 0 };
+}
+
+/**
+ * @brief The visual hull of a piece's upright art, `kind`'s thickness deep, in the tile's own frame.
+ *
+ * The tile is cut into cells. A cell is as tall as its vertical stands inside the art: from the cell's point on
+ * the ground up the column of art pixels above it in iso (gaps of a pixel or two bridged). The lowest art pixel in
+ * each screen column is the prop's front, where it meets the ground; cells farther behind it than the thickness
+ * stay empty, so a wall or a gravestone does not grow into a ramp behind it. The corners take the mean height of
+ * the cells standing around them, and the sides go straight down to the ground.
+ */
+/** @brief The hull's cell heights (n x n, row j = v): see BuildPropHull. */
+std::vector<float> PropHullHeights(const PieceTextures &t, float thickness, int n)
+{
+	std::vector<float> height(static_cast<size_t>(n) * n, 0.0F);
+	const int rows = static_cast<int>(t.upright.size() / ColumnWidth);
+	if (rows == 0)
+		return height;
+	auto opaque = [&](int cx, int cy) { return cx >= 0 && cy >= 0 && cx < ColumnWidth && cy < rows && t.upright[static_cast<size_t>(cy) * ColumnWidth + cx] > 0; };
+	std::array<int, ColumnWidth> low;
+	for (int cx = 0; cx < ColumnWidth; cx++) {
+		low[cx] = -1;
+		for (int cy = rows - 1; cy >= 0 && low[cx] < 0; cy--)
+			if (opaque(cx, cy))
+				low[cx] = cy;
+	}
+	for (int j = 0; j < n; j++) {
+		for (int i = 0; i < n; i++) {
+			const float u = (static_cast<float>(i) + 0.5F) / static_cast<float>(n);
+			const float v = (static_cast<float>(j) + 0.5F) / static_cast<float>(n);
+			const int cx = std::clamp(static_cast<int>(std::floor((u - v) * 32.0F)) + 32, 0, ColumnWidth - 1);
+			// The cell's ground point in the column: tile corner (0, 0) is the diamond's top vertex, 32 rows above its bottom.
+			const float base = (u + v - 2.0F) * 16.0F + static_cast<float>(rows - 1);
+			if (low[cx] < 0 || base > static_cast<float>(low[cx]) + 3.0F)
+				continue; // in front of the art: open ground
+			if ((static_cast<float>(low[cx]) - base) / IsoDepthPixels > thickness)
+				continue; // too far behind the art's front
+			int top = -1;
+			int gap = 0;
+			for (int cy = std::min(static_cast<int>(base), low[cx]); cy >= 0; cy--) {
+				if (opaque(cx, cy) || opaque(cx - 1, cy) || opaque(cx + 1, cy)) {
+					top = cy;
+					gap = 0;
+				} else if (++gap > 2) {
+					break;
+				}
+			}
+			const float h = top >= 0 ? (base - static_cast<float>(top)) / HeightPixels : 0.0F;
+			if (h >= 0.04F)
+				height[static_cast<size_t>(j) * n + i] = h;
+		}
+	}
+	return height;
+}
+
+PropHull BuildPropHull(uint16_t piece, PropKind kind, int n)
+{
+	const PieceTextures &t = GetPieceTextures(piece);
+	PropHull hull;
+	const std::vector<float> height = PropHullHeights(t, PropThickness(kind), n);
+	float sumX = 0;
+	float sumY = 0;
+	int standing = 0;
+	for (int j = 0; j < n; j++)
+		for (int i = 0; i < n; i++)
+			if (height[static_cast<size_t>(j) * n + i] > 0) {
+				sumX += (static_cast<float>(i) + 0.5F) / static_cast<float>(n);
+				sumY += (static_cast<float>(j) + 0.5F) / static_cast<float>(n);
+				standing++;
+			}
+
+	if (standing == 0)
+		return hull;
+	hull.middle = { sumX / static_cast<float>(standing), sumY / static_cast<float>(standing) };
+	auto cellHeight = [&](int i, int j) { return i < 0 || j < 0 || i >= n || j >= n ? 0.0F : height[static_cast<size_t>(j) * n + i]; };
+	auto cornerHeight = [&](int i, int j) {
+		float sum = 0;
+		int count = 0;
+		for (int dj = -1; dj <= 0; dj++)
+			for (int di = -1; di <= 0; di++)
+				if (const float h = cellHeight(i + di, j + dj); h > 0) {
+					sum += h;
+					count++;
+				}
+		return count > 0 ? sum / static_cast<float>(count) : 0.0F;
+	};
+	// Its own colour where the art has none (the sides it does not show).
+	std::vector<int16_t> pixels(t.upright.begin(), t.upright.end());
+	const uint8_t fallback = PatchColor(static_cast<int16_t>(std::max<uint8_t>(CommonestColor(pixels), 1)));
+	const uint8_t mapping = kind == PropKind::Grass ? MeshProjectiveCut : MeshProjective;
+	Building mesh {};
+	const float cell = 1.0F / static_cast<float>(n);
+	for (int j = 0; j < n; j++) {
+		for (int i = 0; i < n; i++) {
+			if (cellHeight(i, j) <= 0)
+				continue;
+			const float x0 = static_cast<float>(i) * cell;
+			const float y0 = static_cast<float>(j) * cell;
+			const float x1 = x0 + cell;
+			const float y1 = y0 + cell;
+			const V3 a { x0, y0, cornerHeight(i, j) };
+			const V3 b { x1, y0, cornerHeight(i + 1, j) };
+			const V3 c { x1, y1, cornerHeight(i + 1, j + 1) };
+			const V3 d { x0, y1, cornerHeight(i, j + 1) };
+			hull.top = std::max({ hull.top, a.z, b.z, c.z, d.z });
+			auto topFace = [&](V3 p, V3 q, V3 r) {
+				const V3 e1 { q.x - p.x, q.y - p.y, q.z - p.z };
+				const V3 e2 { r.x - p.x, r.y - p.y, r.z - p.z };
+				V3 normal { e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x };
+				if (normal.z < 0)
+					normal = { -normal.x, -normal.y, -normal.z };
+				AddStructureFace(mesh, { p, q, r }, normal, hull.middle, mapping);
+			};
+			// Split along the diagonal whose ends differ less, which keeps the top nearer flat.
+			if (std::abs(a.z - c.z) <= std::abs(b.z - d.z)) {
+				topFace(a, b, c);
+				topFace(a, c, d);
+			} else {
+				topFace(a, b, d);
+				topFace(b, c, d);
+			}
+			// Sides where the next cell is open ground.
+			auto side = [&](V3 p, V3 q, V3 normal) {
+				if (p.z <= 0 && q.z <= 0)
+					return;
+				AddStructureFace(mesh, { V3 { p.x, p.y, 0 }, V3 { q.x, q.y, 0 }, q, p }, normal, hull.middle, mapping);
+			};
+			if (cellHeight(i, j - 1) <= 0)
+				side(a, b, { 0, -1, 0 });
+			if (cellHeight(i + 1, j) <= 0)
+				side(b, c, { 1, 0, 0 });
+			if (cellHeight(i, j + 1) <= 0)
+				side(c, d, { 0, 1, 0 });
+			if (cellHeight(i - 1, j) <= 0)
+				side(d, a, { -1, 0, 0 });
+		}
+	}
+	for (WorldTriangle &tri : mesh.mesh)
+		tri.fallback = fallback;
+	hull.triangles = std::move(mesh.mesh);
+	return hull;
+}
+
+/** @brief Stitches the upright art of some tiles in iso, nearer tiles over farther ones, as the game draws them. */
+void BuildUprightCanvas(Building &b, const std::vector<Point> &tiles)
+{
+	BuildCanvas(b, tiles, {});
+	std::fill(b.canvas.begin(), b.canvas.end(), int16_t { -1 });
+	std::vector<Point> sorted = tiles;
+	std::sort(sorted.begin(), sorted.end(), [](Point p, Point q) { return p.x + p.y != q.x + q.y ? p.x + p.y < q.x + q.y : p.x < q.x; });
+	for (const Point t : sorted) {
+		const PieceTextures &textures = GetPieceTextures(dPiece[t.x][t.y]);
+		const int rows = static_cast<int>(textures.upright.size() / ColumnWidth);
+		const int left = (t.x - t.y) * 32 - 32 - b.originX;
+		const int top = (t.x + t.y + 2) * 16 - (rows - 1) - b.originY;
+		for (int cy = 0; cy < rows; cy++) {
+			for (int cx = 0; cx < ColumnWidth; cx++) {
+				const int16_t pixel = textures.upright[static_cast<size_t>(cy) * ColumnWidth + cx];
+				if (pixel <= 0)
+					continue;
+				const int x = left + cx;
+				const int y = top + cy;
+				if (x >= 0 && y >= 0 && x < b.canvasWidth && y < b.canvasHeight)
+					b.canvas[static_cast<size_t>(y) * b.canvasWidth + x] = pixel;
+			}
+		}
+	}
+	b.fitCanvas.clear();
+}
+
+/** @brief A small hash in 0..1 of some integers, for the canopies' lumps. */
+float PropNoise(int a, int b, int c)
+{
+	uint32_t h = static_cast<uint32_t>(a) * 73856093U ^ static_cast<uint32_t>(b) * 19349663U ^ static_cast<uint32_t>(c) * 83492791U;
+	h ^= h >> 13;
+	h *= 0x5bd1e995U;
+	h ^= h >> 15;
+	return static_cast<float>(h & 0xFFFF) / 65535.0F;
+}
+
+constexpr float PropPi = 3.14159265F;
+/** Canopy tessellation: around and from top to bottom. */
+constexpr int CanopySlices = 9;
+constexpr int CanopyStacks = 6;
+constexpr int TrunkSides = 7;
+
+/** Lowest a canopy hangs (tiles): above the eye, so one walks under the trees instead of through their leaves. */
+constexpr float CanopyMinBottom = 1.75F;
+/** Size of a leaf cell (tiles): about an art pixel. */
+constexpr float LeafCell = 0.026F;
+
+/** @brief Perceived brightness of a palette colour. */
+float ColorLuma(uint8_t color)
+{
+	const SDL_Color c = logical_palette[color];
+	return 0.3F * c.r + 0.59F * c.g + 0.11F * c.b;
+}
+
+/**
+ * @brief Adds a closed lumpy ellipsoid of leaves (both of its sides drawn, so the far side shows through the gaps).
+ * @param seed varies the lumps from tree to tree
+ */
+void AddCanopyBlob(Building &b, V3 middle, float radius, float half, int slices, int stacks, int seed, int16_t foliage, bool twoSided = true)
+{
+	auto point = [&](int slice, int stack) {
+		const float around = 2.0F * PropPi * static_cast<float>(slice % slices) / static_cast<float>(slices);
+		const float down = PropPi * static_cast<float>(stack) / static_cast<float>(stacks);
+		const bool pole = stack == 0 || stack == stacks;
+		const float lump = pole ? 1.0F : 0.82F + 0.36F * PropNoise(slice % slices, stack, seed);
+		const float lift = pole ? 1.0F : 0.88F + 0.24F * PropNoise(stack, slice % slices, seed + 7);
+		return V3 { middle.x + std::cos(around) * std::sin(down) * radius * lump, middle.y + std::sin(around) * std::sin(down) * radius * lump,
+			middle.z + std::cos(down) * half * lift };
+	};
+	const size_t first = b.mesh.size();
+	const Vec2 centre { middle.x, middle.y };
+	for (int stack = 0; stack < stacks; stack++) {
+		for (int slice = 0; slice < slices; slice++) {
+			const V3 a = point(slice, stack);
+			const V3 c = point(slice + 1, stack);
+			const V3 d = point(slice + 1, stack + 1);
+			const V3 e = point(slice, stack + 1);
+			const V3 out { (a.x + c.x + d.x + e.x) / 4.0F - middle.x, (a.y + c.y + d.y + e.y) / 4.0F - middle.y, (a.z + c.z + d.z + e.z) / 4.0F - middle.z };
+			if (stack == 0)
+				AddStructureFace(b, { a, d, e }, out, centre, MeshFoliage);
+			else if (stack == stacks - 1)
+				AddStructureFace(b, { a, c, d }, out, centre, MeshFoliage);
+			else
+				AddStructureFace(b, { a, c, d, e }, out, centre, MeshFoliage);
+		}
+	}
+	for (size_t i = first; i < b.mesh.size(); i++) {
+		b.mesh[i].cull = !twoSided;
+		b.mesh[i].arch = foliage;
+		// The leaves facing the sky are lighter (FoliageColor): their share, kept in a field leaves have no other use for.
+		b.mesh[i].slopeScale = 0.25F * std::clamp(0.5F + 0.5F * b.mesh[i].normal.z, 0.0F, 1.0F);
+	}
+}
+
+/** @brief Adds a tapered prism (a trunk or a branch) from `from` to `to`, `sides` sided. */
+void AddLimb(Building &b, V3 from, V3 to, float r0, float r1, int sides, uint8_t mapping, uint8_t color)
+{
+	V3 axis { to.x - from.x, to.y - from.y, to.z - from.z };
+	const float length = std::sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
+	if (length < 1e-4F)
+		return;
+	axis = { axis.x / length, axis.y / length, axis.z / length };
+	// Two directions across the axis.
+	V3 u = std::abs(axis.z) < 0.9F ? V3 { -axis.y, axis.x, 0 } : V3 { 1, 0, 0 };
+	float ul = std::sqrt(u.x * u.x + u.y * u.y + u.z * u.z);
+	u = { u.x / ul, u.y / ul, u.z / ul };
+	const V3 v { axis.y * u.z - axis.z * u.y, axis.z * u.x - axis.x * u.z, axis.x * u.y - axis.y * u.x };
+	const size_t first = b.mesh.size();
+	for (int side = 0; side < sides; side++) {
+		const float a0 = 2.0F * PropPi * static_cast<float>(side) / static_cast<float>(sides);
+		const float a1 = 2.0F * PropPi * static_cast<float>(side + 1) / static_cast<float>(sides);
+		auto ring = [&](V3 c, float r, float a) {
+			return V3 { c.x + (u.x * std::cos(a) + v.x * std::sin(a)) * r, c.y + (u.y * std::cos(a) + v.y * std::sin(a)) * r, c.z + (u.z * std::cos(a) + v.z * std::sin(a)) * r };
+		};
+		const float am = (a0 + a1) / 2.0F;
+		const V3 normal { u.x * std::cos(am) + v.x * std::sin(am), u.y * std::cos(am) + v.y * std::sin(am), u.z * std::cos(am) + v.z * std::sin(am) };
+		AddStructureFace(b, { ring(from, r0, a0), ring(from, r0, a1), ring(to, r1, a1), ring(to, r1, a0) }, normal, { from.x, from.y }, mapping);
+	}
+	for (size_t i = first; i < b.mesh.size(); i++)
+		b.mesh[i].fallback = color;
+}
+
+/**
+ * @brief Builds the trees of a group of neighbouring tree tiles. Each tile whose art comes down to the middle of its
+ * own ground diamond holds a trunk's foot; the group's other art is the canopy of the nearest trunk. A tree is a
+ * tapered trunk with a few branches up into a canopy of three lumpy ellipsoids, sized so that its iso picture
+ * covers the art's and raised above the eye if it hangs lower. The canopy is leaves in space (MeshFoliage): cells
+ * about an art pixel big, as many of them filled as the art's canopy is, in the colours of the art's foliage
+ * (lighter towards the top), the rest open, so the far side and the branches show through as in a real tree. The
+ * trunk wears its own art, projected.
+ */
+void BuildTrees(const std::vector<Point> &tiles, int &treeCount)
+{
+	TownProp prop;
+	prop.kind = PropKind::Tree;
+	prop.ownCanvas = true;
+	BuildUprightCanvas(prop.art, tiles);
+	Building &b = prop.art;
+	if (b.canvas.empty())
+		return;
+	struct Trunk {
+		float sx; // iso screen position of its foot
+		float sy;
+	};
+	std::vector<Trunk> trunks;
+	for (const Point t : tiles) {
+		const PieceTextures &textures = GetPieceTextures(dPiece[t.x][t.y]);
+		const int rows = static_cast<int>(textures.upright.size() / ColumnWidth);
+		int count = 0;
+		int lowest = -1;
+		for (int cy = rows - 26; cy < rows - 4; cy++)
+			for (int cx = 20; cx < 44; cx++)
+				if (textures.upright[static_cast<size_t>(cy) * ColumnWidth + cx] > 0) {
+					count++;
+					lowest = std::max(lowest, cy);
+				}
+		if (count < 10)
+			continue;
+		float sumX = 0;
+		int n = 0;
+		for (int cy = lowest - 3; cy <= lowest; cy++)
+			for (int cx = 20; cx < 44; cx++)
+				if (textures.upright[static_cast<size_t>(cy) * ColumnWidth + cx] > 0) {
+					sumX += static_cast<float>(cx);
+					n++;
+				}
+		const float sx = static_cast<float>((t.x - t.y) * 32 - 32) + sumX / static_cast<float>(std::max(n, 1));
+		const float sy = static_cast<float>((t.x + t.y + 2) * 16 + lowest - (rows - 1));
+		bool near = false;
+		for (const Trunk &other : trunks)
+			near = near || (std::abs(other.sx - sx) < 20.0F && std::abs(other.sy - sy) < 14.0F);
+		if (!near)
+			trunks.push_back({ sx, sy });
+	}
+	if (trunks.empty()) {
+		// No foot in the group's own tiles (it stands on a building's): the lowest art.
+		int lowestY = -1;
+		int atX = 0;
+		for (int y = 0; y < b.canvasHeight; y++)
+			for (int x = 0; x < b.canvasWidth; x++)
+				if (b.canvas[static_cast<size_t>(y) * b.canvasWidth + x] > 0 && y > lowestY) {
+					lowestY = y;
+					atX = x;
+				}
+		if (lowestY < 0)
+			return;
+		trunks.push_back({ static_cast<float>(atX + b.originX), static_cast<float>(lowestY + b.originY) });
+	}
+	// The canopy pixels of each trunk: the art above its foot, nearest it across the screen.
+	std::vector<std::vector<std::pair<int, int>>> canopy(trunks.size());
+	for (int y = 0; y < b.canvasHeight; y++) {
+		for (int x = 0; x < b.canvasWidth; x++) {
+			if (b.canvas[static_cast<size_t>(y) * b.canvasWidth + x] <= 0)
+				continue;
+			const float sx = static_cast<float>(x + b.originX);
+			const float sy = static_cast<float>(y + b.originY);
+			size_t best = 0;
+			float bestDistance = std::numeric_limits<float>::max();
+			for (size_t k = 0; k < trunks.size(); k++) {
+				const float d = std::abs(sx - trunks[k].sx) + 0.25F * std::abs(sy - (trunks[k].sy - 70.0F));
+				if (d < bestDistance) {
+					bestDistance = d;
+					best = k;
+				}
+			}
+			if (sy < trunks[best].sy - 18.0F)
+				canopy[best].emplace_back(x, y);
+		}
+	}
+	float minX = std::numeric_limits<float>::max();
+	float maxX = std::numeric_limits<float>::lowest();
+	float minY = minX;
+	float maxY = maxX;
+	float highest = 0;
+	for (size_t k = 0; k < trunks.size(); k++) {
+		const Trunk &trunk = trunks[k];
+		const Vec2 foot { (trunk.sy / 16.0F + trunk.sx / 32.0F) / 2.0F, (trunk.sy / 16.0F - trunk.sx / 32.0F) / 2.0F };
+		// Foliage is the lighter art; the dark strokes are the trunk and branches.
+		std::vector<int> xs;
+		std::vector<int> ys;
+		std::array<int, 256> leafCounts {};
+		int leaves = 0;
+		for (const auto &[x, y] : canopy[k]) {
+			xs.push_back(x + b.originX);
+			ys.push_back(y + b.originY);
+			const uint8_t color = PatchColor(b.canvas[static_cast<size_t>(y) * b.canvasWidth + x]);
+			if (ColorLuma(color) >= 38.0F) {
+				leafCounts[color]++;
+				leaves++;
+			}
+		}
+		float radius = 0.6F;
+		float half = 0.6F;
+		float middleZ = 2.0F;
+		float offset = 0;
+		float coverage = 0.3F;
+		if (xs.size() >= 40) {
+			std::sort(xs.begin(), xs.end());
+			std::sort(ys.begin(), ys.end());
+			auto at = [](const std::vector<int> &v, float q) { return static_cast<float>(v[static_cast<size_t>(q * static_cast<float>(v.size() - 1))]); };
+			const float x0 = at(xs, 0.03F);
+			const float x1 = at(xs, 0.97F);
+			const float y0 = at(ys, 0.02F);
+			const float y1 = at(ys, 0.98F);
+			radius = std::clamp((x1 - x0) / 2.0F / SpritePixelsPerTileX * 1.05F, 0.3F, 2.2F);
+			const float halfPixels = (y1 - y0) / 2.0F;
+			const float depthPart = IsoDepthPixels * radius;
+			half = std::sqrt(std::max(halfPixels * halfPixels - depthPart * depthPart, 0.16F * halfPixels * halfPixels)) / HeightPixels * 1.05F;
+			middleZ = (trunk.sy - (y0 + y1) / 2.0F) / HeightPixels;
+			offset = ((x0 + x1) / 2.0F - trunk.sx) / SpritePixelsPerTileX;
+			// The art's leaves over the area of its canopy's outline (an ellipse in the picture).
+			const float area = PropPi * (x1 - x0) / 2.0F * halfPixels;
+			coverage = std::clamp(static_cast<float>(leaves) / std::max(area, 1.0F) * 1.15F, 0.12F, 0.8F);
+		}
+		middleZ = std::max(middleZ, CanopyMinBottom + half);
+		const V3 middle { foot.x + offset * 0.7071F, foot.y - offset * 0.7071F, middleZ };
+		// The leaves' colours: those the art's foliage uses often, dark to light.
+		Foliage foliage;
+		for (int c = 1; c < 256; c++)
+			if (leafCounts[c] * 100 >= std::max(leaves, 1))
+				foliage.ramp.push_back(static_cast<uint8_t>(c));
+		std::sort(foliage.ramp.begin(), foliage.ramp.end(), [](uint8_t p, uint8_t q) { return ColorLuma(p) < ColorLuma(q); });
+		// The trunk: as wide as the art's, a little above the foot; its colour, the art's commonest there.
+		int width = 0;
+		std::vector<int16_t> trunkPixels;
+		{
+			const int row = static_cast<int>(trunk.sy) - 8 - b.originY;
+			const int column = static_cast<int>(trunk.sx) - b.originX;
+			if (row >= 0 && row < b.canvasHeight) {
+				int first = column;
+				int last = column;
+				while (first - 1 >= 0 && column - first < 10 && b.canvas[static_cast<size_t>(row) * b.canvasWidth + first - 1] > 0)
+					first--;
+				while (last + 1 < b.canvasWidth && last - column < 10 && b.canvas[static_cast<size_t>(row) * b.canvasWidth + last + 1] > 0)
+					last++;
+				width = last - first + 1;
+			}
+			for (int y = static_cast<int>(trunk.sy) - 30 - b.originY; y <= static_cast<int>(trunk.sy) - b.originY; y++)
+				for (int x = column - 3; x <= column + 3; x++)
+					if (x >= 0 && y >= 0 && x < b.canvasWidth && y < b.canvasHeight)
+						trunkPixels.push_back(b.canvas[static_cast<size_t>(y) * b.canvasWidth + x]);
+		}
+		const float trunkRadius = std::clamp(static_cast<float>(width) / 2.0F / SpritePixelsPerTileX, 0.04F, 0.1F);
+		// The wood: the commonest of the dark colours there (the light ones are leaves and ground).
+		std::erase_if(trunkPixels, [](int16_t p) { return p <= 0 || ColorLuma(PatchColor(p)) >= 38.0F; });
+		const uint8_t trunkColor = PatchColor(static_cast<int16_t>(std::max<uint8_t>(CommonestColor(trunkPixels), 1)));
+		if (foliage.ramp.empty())
+			foliage.ramp.push_back(trunkColor);
+		foliage.coverage = coverage;
+		foliage.low = middleZ - half;
+		foliage.perHeight = 1.0F / std::max(2.0F * half, 0.1F);
+		foliage.seed = treeCount * 977;
+		const int16_t foliageIndex = static_cast<int16_t>(prop.foliage.size());
+		prop.foliage.push_back(std::move(foliage));
+		const float trunkTop = middleZ + half * 0.3F;
+		AddLimb(b, { foot.x, foot.y, 0 }, { middle.x, middle.y, trunkTop }, trunkRadius, trunkRadius * 0.5F, TrunkSides, MeshSolid, trunkColor);
+		{
+			// Far away: the trunk and the near side of the canopy.
+			Building far {};
+			AddLimb(far, { foot.x, foot.y, 0 }, { middle.x, middle.y, trunkTop }, trunkRadius, trunkRadius * 0.5F, 5, MeshSolid, trunkColor);
+			AddCanopyBlob(far, middle, radius, half, 8, 5, treeCount, foliageIndex, false);
+			prop.farMesh.insert(prop.farMesh.end(), far.mesh.begin(), far.mesh.end());
+		}
+		// Branches: from up the trunk out into the canopy.
+		const int branches = 3 + static_cast<int>(PropNoise(treeCount, 3, 11) * 2.0F);
+		for (int i = 0; i < branches; i++) {
+			const float t = 0.45F + 0.25F * PropNoise(treeCount, i, 1);
+			const V3 from { foot.x + (middle.x - foot.x) * t, foot.y + (middle.y - foot.y) * t, trunkTop * t };
+			const float around = 2.0F * PropPi * (static_cast<float>(i) + 0.4F * PropNoise(treeCount, i, 2)) / static_cast<float>(branches);
+			const float reach = radius * (0.5F + 0.3F * PropNoise(treeCount, i, 3));
+			const V3 to { middle.x + std::cos(around) * reach, middle.y + std::sin(around) * reach, middleZ + half * (0.1F + 0.4F * PropNoise(treeCount, i, 4)) };
+			AddLimb(b, from, to, trunkRadius * 0.5F, trunkRadius * 0.2F, 4, MeshSolid, trunkColor);
+		}
+		// The canopy: a big lumpy ellipsoid, and a smaller one inside it so it is not hollow.
+		AddCanopyBlob(b, middle, radius, half, CanopySlices, CanopyStacks, treeCount, foliageIndex, false);
+		{
+			const float around = 2.0F * PropPi * PropNoise(treeCount, 1, 5);
+			const V3 inner { middle.x + std::cos(around) * radius * 0.2F, middle.y + std::sin(around) * radius * 0.2F, middleZ - half * 0.1F };
+			AddCanopyBlob(b, inner, radius * 0.62F, half * 0.7F, 7, 5, treeCount * 3 + 1, foliageIndex, false);
+		}
+		minX = std::min({ minX, middle.x - radius * 1.2F, foot.x - trunkRadius });
+		maxX = std::max({ maxX, middle.x + radius * 1.2F, foot.x + trunkRadius });
+		minY = std::min({ minY, middle.y - radius * 1.2F, foot.y - trunkRadius });
+		maxY = std::max({ maxY, middle.y + radius * 1.2F, foot.y + trunkRadius });
+		highest = std::max(highest, middleZ + half * 1.15F);
+#ifdef _DEBUG
+		if (std::getenv("FP_LOG_TREES") != nullptr)
+			LogInfo("fp: tree {} foot {:.2f},{:.2f} canopy {:.2f},{:.2f} r {:.2f} z {:.2f} +- {:.2f} trunk {:.3f} leaves {:.2f} in {} colours", treeCount, foot.x, foot.y, middle.x, middle.y, radius, middleZ, half,
+			    trunkRadius, coverage, prop.foliage.back().ramp.size());
+#endif
+		treeCount++;
+	}
+	b.x0 = minX;
+	b.x1 = maxX;
+	b.y0 = minY;
+	b.y1 = maxY;
+	b.lowestZ = 0;
+	b.highestZ = highest;
+	prop.middle = { (minX + maxX) / 2.0F, (minY + maxY) / 2.0F };
+	prop.radius = std::hypot(maxX - minX, maxY - minY) / 2.0F;
+	TownProps.push_back(std::move(prop));
+}
+
+/** @brief Colour of a leaf cell of a tree's canopy at a point, or -1 between the leaves. */
+int FoliageColor(const Foliage &foliage, const WorldTriangle &tri, float wx, float wy, float wz, float boost)
+{
+	constexpr float PerCell = 1.0F / LeafCell;
+	// Town coordinates are positive: truncating is flooring.
+	const uint32_t ix = static_cast<uint32_t>(wx * PerCell);
+	const uint32_t iy = static_cast<uint32_t>(wy * PerCell);
+	const uint32_t iz = static_cast<uint32_t>(std::max(wz, 0.0F) * PerCell);
+	uint32_t h = ix * 73856093U ^ iy * 19349663U ^ (iz + static_cast<uint32_t>(foliage.seed)) * 83492791U;
+	h ^= h >> 13;
+	h *= 0x5bd1e995U;
+	h ^= h >> 15;
+	if (static_cast<float>(h & 0xFFFF) * (1.0F / 65535.0F) > foliage.coverage * boost)
+		return -1;
+	// Lighter towards the top and on the side facing the sky, with some leaves darker or lighter than the rest.
+	const float up = std::clamp((wz - foliage.low) * foliage.perHeight, 0.0F, 1.0F);
+	const float jitter = static_cast<float>((h >> 16) & 0xFF) * (1.0F / 255.0F);
+	const float shade = std::clamp(0.45F * up + tri.slopeScale + 0.5F * jitter - 0.1F, 0.0F, 0.999F);
+	return foliage.ramp[static_cast<size_t>(shade * static_cast<float>(foliage.ramp.size()))];
+}
+
+/** Thickness of the town's low stone walls (tiles), and their pieces along a tile (near and far away). */
+constexpr float TownWallThickness = 0.42F;
+constexpr int TownWallSegments = 8;
+constexpr int TownWallFarSegments = 3;
+
+/**
+ * @brief A low stone wall's tile, built as a straight wall along its run (towards the neighbours that are wall too):
+ * a row of blocks as high as the art's hull there, so the ragged top of the rubble wall stays. The hull alone breaks
+ * such a wall into teeth: its pieces' art lies across the tile at a slant, so the hull is collapsed onto the run,
+ * where the hull's cells stand (across), and carried on to the tile's edge towards each wall neighbour.
+ */
+void BuildTownWallTile(Point tile, const std::array<bool, 4> &toward, int segments, std::vector<WorldTriangle> &out)
+{
+	const PieceTextures &t = GetPieceTextures(dPiece[tile.x][tile.y]);
+	constexpr int Cells = 8;
+	const std::vector<float> grid = PropHullHeights(t, 0.7F, Cells);
+	const std::vector<int16_t> pixels(t.upright.begin(), t.upright.end());
+	const uint8_t fallback = PatchColor(static_cast<int16_t>(std::max<uint8_t>(CommonestColor(pixels), 1)));
+	const float half = TownWallThickness / 2.0F;
+	Building mesh {};
+	for (int axis = 0; axis < 2; axis++) {
+		const bool alongX = axis == 0;
+		const bool before = toward[alongX ? 0 : 2]; // a wall neighbour at -x (-y)
+		const bool after = toward[alongX ? 1 : 3];
+		if (!before && !after)
+			continue;
+		const bool corner = toward[alongX ? 2 : 0] || toward[alongX ? 3 : 1];
+		// The profile along the run, and where across it the art stands.
+		std::array<float, Cells> profile {};
+		float acrossSum = 0;
+		float weight = 0;
+		for (int i = 0; i < Cells; i++) {
+			for (int j = 0; j < Cells; j++) {
+				const float h = alongX ? grid[static_cast<size_t>(j) * Cells + i] : grid[static_cast<size_t>(i) * Cells + j];
+				if (h <= 0)
+					continue;
+				profile[i] = std::max(profile[i], std::min(h, 1.2F));
+				acrossSum += h * (static_cast<float>(j) + 0.5F) / Cells;
+				weight += h;
+			}
+		}
+		if (weight <= 0)
+			continue;
+		const float across = std::clamp(acrossSum / weight, half, 1.0F - half);
+		// Carried on to the edges towards the neighbours.
+		int first = 0;
+		while (first < Cells && profile[first] <= 0)
+			first++;
+		int last = Cells - 1;
+		while (last >= 0 && profile[last] <= 0)
+			last--;
+		if (first > last)
+			continue;
+		if (before)
+			for (int i = 0; i < first; i++)
+				profile[i] = profile[first];
+		if (after)
+			for (int i = last + 1; i < Cells; i++)
+				profile[i] = profile[last];
+		// Along the run: the whole tile, or (at a corner) from where the walls meet out to each wall neighbour.
+		const float from = before || !corner ? 0.0F : across - half;
+		const float to = after || !corner ? 1.0F : across + half;
+		std::vector<float> heights(static_cast<size_t>(segments));
+		for (int k = 0; k < segments; k++) {
+			const float a = from + (to - from) * static_cast<float>(k) / static_cast<float>(segments);
+			const float b = from + (to - from) * static_cast<float>(k + 1) / static_cast<float>(segments);
+			float h = 0;
+			for (int i = std::clamp(static_cast<int>(a * Cells), 0, Cells - 1); i <= std::clamp(static_cast<int>(b * Cells - 0.001F), 0, Cells - 1); i++)
+				h = std::max(h, profile[i]);
+			heights[k] = h;
+		}
+		auto at = [&](float along, float acrossAt, float z) {
+			return alongX ? V3 { static_cast<float>(tile.x) + along, static_cast<float>(tile.y) + acrossAt, z } : V3 { static_cast<float>(tile.x) + acrossAt, static_cast<float>(tile.y) + along, z };
+		};
+		const Vec2 middle = alongX ? Vec2 { static_cast<float>(tile.x) + 0.5F, static_cast<float>(tile.y) + across } : Vec2 { static_cast<float>(tile.x) + across, static_cast<float>(tile.y) + 0.5F };
+		const V3 front = alongX ? V3 { 0, 1, 0 } : V3 { 1, 0, 0 };
+		const V3 back { -front.x, -front.y, 0 };
+		const V3 ahead = alongX ? V3 { 1, 0, 0 } : V3 { 0, 1, 0 };
+		const V3 behind { -ahead.x, -ahead.y, 0 };
+		const float lo = across - half;
+		const float hi = across + half;
+		for (int k = 0; k < segments; k++) {
+			const float h = heights[k];
+			if (h <= 0.02F)
+				continue;
+			const float a = from + (to - from) * static_cast<float>(k) / static_cast<float>(segments);
+			const float b = from + (to - from) * static_cast<float>(k + 1) / static_cast<float>(segments);
+			AddStructureFace(mesh, { at(a, lo, h), at(b, lo, h), at(b, hi, h), at(a, hi, h) }, { 0, 0, 1 }, middle, MeshProjective);
+			AddStructureFace(mesh, { at(a, hi, 0), at(b, hi, 0), at(b, hi, h), at(a, hi, h) }, front, middle, MeshProjective);
+			AddStructureFace(mesh, { at(a, lo, 0), at(b, lo, 0), at(b, lo, h), at(a, lo, h) }, back, middle, MeshProjective);
+			// The ends, where the next block is lower (at the tile's edge only if no wall goes on there).
+			const float previous = k > 0 ? heights[k - 1] : 0.0F;
+			const float next = k + 1 < segments ? heights[k + 1] : 0.0F;
+			if (previous < h && (k > 0 || !before || corner))
+				AddStructureFace(mesh, { at(a, lo, previous), at(a, hi, previous), at(a, hi, h), at(a, lo, h) }, behind, middle, MeshProjective);
+			if (next < h && (k + 1 < segments || !after || corner))
+				AddStructureFace(mesh, { at(b, lo, next), at(b, hi, next), at(b, hi, h), at(b, lo, h) }, ahead, middle, MeshProjective);
+		}
+	}
+	for (WorldTriangle &tri : mesh.mesh) {
+		tri.fallback = fallback;
+		tri.artX = static_cast<int16_t>(tile.x);
+		tri.artY = static_cast<int16_t>(tile.y);
+		out.push_back(tri);
+	}
+}
+
+/** Hull props are drawn in blocks of this many tiles a side (culled as one). */
+constexpr int PropBlock = 6;
+
+/**
+ * @brief Replaces the town's remaining tall-art tiles (those no building draws) with meshes: trees, and the hulls of
+ * the rest. Pieces of the church's art its model stands in for are hidden. Marks the tiles (BuildingTiles 3) so
+ * they are no longer billboards and their floor is the ground under them.
+ */
+void BuildTownProps()
+{
+	TownProps.clear();
+	PropHulls.clear();
+	if (leveltype != DTYPE_TOWN)
+		return;
+	auto index = [](int x, int y) { return static_cast<size_t>(y) * MAXDUNX + x; };
+	// The town's ground colours: those its open ground's floors use (a tenth of a percent of their texels or more).
+	{
+		std::array<int, 256> counts {};
+		int total = 0;
+		for (int y = 0; y < MAXDUNY; y++)
+			for (int x = 0; x < MAXDUNX; x++) {
+				const PieceTextures &t = GetPieceTextures(dPiece[x][y]);
+				if (t.hasTallArt || IsTileSolid({ x, y }))
+					continue;
+				for (const int16_t texel : t.floor)
+					if (texel > 0) {
+						counts[texel]++;
+						total++;
+					}
+			}
+		std::array<bool, 256> ground {};
+		for (int c = 1; c < 256; c++)
+			ground[c] = counts[c] * 1000 >= total;
+		for (int y = 0; y < MAXDUNY; y++)
+			for (int x = 0; x < MAXDUNX; x++)
+				if (BuildingTiles[index(x, y)] == 0 && GetPieceTextures(dPiece[x][y]).hasTallArt)
+					RemoveUprightGround(dPiece[x][y], ground);
+	}
+	std::vector<PropKind> kinds(static_cast<size_t>(MAXDUNX) * MAXDUNY, PropKind::None);
+	for (int y = 0; y < MAXDUNY; y++)
+		for (int x = 0; x < MAXDUNX; x++)
+			if (BuildingTiles[index(x, y)] == 0)
+				kinds[index(x, y)] = TownPieceKind(dPiece[x][y]);
+	// Trees: groups of neighbouring tree tiles.
+	int treeCount = 0;
+	std::vector<uint8_t> seen(kinds.size(), 0);
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			if (kinds[index(x, y)] != PropKind::Tree || seen[index(x, y)] != 0)
+				continue;
+			std::vector<Point> group;
+			std::vector<Point> stack { { x, y } };
+			seen[index(x, y)] = 1;
+			while (!stack.empty()) {
+				const Point p = stack.back();
+				stack.pop_back();
+				group.push_back(p);
+				for (int dy = -1; dy <= 1; dy++)
+					for (int dx = -1; dx <= 1; dx++) {
+						const Point q { p.x + dx, p.y + dy };
+						if (InDungeonBounds(q) && seen[index(q.x, q.y)] == 0 && kinds[index(q.x, q.y)] == PropKind::Tree) {
+							seen[index(q.x, q.y)] = 1;
+							stack.push_back(q);
+						}
+					}
+			}
+			BuildTrees(group, treeCount);
+		}
+	}
+	// The rest: each tile's hull (one per piece, placed on every tile showing it), in blocks.
+	std::unordered_map<int, size_t> blocks;
+	int hullTiles = 0;
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			const PropKind kind = kinds[index(x, y)];
+			if (kind == PropKind::None)
+				continue;
+			if (kind == PropKind::Leftover) {
+				BuildingTiles[index(x, y)] = 1;
+				continue;
+			}
+			BuildingTiles[index(x, y)] = 3;
+			if (kind == PropKind::Tree)
+				continue;
+			std::array<bool, 4> wallToward {};
+			if (kind == PropKind::Wall) {
+				const std::array<Point, 4> next { Point { x - 1, y }, Point { x + 1, y }, Point { x, y - 1 }, Point { x, y + 1 } };
+				for (size_t k = 0; k < next.size(); k++)
+					wallToward[k] = InDungeonBounds(next[k]) && kinds[index(next[k].x, next[k].y)] == PropKind::Wall;
+			}
+			const bool straightWall = std::any_of(wallToward.begin(), wallToward.end(), [](bool b) { return b; });
+			const uint16_t piece = dPiece[x][y];
+			auto found = PropHulls.find(piece);
+			if (found == PropHulls.end()) {
+				const int cells = PropCells(kind);
+				found = PropHulls.emplace(piece, PropHullPair { BuildPropHull(piece, kind, cells), BuildPropHull(piece, kind, (cells + 1) / 2) }).first;
+			}
+			const PropHull &hull = found->second.near;
+			if (hull.triangles.empty() && !straightWall)
+				continue;
+			const int key = (y / PropBlock) * 1000 + (x / PropBlock) * 10 + static_cast<int>(kind);
+			auto block = blocks.find(key);
+			if (block == blocks.end()) {
+				TownProp prop;
+				prop.kind = kind;
+				prop.art.x0 = static_cast<float>(x);
+				prop.art.y0 = static_cast<float>(y);
+				prop.art.x1 = static_cast<float>(x + 1);
+				prop.art.y1 = static_cast<float>(y + 1);
+				prop.art.lowestZ = 0;
+				prop.art.highestZ = 0;
+				TownProps.push_back(std::move(prop));
+				block = blocks.emplace(key, TownProps.size() - 1).first;
+			}
+			TownProp &prop = TownProps[block->second];
+			Building &b = prop.art;
+			b.x0 = std::min(b.x0, static_cast<float>(x));
+			b.y0 = std::min(b.y0, static_cast<float>(y));
+			b.x1 = std::max(b.x1, static_cast<float>(x + 1));
+			b.y1 = std::max(b.y1, static_cast<float>(y + 1));
+			b.highestZ = std::max(b.highestZ, hull.top);
+			auto place = [&](const PropHull &from, std::vector<WorldTriangle> &to) {
+				for (WorldTriangle tri : from.triangles) {
+					for (V3 &p : tri.p) {
+						p.x += static_cast<float>(x);
+						p.y += static_cast<float>(y);
+					}
+					tri.mirrorX += static_cast<float>(x);
+					tri.mirrorY += static_cast<float>(y);
+					tri.artX = static_cast<int16_t>(x);
+					tri.artY = static_cast<int16_t>(y);
+					to.push_back(tri);
+				}
+			};
+			if (straightWall) {
+				BuildTownWallTile({ x, y }, wallToward, TownWallSegments, b.mesh);
+				BuildTownWallTile({ x, y }, wallToward, TownWallFarSegments, prop.farMesh);
+				b.highestZ = std::max(b.highestZ, 1.4F);
+			} else {
+				place(hull, b.mesh);
+				place(found->second.far, prop.farMesh);
+			}
+			hullTiles++;
+		}
+	}
+	for (TownProp &prop : TownProps) {
+		if (prop.kind == PropKind::Tree)
+			continue;
+		prop.middle = { (prop.art.x0 + prop.art.x1) / 2.0F, (prop.art.y0 + prop.art.y1) / 2.0F };
+		prop.radius = std::hypot(prop.art.x1 - prop.art.x0, prop.art.y1 - prop.art.y0) / 2.0F;
+	}
+	size_t triangles = 0;
+	for (const TownProp &prop : TownProps)
+		triangles += prop.art.mesh.size();
+	LogInfo("fp: town props: {} trees, {} hull tiles ({} pieces), {} meshes, {} triangles", treeCount, hullTiles, PropHulls.size(), TownProps.size(), triangles);
+}
+
+/** Props farther than this (tiles) are lost in the fog. */
+constexpr float PropDrawRange = 48.0F;
+
+void DrawTownProps(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer)
+{
+	static const bool noTrees = std::getenv("FP_NO_TREES") != nullptr; // debug: time them
+	static const bool noHulls = std::getenv("FP_NO_HULLS") != nullptr;
+	// Near to far, so the depth test turns hidden pixels away before they are shaded.
+	static std::vector<std::pair<float, const TownProp *>> order;
+	order.clear();
+	for (const TownProp &prop : TownProps) {
+		if ((noTrees && prop.kind == PropKind::Tree) || (noHulls && prop.kind != PropKind::Tree))
+			continue;
+		const float distance = std::hypot(prop.middle.x - proj.pos.x, prop.middle.y - proj.pos.y) - prop.radius;
+		if (distance <= PropDrawRange)
+			order.emplace_back(distance, &prop);
+	}
+	std::sort(order.begin(), order.end(), [](const auto &a, const auto &c) { return a.first < c.first; });
+	for (const auto &[distance, propPointer] : order) {
+		const TownProp &prop = *propPointer;
+		const bool far = distance > PropFarDistance && !prop.farMesh.empty();
+		const float boost = far ? FarFoliageBoost : 1.0F;
+		int left;
+		int top;
+		int right;
+		int bottom;
+		if (!ScreenBounds(prop.art, proj, left, top, right, bottom))
+			continue;
+		const Building &b = prop.art;
+		const PieceTextures *columnFor = nullptr;
+		Point columnTile { -1, -1 };
+		const std::vector<WorldTriangle> &mesh = far ? prop.farMesh : b.mesh;
+		// A near tree's leaves front to back: the near ones turn the far ones away by depth where they cover them.
+		static std::vector<std::pair<float, uint32_t>> byDistance;
+		static std::vector<uint32_t> sorted;
+		const std::vector<uint32_t> *order = nullptr;
+		if (prop.kind == PropKind::Tree && !far) {
+			byDistance.clear();
+			for (uint32_t i = 0; i < mesh.size(); i++) {
+				const WorldTriangle &tri = mesh[i];
+				const float dx = (tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F - proj.pos.x;
+				const float dy = (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F - proj.pos.y;
+				const float dz = (tri.p[0].z + tri.p[1].z + tri.p[2].z) / 3.0F - EyeHeight;
+				byDistance.emplace_back(dx * dx + dy * dy + dz * dz, i);
+			}
+			std::sort(byDistance.begin(), byDistance.end());
+			sorted.clear();
+			for (const auto &[d, i] : byDistance)
+				sorted.push_back(i);
+			order = &sorted;
+		}
+		RasterizeTriangles(out, proj, depthBuffer, mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
+			float x = wx;
+			float y = wy;
+			if (tri.mirrored) {
+				const float d = (x - tri.mirrorX) * tri.normalX + (y - tri.mirrorY) * tri.normalY;
+				x -= 2.0F * d * tri.normalX;
+				y -= 2.0F * d * tri.normalY;
+			}
+			int leaf = -1;
+			if (tri.mapping == MeshFoliage) {
+				leaf = FoliageColor(prop.foliage[tri.arch], tri, wx, wy, wz, boost);
+				if (leaf < 0)
+					return -1; // between the leaves
+			}
+			const Point lit { static_cast<int>(std::floor(wx)), static_cast<int>(std::floor(wy)) };
+			const uint8_t level = InDungeonBounds(lit) ? std::min<uint8_t>(LightAt(lit), LightsMax) : LightsMax;
+			if (leaf >= 0)
+				return static_cast<int>(LightTables[level][leaf]);
+			if (tri.mapping == MeshSolid)
+				return static_cast<int>(LightTables[level][ShadeColor(tri.fallback, tri.darkness)]);
+			int16_t art = NoPixel;
+			if (prop.ownCanvas) {
+				const int px = static_cast<int>(std::floor((x - y) * 32.0F)) - b.originX;
+				const int py = static_cast<int>(std::floor((x + y) * 16.0F - wz * HeightPixels)) - b.originY;
+				if (px >= 0 && py >= 0 && px < b.canvasWidth && py < b.canvasHeight)
+					art = b.canvas[static_cast<size_t>(py) * b.canvasWidth + px];
+			} else {
+				const Point tile { tri.artX, tri.artY };
+				if (tile != columnTile) {
+					columnTile = tile;
+					columnFor = &GetPieceTextures(dPiece[tile.x][tile.y]);
+				}
+				art = ColumnArtAt(*columnFor, tile, x, y, wz);
+				if (art <= 0 && tri.mapping != MeshProjectiveCut) {
+					// Just off the art's edge: the nearest art pixel above (the hull's cells overreach a little).
+					for (int k = 1; k <= 3 && art <= 0; k++)
+						art = ColumnArtAt(*columnFor, tile, x, y, wz + static_cast<float>(k) / HeightPixels);
+				}
+			}
+			if (art <= 0) {
+				if (tri.mapping == MeshProjectiveCut)
+					return -1;
+				art = tri.fallback;
+			}
+			return static_cast<int>(LightTables[level][ShadeColor(PatchColor(art), tri.darkness)]);
+		}, 1.0F, order);
+	}
+}
+
 
 } // namespace
 
@@ -4685,6 +5723,7 @@ void DrawBuildings(const Surface &out, const Projection &proj, const std::vector
 		else
 			DrawBuilding(out, proj, zBuffer, depthBuffer, building);
 	}
+	DrawTownProps(out, proj, depthBuffer);
 }
 
 std::string TakeRasterStats(int frames)

@@ -33,7 +33,11 @@ void SetHouseMeshesEnabled(bool enabled);
 /** @brief Town buildings wear the 3D models' own textures (default) or their projected iso art. */
 void SetModelTexturesEnabled(bool enabled);
 
-/** @brief Per-tile building marks in town (index y * MAXDUNX + x): 0 none, 1 art drawn by a building, 2 also under a model whose ground art must give way to plain ground. Null outside town. */
+/**
+ * @brief Per-tile building marks in town (index y * MAXDUNX + x): 0 none, 1 art drawn by a building, 2 also under a
+ * model whose ground art must give way to plain ground, 3 a prop drawn as a mesh (a tree, a rock: its own ground
+ * without the prop stays). Null outside town.
+ */
 [[nodiscard]] const uint8_t *BuildingTileMap();
 /** @brief Whether the tile belongs to a reconstructed building (and so is not drawn as a billboard). */
 [[nodiscard]] bool IsBuildingTile(Point tile);

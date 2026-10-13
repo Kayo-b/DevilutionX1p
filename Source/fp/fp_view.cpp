@@ -237,7 +237,11 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 				// Under a structure the piece's own art is the structure, drawn as a mesh: plain ground instead.
 				const PieceTextures &piece = GetPieceTextures(dPiece[tile.x][tile.y]);
 				// The ceiling is the plain ground: mirroring each tile's floor would hang lava, water and blood overhead.
-				floorArt = (structure != 0 && structure != 3) || !isFloor || (buildings != nullptr && buildings[static_cast<size_t>(tile.y) * MAXDUNX + tile.x] != 0) ? &ground : &piece.floor;
+				const uint8_t building = buildings != nullptr ? buildings[static_cast<size_t>(tile.y) * MAXDUNX + tile.x] : 0;
+				floorArt = (structure != 0 && structure != 3) || !isFloor || (building != 0 && building != 3) ? &ground : &piece.floor;
+				if (isFloor && building == 3 && !piece.groundFloor.empty())
+					floorArt = &piece.groundFloor; // a prop drawn as a mesh stands on it: the ground without the prop
+
 				floorFill = isTown ? &ground : nullptr; // baked shadows and holes in town ground
 				fineFloor = fineRow && floorArt->size() == static_cast<size_t>(FloorTextureSize) * FloorTextureSize ? &UpscaledTexture(*floorArt, FloorTextureSize) : nullptr;
 				kitTile = kit && !piece.isFlatSolid; // lava and water keep their art

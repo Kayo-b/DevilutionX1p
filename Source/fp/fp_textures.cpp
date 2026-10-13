@@ -549,6 +549,15 @@ std::unique_ptr<PieceTextures> BuildPieceTextures(uint16_t pieceId)
 		// A town building or tree stands on its own ground: take it from the bottom of the drawn column.
 		const std::vector<int16_t> ground(column.end() - static_cast<ptrdiff_t>(FloorHeight) * ColumnWidth, column.end());
 		textures->floor = ExtractFloor(ground);
+		if (leveltype == DTYPE_TOWN) {
+			const std::vector<int16_t> floorOnly = RenderColumnWithAlpha(pieceId, FloorHeight, true);
+			textures->groundFloor = ExtractFloor(floorOnly);
+			textures->upright = column;
+			const size_t first = column.size() - static_cast<size_t>(FloorHeight) * ColumnWidth;
+			for (size_t i = 0; i < floorOnly.size(); i++)
+				if (floorOnly[i] != NoPixel && floorOnly[i] == column[first + i])
+					textures->upright[first + i] = NoPixel;
+		}
 	} else if (!HasAnyOf(SOLData[pieceId], TileProperties::Solid | TileProperties::BlockMissile) || leveltype == DTYPE_TOWN)
 		textures->floor = ExtractFloor(RenderColumnWithAlpha(pieceId, FloorHeight, true));
 	else if (!textures->isFlatSolid)
@@ -561,6 +570,30 @@ std::unique_ptr<PieceTextures> BuildPieceTextures(uint16_t pieceId)
 int FaceTextureHeight()
 {
 	return ColumnHeight() - TILE_HEIGHT + FaceBaseRows;
+}
+
+void RemoveUprightGround(uint16_t pieceId, const std::array<bool, 256> &ground)
+{
+	GetPieceTextures(pieceId);
+	PieceTextures &t = *GetCache().pieces[pieceId];
+	if (t.uprightGroundRemoved || t.upright.empty())
+		return;
+	t.uprightGroundRemoved = true;
+	if (std::any_of(t.groundFloor.begin(), t.groundFloor.end(), [](int16_t p) { return p > 0; }))
+		return; // its floor render already told the ground apart
+	const int rows = static_cast<int>(t.upright.size() / ColumnWidth);
+	for (int cy = rows - FloorHeight; cy < rows; cy++) {
+		for (int cx = 0; cx < ColumnWidth; cx++) {
+			int16_t &pixel = t.upright[static_cast<size_t>(cy) * ColumnWidth + cx];
+			if (pixel <= 0 || !ground[static_cast<uint8_t>(pixel)])
+				continue;
+			// Inside the diamond: |x| / 32 + |y| / 16 <= 1 about its middle.
+			const float dx = std::abs(static_cast<float>(cx) + 0.5F - ColumnWidth / 2.0F) / (ColumnWidth / 2.0F);
+			const float dy = std::abs(static_cast<float>(cy - (rows - FloorHeight)) + 0.5F - FloorHeight / 2.0F) / (FloorHeight / 2.0F);
+			if (dx + dy <= 1.05F)
+				pixel = NoPixel;
+		}
+	}
 }
 
 const PieceTextures &GetPieceTextures(uint16_t pieceId)
