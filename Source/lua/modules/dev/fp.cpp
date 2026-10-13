@@ -15,6 +15,7 @@
 #include "fp/fp_controls.hpp"
 #include "fp/fp_dungeon.hpp"
 #include "fp/fp_raycast.hpp"
+#include "fp/fp_sky.hpp"
 #include "fp/fp_textures.hpp"
 #include "fp/fp_view.hpp"
 #include "fp/fp_weapon.hpp"
@@ -201,6 +202,51 @@ std::string DebugCmdFpMonsterState()
 	return result;
 }
 
+/** @brief Debug: the town's floor from above, each tile as the first-person floor draws it (x across, y down), with a grid. */
+std::string DebugCmdFpFloorMap(int x0, int y0, int x1, int y1, std::string path)
+{
+	const uint8_t *buildings = fp::BuildingTileMap();
+	const uint16_t *sources = fp::FloorSourceMap();
+	const std::vector<int16_t> &ground = fp::GetGroundFloor();
+	constexpr int Size = fp::FloorTextureSize;
+	const int w = (x1 - x0 + 1) * Size;
+	const int h = (y1 - y0 + 1) * Size;
+	std::vector<uint8_t> image(static_cast<size_t>(w) * h * 3, 0);
+	for (int y = y0; y <= y1; y++) {
+		for (int x = x0; x <= x1; x++) {
+			if (!InDungeonBounds({ x, y }))
+				continue;
+			const fp::PieceTextures &piece = fp::GetPieceTextures(dPiece[x][y]);
+			const uint8_t building = buildings != nullptr ? buildings[static_cast<size_t>(y) * MAXDUNX + x] : 0;
+			const std::vector<int16_t> *art = building != 0 && building != 3 ? &ground : &piece.floor;
+			if (building == 3 && !piece.groundFloor.empty())
+				art = &piece.groundFloor;
+			if (const uint16_t source = sources != nullptr ? sources[static_cast<size_t>(y) * MAXDUNX + x] : 0; source != 0)
+				art = &fp::GetPieceTextures(source).floor;
+			for (int v = 0; v < Size; v++) {
+				for (int u = 0; u < Size; u++) {
+					int16_t texel = art->size() == static_cast<size_t>(Size) * Size ? (*art)[v * Size + u] : int16_t { -1 };
+					if (texel <= 0 && ground.size() == static_cast<size_t>(Size) * Size)
+						texel = ground[v * Size + u];
+					const SDL_Color c = texel > 0 ? logical_palette[texel] : SDL_Color { 255, 0, 255, 255 };
+					const bool line = u == 0 || v == 0;
+					uint8_t *dst = &image[(static_cast<size_t>((y - y0) * Size + v) * w + (x - x0) * Size + u) * 3];
+					dst[0] = line ? 255 : c.r;
+					dst[1] = line ? 255 : c.g;
+					dst[2] = line ? 255 : c.b;
+				}
+			}
+		}
+	}
+	FILE *file = std::fopen(path.c_str(), "wb");
+	if (file == nullptr)
+		return "Could not write.";
+	std::fprintf(file, "P6\n%d %d\n255\n", w, h);
+	std::fwrite(image.data(), 1, image.size(), file);
+	std::fclose(file);
+	return StrCat("Floor map of ", x0, ",", y0, " .. ", x1, ",", y1, " written.");
+}
+
 std::string DebugCmdFpDumpPiece(int x, int y, std::string path)
 {
 	if (!InDungeonBounds({ x, y }))
@@ -222,6 +268,58 @@ std::string DebugCmdFpDumpPiece(int x, int y, std::string path)
 		std::fclose(f);
 	}
 	return "Dumped.";
+}
+
+std::string DebugCmdFpProps(std::optional<std::string> path)
+{
+	// Every tile still drawn as a billboard of its own art (a "cardboard"), with what its art looks like.
+	FILE *f = path ? std::fopen(path->c_str(), "w") : nullptr;
+	int count = 0;
+	std::string first;
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			if (!fp::IsPropTile({ x, y }))
+				continue;
+			const fp::PieceTextures &t = fp::GetPieceTextures(dPiece[x][y]);
+			const int rows = static_cast<int>(t.column.size() / fp::ColumnWidth);
+			int opaque = 0;
+			int top = rows;
+			long r = 0;
+			long g = 0;
+			long b = 0;
+			for (int i = 0; i < (rows - 32) * fp::ColumnWidth; i++) {
+				if (t.column[i] <= 0)
+					continue;
+				const SDL_Color c = logical_palette[t.column[i]];
+				r += c.r;
+				g += c.g;
+				b += c.b;
+				opaque++;
+				top = std::min(top, i / fp::ColumnWidth);
+			}
+			if (f != nullptr)
+				std::fprintf(f, "%d %d %d %d %d %d %d %ld %ld %ld\n", x, y, dPiece[x][y], IsTileSolid({ x, y }) ? 1 : 0, t.isStructure ? 1 : 0, opaque, rows - 32 - top,
+				    opaque > 0 ? r / opaque : 0, opaque > 0 ? g / opaque : 0, opaque > 0 ? b / opaque : 0);
+			if (count < 8)
+				StrAppend(first, " ", x, ",", y);
+			count++;
+		}
+	}
+	if (f != nullptr)
+		std::fclose(f);
+	return StrCat("prop billboards: ", count, first);
+}
+
+std::string DebugCmdFpSky(bool enabled)
+{
+	fp::SetSkyEnabled(enabled);
+	return enabled ? "Night sky on." : "Night sky off (flat colour).";
+}
+
+std::string DebugCmdFpWindowLight(bool enabled)
+{
+	fp::SetWindowLightEnabled(enabled);
+	return enabled ? "Lamps lit." : "Lamps out.";
 }
 
 std::string DebugCmdFpLowWalls()
@@ -441,7 +539,11 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "map", "(radius: number = 10)", "Log a tile-type map around the player.", &DebugCmdFpMap);
 	LuaSetDocFn(table, "killmonsters", "()", "Kill every active monster (to look at corpses).", &DebugCmdFpKillMonsters);
 	LuaSetDocFn(table, "monsterstate", "()", "Describe monsters near the player and count corpse tiles.", &DebugCmdFpMonsterState);
+	LuaSetDocFn(table, "floormap", "(x0: number, y0: number, x1: number, y1: number, path: string)", "Dump the town's floor from above, as the first-person view draws it (PPM).", &DebugCmdFpFloorMap);
 	LuaSetDocFn(table, "dumppiece", "(x: number, y: number, path: string)", "Dump the iso column art of the piece at a tile (PPM).", &DebugCmdFpDumpPiece);
+	LuaSetDocFn(table, "props", "(path: string = nil)", "Count the tiles still drawn as billboards of their own art (props); with a path, list them (x y piece solid structure opaque rows r g b).", &DebugCmdFpProps);
+	LuaSetDocFn(table, "sky", "(enabled: boolean)", "Draw the town's night skybox (default) or a flat sky colour.", &DebugCmdFpSky);
+	LuaSetDocFn(table, "windowlight", "(enabled: boolean)", "Lamps inside the tavern, the smithy and the church, their light coming out of the windows and doorways (default), or out.", &DebugCmdFpWindowLight);
 	LuaSetDocFn(table, "lowwalls", "()", "Count solid tiles whose wall art is lower than a full wall.", &DebugCmdFpLowWalls);
 	LuaSetDocFn(table, "housemodels", "(enabled: boolean)", "Draw town houses with the voxel models from the Tristram plaza reference (default) or as fitted boxes.", &DebugCmdFpHouseModels);
 	LuaSetDocFn(table, "housetextures", "(enabled: boolean)", "Texture the voxel houses with walls and thatch cut out of their own iso art (default) or ranked palette colours.", &DebugCmdFpHouseTextures);

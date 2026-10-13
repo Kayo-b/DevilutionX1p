@@ -466,6 +466,20 @@ std::vector<int16_t> ExtractFloor(const std::vector<int16_t> &column)
 			floor[static_cast<size_t>(v) * FloorTextureSize + u] = column[static_cast<size_t>(sy) * ColumnWidth + sx];
 		}
 	}
+	// The square's edges sample the diamond's outline, where every other texel falls just outside it: drawn, those
+	// gaps were dotted black lines along the tiles' edges. Each takes the texel inside it.
+	constexpr int N = FloorTextureSize;
+	for (int pass = 0; pass < 2; pass++) {
+		for (int k = 0; k < N; k++) {
+			const std::array<std::array<int, 4>, 4> edges { { { k, 0, k, 1 }, { k, N - 1, k, N - 2 }, { 0, k, 1, k }, { N - 1, k, N - 2, k } } };
+			for (const auto &[u, v, iu, iv] : edges) {
+				int16_t &texel = floor[static_cast<size_t>(v) * N + u];
+				const int16_t inside = floor[static_cast<size_t>(iv) * N + iu];
+				if (texel == NoPixel && inside != NoPixel)
+					texel = inside;
+			}
+		}
+	}
 	return floor;
 }
 
@@ -548,6 +562,15 @@ std::unique_ptr<PieceTextures> BuildPieceTextures(uint16_t pieceId)
 		// A town building or tree stands on its own ground: take it from the bottom of the drawn column.
 		const std::vector<int16_t> ground(column.end() - static_cast<ptrdiff_t>(FloorHeight) * ColumnWidth, column.end());
 		textures->floor = ExtractFloor(ground);
+		if (leveltype == DTYPE_TOWN) {
+			const std::vector<int16_t> floorOnly = RenderColumnWithAlpha(pieceId, FloorHeight, true);
+			textures->groundFloor = ExtractFloor(floorOnly);
+			textures->upright = column;
+			const size_t first = column.size() - static_cast<size_t>(FloorHeight) * ColumnWidth;
+			for (size_t i = 0; i < floorOnly.size(); i++)
+				if (floorOnly[i] != NoPixel && floorOnly[i] == column[first + i])
+					textures->upright[first + i] = NoPixel;
+		}
 	} else if (!HasAnyOf(SOLData[pieceId], TileProperties::Solid | TileProperties::BlockMissile) || leveltype == DTYPE_TOWN)
 		textures->floor = ExtractFloor(RenderColumnWithAlpha(pieceId, FloorHeight, true));
 	else if (!textures->isFlatSolid)
@@ -560,6 +583,125 @@ std::unique_ptr<PieceTextures> BuildPieceTextures(uint16_t pieceId)
 int FaceTextureHeight()
 {
 	return ColumnHeight() - TILE_HEIGHT + FaceBaseRows;
+}
+
+void RemoveUprightGround(uint16_t pieceId, const std::array<bool, 256> &ground)
+{
+	GetPieceTextures(pieceId);
+	PieceTextures &t = *GetCache().pieces[pieceId];
+	if (t.uprightGroundRemoved || t.upright.empty())
+		return;
+	t.uprightGroundRemoved = true;
+	if (std::any_of(t.groundFloor.begin(), t.groundFloor.end(), [](int16_t p) { return p > 0; }))
+		return; // its floor render already told the ground apart
+	const int rows = static_cast<int>(t.upright.size() / ColumnWidth);
+	for (int cy = rows - FloorHeight; cy < rows; cy++) {
+		for (int cx = 0; cx < ColumnWidth; cx++) {
+			int16_t &pixel = t.upright[static_cast<size_t>(cy) * ColumnWidth + cx];
+			if (pixel <= 0 || !ground[static_cast<uint8_t>(pixel)])
+				continue;
+			// Inside the diamond: |x| / 32 + |y| / 16 <= 1 about its middle.
+			const float dx = std::abs(static_cast<float>(cx) + 0.5F - ColumnWidth / 2.0F) / (ColumnWidth / 2.0F);
+			const float dy = std::abs(static_cast<float>(cy - (rows - FloorHeight)) + 0.5F - FloorHeight / 2.0F) / (FloorHeight / 2.0F);
+			if (dx + dy <= 1.05F)
+				pixel = NoPixel;
+		}
+	}
+}
+
+namespace {
+
+/** @brief CleanTownFloor on one floor texture; whether it changed. */
+bool CleanFloorTexels(std::vector<int16_t> &floor, const std::array<uint8_t, 256> &kind, const std::array<int, 4> &minCluster, const std::vector<int16_t> &fill)
+{
+	constexpr int N = FloorTextureSize;
+	if (floor.size() != static_cast<size_t>(N) * N)
+		return false;
+	auto foreign = [&](int16_t t) { return t > 0 ? kind[static_cast<uint8_t>(t)] : uint8_t { 0 }; };
+	std::vector<uint8_t> seen(floor.size(), 0);
+	std::vector<uint8_t> remove(floor.size(), 0);
+	bool changed = false;
+	for (size_t start = 0; start < floor.size(); start++) {
+		if (seen[start] != 0 || foreign(floor[start]) == 0)
+			continue;
+		std::vector<size_t> cluster;
+		std::vector<size_t> stack { start };
+		seen[start] = 1;
+		int need = 0;
+		while (!stack.empty()) {
+			const size_t i = stack.back();
+			stack.pop_back();
+			cluster.push_back(i);
+			need = std::max(need, minCluster[std::min<size_t>(foreign(floor[i]), 3)]);
+			const int u = static_cast<int>(i % N);
+			const int v = static_cast<int>(i / N);
+			for (int dv = -1; dv <= 1; dv++)
+				for (int du = -1; du <= 1; du++) {
+					const int nu = u + du;
+					const int nv = v + dv;
+					if (nu < 0 || nv < 0 || nu >= N || nv >= N)
+						continue;
+					const size_t j = static_cast<size_t>(nv) * N + nu;
+					if (seen[j] == 0 && foreign(floor[j]) != 0) {
+						seen[j] = 1;
+						stack.push_back(j);
+					}
+				}
+		}
+		if (static_cast<int>(cluster.size()) < need)
+			continue;
+		for (const size_t i : cluster)
+			remove[i] = 1;
+	}
+	const std::vector<int16_t> before = floor;
+	for (size_t i = 0; i < floor.size(); i++) {
+		if (remove[i] == 0)
+			continue;
+		int16_t with = fill.size() == floor.size() ? fill[i] : int16_t { 0 };
+		if (with <= 0 || foreign(with) != 0) {
+			// The nearest texel of this floor that stays.
+			const int u = static_cast<int>(i % N);
+			const int v = static_cast<int>(i / N);
+			for (int r = 1; r < N && (with <= 0 || foreign(with) != 0); r++)
+				for (int dv = -r; dv <= r && (with <= 0 || foreign(with) != 0); dv++)
+					for (int du = -r; du <= r; du++) {
+						const int nu = u + du;
+						const int nv = v + dv;
+						if (std::max(std::abs(du), std::abs(dv)) != r || nu < 0 || nv < 0 || nu >= N || nv >= N)
+							continue;
+						const size_t j = static_cast<size_t>(nv) * N + nu;
+						if (remove[j] == 0 && before[j] > 0) {
+							with = before[j];
+							break;
+						}
+					}
+		}
+		if (with > 0) {
+			floor[i] = with;
+			changed = true;
+		}
+	}
+	return changed;
+}
+
+} // namespace
+
+void CleanGroundFloor(const std::array<uint8_t, 256> &kind, const std::array<int, 4> &minCluster)
+{
+	GetGroundFloor();
+	std::vector<int16_t> &ground = GetCache().groundFloor;
+	if (CleanFloorTexels(ground, kind, minCluster, {}))
+		ForgetUpscaledTexture(ground);
+}
+
+void CleanTownFloor(uint16_t pieceId, const std::array<uint8_t, 256> &kind, const std::array<int, 4> &minCluster, const std::vector<int16_t> &fill)
+{
+	GetPieceTextures(pieceId);
+	PieceTextures &t = *GetCache().pieces[pieceId];
+	if (CleanFloorTexels(t.floor, kind, minCluster, fill))
+		ForgetUpscaledTexture(t.floor);
+	if (CleanFloorTexels(t.groundFloor, kind, minCluster, fill))
+		ForgetUpscaledTexture(t.groundFloor);
 }
 
 const PieceTextures &GetPieceTextures(uint16_t pieceId)
@@ -589,11 +731,13 @@ int ComputeColorDistance(uint8_t a, uint8_t b)
 
 /**
  * @brief A colour halfway between two: the middle of their ramp if they share one (the palette's ramps of 16 run
- * light to dark), else the colour of either's ramp nearest their mix, so the art keeps its hues.
+ * light to dark), else the colour of either's ramp nearest their mix, so the art keeps its hues. The town's palette
+ * has no such ramps (the middle of two greys' sixteen can be a blood red): there, the nearest colour of all.
  */
 uint8_t ComputeMixColor(uint8_t a, uint8_t b)
 {
-	if (a / 16 == b / 16)
+	const bool ramps = leveltype != DTYPE_TOWN;
+	if (ramps && a / 16 == b / 16)
 		return static_cast<uint8_t>((a + b + (a < b ? 0 : 1)) / 2);
 	const SDL_Color p = logical_palette[a];
 	const SDL_Color q = logical_palette[b];
@@ -602,8 +746,11 @@ uint8_t ComputeMixColor(uint8_t a, uint8_t b)
 	const int bl = p.b + q.b;
 	int best = std::numeric_limits<int>::max();
 	uint8_t result = a;
-	for (const int ramp : { a / 16, b / 16 }) {
-		for (int j = ramp * 16; j < ramp * 16 + 16; j++) {
+	const std::array<int, 2> searched { ramps ? a / 16 : 0, ramps ? b / 16 : -1 };
+	for (const int ramp : searched) {
+		if (ramp < 0)
+			continue;
+		for (int j = ramps ? ramp * 16 : 1; j < (ramps ? ramp * 16 + 16 : 256); j++) {
 			const SDL_Color o = logical_palette[j];
 			const int d = (2 * o.r - r) * (2 * o.r - r) * 3 + (2 * o.g - g) * (2 * o.g - g) * 6 + (2 * o.b - bl) * (2 * o.b - bl);
 			if (d < best) {

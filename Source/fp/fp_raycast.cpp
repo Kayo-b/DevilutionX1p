@@ -48,11 +48,12 @@ Projection GetProjection()
 
 bool IsOpaque(Point tile)
 {
-	if (!InDungeonBounds(tile))
-		return true;
-	// Town has no walls: its buildings and trees are drawn as billboards (see CollectProps) and the rest is ground.
+	// Town has no walls: its buildings and trees are meshes and the rest is ground. Past the map's edge the sky
+	// shows (the ground there fades into the fog), not a black wall.
 	if (leveltype == DTYPE_TOWN)
 		return false;
+	if (!InDungeonBounds(tile))
+		return true;
 	// A doorway stays a wall with an opening when its door is open (and walkable).
 	if (IsDoorwayTile(tile))
 		return true;

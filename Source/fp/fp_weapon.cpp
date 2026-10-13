@@ -255,7 +255,7 @@ void DrawFrame(const Surface &out, const DfFrame &frame, float scale, int left, 
 			const int sx = static_cast<int>((x - left) / scale) - frame.x;
 			if (sx < 0 || sx >= frame.width || row[sx] == 0)
 				continue;
-			dst[x] = LightTables[light][colors[row[sx]]];
+			dst[x] = FpLightTable(light)[colors[row[sx]]];
 		}
 	}
 }

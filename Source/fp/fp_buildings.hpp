@@ -17,6 +17,7 @@
 #include "engine/point.hpp"
 #include "engine/surface.hpp"
 #include "fp/fp_raycast.hpp"
+#include "fp/fp_world.hpp"
 
 namespace devilution::fp {
 
@@ -34,8 +35,17 @@ void SetHouseMeshesEnabled(bool enabled);
 /** @brief Town buildings wear the 3D models' own textures (default) or their projected iso art. */
 void SetModelTexturesEnabled(bool enabled);
 
-/** @brief Per-tile building marks in town (index y * MAXDUNX + x): 0 none, 1 art drawn by a building, 2 also under a model whose ground art must give way to plain ground. Null outside town. */
+/**
+ * @brief Per-tile building marks in town (index y * MAXDUNX + x): 0 none, 1 art drawn by a building, 2 also under a
+ * model whose ground art must give way to plain ground, 3 a prop drawn as a mesh (a tree, a rock: its own ground
+ * without the prop stays). Null outside town.
+ */
 [[nodiscard]] const uint8_t *BuildingTileMap();
+/**
+ * @brief Per town tile (index y * MAXDUNX + x): the piece whose floor the tile shows instead of its own, or 0 for its
+ * own (the open ground near buildings, props and uncovered house footprints). Null outside town.
+ */
+[[nodiscard]] const uint16_t *FloorSourceMap();
 /** @brief Whether the tile belongs to a reconstructed building (and so is not drawn as a billboard). */
 [[nodiscard]] bool IsBuildingTile(Point tile);
 
@@ -70,6 +80,17 @@ void SetSarcophagusKitEnabled(bool enabled);
 [[nodiscard]] bool IsObjectDrawnAsMesh(int id);
 /** @brief Draws the dungeon's mesh structures, depth tested against everything drawn so far. */
 void DrawStructures(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer);
+
+/**
+ * @brief Lights what has been drawn (the ground, walls, buildings) with the light of the lamps inside the tavern, the
+ * smithy and the church, where it comes out of their windows and doorways, from the depth of each pixel. Town only.
+ */
+void ApplyWindowGlow(const Surface &out, const Projection &proj, const std::vector<float> &depthBuffer);
+/** @brief The town's trees: each a billboard of its own art, facing the camera, on its trunk's foot. */
+void CollectTreeSprites(Vec2 viewerPos, std::vector<Entity> &entities);
+
+/** @brief Whether the lamps inside the tavern, the smithy and the church are lit (default) or out. */
+void SetWindowLightEnabled(bool enabled);
 
 /** @brief Debug: mesh rasterizer counters per frame since the last call, as text. */
 std::string TakeRasterStats(int frames);

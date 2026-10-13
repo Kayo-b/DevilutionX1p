@@ -36,6 +36,7 @@
 #include "stores.h"
 #include "utils/log.hpp"
 #include "fp/fp_raycast.hpp"
+#include "fp/fp_sky.hpp"
 #include "fp/fp_textures.hpp"
 #include "fp/fp_weapon.hpp"
 #include "fp/fp_world.hpp"
@@ -52,7 +53,7 @@ bool FirstPersonActive = false;
 
 uint8_t Shade(uint8_t color, uint8_t light)
 {
-	return LightTables[std::min<uint8_t>(light, LightsMax)][color];
+	return FpLightTable(std::min<uint8_t>(light, LightsMax))[color];
 }
 
 /** @brief Colour of the open sky above town, which has no ceiling. */
@@ -166,7 +167,10 @@ void DrawFog(const Surface &out, const Projection &proj, const std::vector<float
 	for (int y = 0; y < proj.height; y++) {
 		uint8_t *dst = out.at(0, y);
 		const float *depth = &depthBuffer[static_cast<size_t>(y) * proj.width];
+		const bool skyRow = y <= proj.horizon;
 		for (int x = 0; x < proj.width; x++) {
+			if (skyRow && std::isinf(depth[x]))
+				continue; // the sky
 			// The ground stores its depth a little farther (FloorDepthBias): a few percent is no matter here.
 			const int step = FogStep(depth[x]);
 			if (step > 0)
@@ -190,6 +194,7 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 
 	const uint8_t *structures = StructureTileMap();
 	const uint8_t *buildings = BuildingTileMap();
+	const uint16_t *floorSources = FloorSourceMap();
 	const bool holes = HasFloorHoles();
 	const std::vector<int16_t> &ground = GetGroundFloor();
 	for (int y = 0; y < proj.height; y++) {
@@ -238,7 +243,13 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 				// Under a structure the piece's own art is the structure, drawn as a mesh: plain ground instead.
 				const PieceTextures &piece = GetPieceTextures(dPiece[tile.x][tile.y]);
 				// The ceiling is the plain ground: mirroring each tile's floor would hang lava, water and blood overhead.
-				floorArt = (structure != 0 && structure != 3) || !isFloor || (buildings != nullptr && buildings[static_cast<size_t>(tile.y) * MAXDUNX + tile.x] != 0) ? &ground : &piece.floor;
+				const uint8_t building = buildings != nullptr ? buildings[static_cast<size_t>(tile.y) * MAXDUNX + tile.x] : 0;
+				floorArt = (structure != 0 && structure != 3) || !isFloor || (building != 0 && building != 3) ? &ground : &piece.floor;
+				if (isFloor && building == 3 && !piece.groundFloor.empty())
+					floorArt = &piece.groundFloor; // a prop drawn as a mesh stands on it: the ground without the prop
+				if (const uint16_t source = floorSources != nullptr ? floorSources[static_cast<size_t>(tile.y) * MAXDUNX + tile.x] : 0; isFloor && source != 0)
+					floorArt = &GetPieceTextures(source).floor; // the open ground near it, where its own floor is not ground
+
 				floorFill = isTown ? &ground : nullptr; // baked shadows and holes in town ground
 				fineFloor = fineRow && floorArt->size() == static_cast<size_t>(FloorTextureSize) * FloorTextureSize ? &UpscaledTexture(*floorArt, FloorTextureSize) : nullptr;
 				tileLight = LightAt(tile);
@@ -428,7 +439,7 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 			const int u = std::clamp(static_cast<int>(along * FaceTextureWidth), 0, FaceTextureWidth - 1);
 
 			const uint8_t lightLevel = LightAt(hit.previous);
-			const uint8_t *light = LightTables[lightLevel].data();
+			const uint8_t *light = FpLightTable(lightLevel).data();
 			// A recess (blind arch, niche) is a second plane behind the face; the rays carry on to it.
 			const float rayAcross = std::abs(hit.xSide ? ray.x : ray.y);
 			const float recessDistance = art.recess != nullptr && rayAcross > 1e-4F ? hit.distance + art.recessDepth / rayAcross : 0.0F;
@@ -463,8 +474,8 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 					stepU[step] = doorColumn(stepDepth[step]);
 				}
 			}
-			const uint8_t *recessLight = LightTables[std::min<int>(lightLevel + 1, LightsMax)].data();
-			const uint8_t *revealLight = LightTables[std::min<int>(lightLevel + 3, LightsMax)].data();
+			const uint8_t *recessLight = FpLightTable(std::min<int>(lightLevel + 1, LightsMax)).data();
+			const uint8_t *revealLight = FpLightTable(std::min<int>(lightLevel + 3, LightsMax)).data();
 			// The wall covers the bottom `hitRows` rows of the face texture; the cap at their top is cut off.
 			const float artScale = WallArtScale(hitRows);
 			const float rowsPerTile = SpritePixelsPerTileY * artScale; // face rows per tile of height (see WallArtRow)
@@ -603,12 +614,127 @@ struct SpriteCoverage {
 };
 
 /**
+ * @brief Draws a sprite standing as an upright quad on its foot, turned to face the camera (Entity::facing): column by
+ * column, each where the view ray meets the quad, at that depth. Blown up, it is sampled sharp bilinearly as the
+ * billboards are.
+ */
+void DrawFacingSprite(const Surface &out, const Projection &proj, const std::vector<float> &depthBuffer, const Entity &entity, const BillboardRect &rect)
+{
+	const std::vector<int16_t> &pixels = *entity.pixels;
+	const int spriteWidth = entity.pixelsWidth;
+	const int spriteHeight = entity.pixelsHeight;
+	const Vec2 toFoot { entity.pos.x - proj.pos.x, entity.pos.y - proj.pos.y };
+	const float distance = std::hypot(toFoot.x, toFoot.y);
+	const Vec2 across { -toFoot.y / distance, toFoot.x / distance }; // along the quad, to the camera's right
+	const uint8_t *light = entity.lit ? FpLightTable(LightAt(entity.tile)).data() : nullptr;
+	std::array<uint8_t, 256> lit;
+	for (int i = 0; i < 256; i++)
+		lit[i] = light != nullptr ? light[i] : static_cast<uint8_t>(i);
+	// Blown up (near), as for the billboards: the sprite with a clear border, blended between texels.
+	const float nearestDepth = std::max(rect.depth - entity.width / 2.0F, 0.1F);
+	const bool smooth = static_cast<float>(spriteHeight) * 1.5F <= entity.height * proj.focal / nearestDepth;
+	static std::vector<uint8_t> padded;
+	const int paddedWidth = spriteWidth + 2;
+	std::array<SDL_Color, 256> rgb;
+	if (smooth) {
+		NearestColor.Prepare();
+		for (int i = 0; i < 256; i++)
+			rgb[i] = logical_palette[lit[i]];
+		padded.assign(static_cast<size_t>(paddedWidth) * (spriteHeight + 2), 0);
+		for (int v = 0; v < spriteHeight; v++)
+			for (int u = 0; u < spriteWidth; u++)
+				padded[static_cast<size_t>(v + 1) * paddedWidth + u + 1] = static_cast<uint8_t>(std::max<int16_t>(pixels[static_cast<size_t>(v) * spriteWidth + u], 0));
+	}
+	auto Sharpen = [](int t) { return std::clamp((t - 64) * 2, 0, 256); };
+	for (int x = std::max(rect.left, 0); x < std::min(rect.right, proj.width); x++) {
+		// Where the view ray meets the quad: camera + ray * depth = foot + across * along.
+		const Vec2 ray = proj.columnRay(x);
+		const float det = ray.y * across.x - ray.x * across.y;
+		if (std::abs(det) < 1e-6F)
+			continue;
+		const float depth = (toFoot.y * across.x - toFoot.x * across.y) / det;
+		const float along = (ray.x * toFoot.y - ray.y * toFoot.x) / det;
+		if (depth < 0.1F)
+			continue;
+		const float fu = (along / entity.width + 0.5F) * static_cast<float>(spriteWidth) - 0.5F;
+		if (fu < -1.0F || fu >= static_cast<float>(spriteWidth))
+			continue;
+		const float scale = proj.focal / depth;
+		const float top = static_cast<float>(proj.horizon) - (entity.bottom + entity.height - EyeHeight) * scale;
+		const float bottom = static_cast<float>(proj.horizon) - (entity.bottom - EyeHeight) * scale;
+		const float stepV = static_cast<float>(spriteHeight) / (bottom - top);
+		const int y0 = std::max(0, static_cast<int>(std::ceil(top - 0.5F)));
+		const int y1 = std::min(proj.height, static_cast<int>(std::ceil(bottom - 0.5F)));
+		const int fogStep = FogStep(depth);
+		const uint8_t *fog = fogStep > 0 ? FogTables()[fogStep].data() : nullptr;
+		const int u0 = static_cast<int>(std::floor(fu));
+		const int tu = Sharpen(static_cast<int>((fu - static_cast<float>(u0)) * 256.0F));
+		const int u = std::clamp(static_cast<int>(fu + 0.5F), 0, spriteWidth - 1);
+		for (int y = y0; y < y1; y++) {
+			if (depth > depthBuffer[static_cast<size_t>(y) * proj.width + x])
+				continue; // behind something nearer
+			const float fv = (static_cast<float>(y) + 0.5F - top) * stepV - 0.5F;
+			uint8_t color;
+			if (!smooth) {
+				const int v = std::clamp(static_cast<int>(fv + 0.5F), 0, spriteHeight - 1);
+				const int16_t pixel = pixels[static_cast<size_t>(v) * spriteWidth + u];
+				if (pixel <= 0)
+					continue;
+				color = lit[pixel];
+			} else {
+				const int v0 = static_cast<int>(std::floor(fv));
+				if (v0 < -1 || v0 >= spriteHeight)
+					continue;
+				const uint8_t *row0 = &padded[static_cast<size_t>(v0 + 1) * paddedWidth + 1];
+				const uint8_t *row1 = row0 + paddedWidth;
+				const int s00 = row0[u0];
+				const int s10 = row0[u0 + 1];
+				const int s01 = row1[u0];
+				const int s11 = row1[u0 + 1];
+				if (s00 == s10 && s00 == s01 && s00 == s11) {
+					if (s00 == 0)
+						continue;
+					color = lit[s00];
+				} else {
+					const int tv = Sharpen(static_cast<int>((fv - static_cast<float>(v0)) * 256.0F));
+					const std::array<int, 4> samples { s00, s10, s01, s11 };
+					const std::array<int, 4> weights { (256 - tu) * (256 - tv), tu * (256 - tv), (256 - tu) * tv, tu * tv };
+					int coverage = 0;
+					int r = 0;
+					int g = 0;
+					int b = 0;
+					for (size_t k = 0; k < 4; k++) {
+						if (samples[k] == 0)
+							continue;
+						const SDL_Color c = rgb[samples[k]];
+						coverage += weights[k];
+						r += weights[k] * c.r;
+						g += weights[k] * c.g;
+						b += weights[k] * c.b;
+					}
+					if (coverage < 256 * 256 / 2)
+						continue;
+					color = NearestColor(r / coverage, g / coverage, b / coverage);
+				}
+			}
+			if (fog != nullptr)
+				color = fog[color];
+			*out.at(x, y) = color;
+		}
+	}
+}
+
+/**
  * @brief Draws a billboard. With an `outline` colour, it is traced round with a line of that colour one sprite pixel
  * wide (1 to 3 screen pixels), as the iso view outlines what is under the cursor (the line can go a little into the
  * floor under the sprite's foot).
  */
 SpriteCoverage DrawSpriteBillboard(const Surface &out, const Projection &proj, const std::vector<float> &zBuffer, const std::vector<float> *depthBuffer, const Entity &entity, const BillboardRect &rect, uint8_t outline = 0)
 {
+	if (entity.facing && depthBuffer != nullptr && entity.pixels != nullptr) {
+		DrawFacingSprite(out, proj, *depthBuffer, entity, rect);
+		return {}; // town props: neither outlined nor labelled
+	}
 	static std::vector<int16_t> decoded;
 	const std::vector<int16_t> *source = entity.pixels;
 	int spriteWidth = entity.pixelsWidth;
@@ -621,7 +747,7 @@ SpriteCoverage DrawSpriteBillboard(const Surface &out, const Projection &proj, c
 		spriteHeight = sprite.height();
 	}
 	const std::vector<int16_t> &pixels = *source;
-	const uint8_t *light = entity.lit ? LightTables[LightAt(entity.tile)].data() : nullptr;
+	const uint8_t *light = entity.lit ? FpLightTable(LightAt(entity.tile)).data() : nullptr;
 	const int screenWidth = rect.right - rect.left;
 	const int screenHeight = rect.bottom - rect.top;
 
@@ -849,7 +975,7 @@ void DrawFlatSprite(const Surface &out, const Projection &proj, const std::vecto
 	// Looking down hard puts the horizon above the top of the view: the rows still start at 0.
 	const int y0 = std::max({ 0, proj.horizon + 1, static_cast<int>(std::floor(minY)) });
 	const int y1 = std::min(proj.height - 1, static_cast<int>(std::ceil(maxY)));
-	const uint8_t *light = entity.lit ? LightTables[LightAt(entity.tile)].data() : nullptr;
+	const uint8_t *light = entity.lit ? FpLightTable(LightAt(entity.tile)).data() : nullptr;
 	for (int y = y0; y <= y1; y++) {
 		const float depth = EyeHeight / -proj.rowSlope(y); // floor distance for this row
 		const int fogStep = FogStep(depth);
@@ -981,6 +1107,7 @@ void DrawFirstPersonView(const Surface &out)
 	static std::vector<float> depthBuffer;
 
 	NotePaletteChange();
+	RefreshFpLightTables();
 	PrepareDoorways();
 	const Projection proj = GetProjection();
 	zBuffer.resize(static_cast<size_t>(proj.width));
@@ -1015,6 +1142,8 @@ void DrawFirstPersonView(const Surface &out)
 		DrawBuildings(out, proj, zBuffer, depthBuffer);
 	else
 		DrawStructures(out, proj, depthBuffer);
+	ApplyWindowGlow(out, proj, depthBuffer);
+	DrawSky(out, proj, depthBuffer);
 	DrawFog(out, proj, depthBuffer);
 	lap(2);
 	DrawEntities(out, proj, zBuffer, &depthBuffer);

@@ -89,6 +89,7 @@ set(libdevilutionx_SRCS
   fp/fp_dungeon.cpp
   fp/fp_pick.cpp
   fp/fp_raycast.cpp
+  fp/fp_sky.cpp
   fp/fp_textures.cpp
   fp/fp_view.cpp
   fp/fp_weapon.cpp
@@ -1127,6 +1128,19 @@ target_link_dependencies(libdevilutionx PUBLIC
 )
 if(DEVILUTIONX_SCREENSHOT_FORMAT STREQUAL DEVILUTIONX_SCREENSHOT_FORMAT_PNG)
   target_link_dependencies(libdevilutionx PUBLIC libdevilutionx_surface_to_png)
+endif()
+
+# The first-person town sky (assets/fp/sky.bin) is zlib-compressed; without zlib the sky is a flat colour.
+if(NOT TARGET ZLIB::ZLIB)
+  find_package(ZLIB QUIET)
+  if(TARGET ZLIB::ZLIB)
+    # Linked from the top-level directory (resolve_target_link_dependencies), which must see it too.
+    set_target_properties(ZLIB::ZLIB PROPERTIES IMPORTED_GLOBAL TRUE)
+  endif()
+endif()
+if(TARGET ZLIB::ZLIB)
+  target_link_dependencies(libdevilutionx PUBLIC ZLIB::ZLIB)
+  target_compile_definitions(libdevilutionx PRIVATE DEVILUTIONX_FP_ZLIB)
 endif()
 
 # Use file GENERATE instead of configure_file because configure_file

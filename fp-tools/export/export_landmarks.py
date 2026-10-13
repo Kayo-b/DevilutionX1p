@@ -12,7 +12,9 @@ Binary format (little endian), file `landmarks.bin`:
              then triangleCount * { 9 x f32 (three vertices u, w, z), 6 x f32 (texture u, v per vertex),
                                      u8 class, i16 texture (-1: none) }
 u and w run 0..1 over the model's plaza x and y extent; z is plaza units above its lowest point.
-class: 0 wall, 1 roof, 2 door. Texture coordinates are the OBJ's (v up, repeating past 0..1).
+class: 0 wall, 1 roof, 2 door, 3 inside (the church's entrance hall, seen through its open door: lit by its lamps),
+       4 rim (the sides of the church's cross windows, lit by the lamp the game puts behind each).
+Texture coordinates are the OBJ's (v up, repeating past 0..1).
 """
 import os, struct
 import numpy as np
@@ -89,16 +91,89 @@ CHURCH_SKIP = ('rope', 'bell', 'column', 'tuscan', 'hinge', 'altar_cloth', 'Box4
 CHURCH_MATS = ('church_wall', 'ch_roof', 'ch_roof_int', 'door', 'door_iron', 'vitraliu', 'grinzi', 'ch_floor')
 
 
+# The front door stands open: its two leaves (with their iron and the battens on their inside) swung into the church
+# on their hinges at the doorway's sides.
+DOOR_HINGE_Y = 286.22
+DOOR_LEAVES = {'ch_front_door001': (46.70, 1), 'ch_door_iron001': (46.70, 1), 'Box434': (46.70, 1), 'Box435': (46.70, 1),
+               'ch_front_door': (48.50, -1), 'ch_door_iron': (48.50, -1), 'Box432': (48.50, -1), 'Box433': (48.50, -1)}
+DOOR_SWING = 95.0  # degrees
+# Behind it a small entrance hall (the nave is not modelled inside): x, y, z extent in the plaza's units.
+HALL = (45.95, 49.25, 286.36, 288.1, 14.63, 17.6)
+
+
+def swing(p, hx, hy, degrees):
+    """Vertices turned about a vertical hinge at (hx, hy) by an angle (counterclockwise seen from above)."""
+    a = np.radians(degrees)
+    c, s_ = np.cos(a), np.sin(a)
+    q = p.copy()
+    dx, dy = p[:, 0] - hx, p[:, 1] - hy
+    q[:, 0] = hx + c * dx - s_ * dy
+    q[:, 1] = hy + s_ * dx + c * dy
+    return q
+
+
+def open_door(group, p):
+    """A door leaf's vertices turned about its hinge (vertical, at the doorway's side) into the church."""
+    hinge = DOOR_LEAVES.get(group)
+    if hinge is None:
+        return p
+    hx, sign = hinge
+    return swing(p, hx, DOOR_HINGE_Y, DOOR_SWING * sign)
+
+
+def face(out, corners, inward, material, cls, scale=0.5):
+    """A quad (two triangles) wound so it faces `inward`, textured in world space (scale texture repeats per unit)."""
+    q = [np.array(c, dtype=float) for c in corners]
+    if np.dot(np.cross(q[1] - q[0], q[2] - q[0]), inward) < 0:
+        q = q[::-1]
+    axis = int(np.argmax(np.abs(inward)))
+    keep = [k for k in range(3) if k != axis]
+    uv = lambda p: (p[keep[0]] * scale, p[keep[1]] * scale)
+    tex = texture_index(CHURCH_DIR, CHURCH_TEXTURES, material)
+    out.append((np.array([q[0], q[1], q[2]]), cls, np.array([uv(q[0]), uv(q[1]), uv(q[2])]), tex))
+    out.append((np.array([q[0], q[2], q[3]]), cls, np.array([uv(q[0]), uv(q[2]), uv(q[3])]), tex))
+
+
+def entrance_hall(out):
+    """The entrance hall behind the open door: a stone floor, stone walls and a timber ceiling, all facing in."""
+    x0, x1, y0, y1, z0, z1 = HALL
+    face(out, [(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0)], (0, 0, 1), 'ch_floor', 3)
+    face(out, [(x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)], (0, 0, -1), 'ch_roof_int', 3)
+    face(out, [(x0, y0, z0), (x0, y1, z0), (x0, y1, z1), (x0, y0, z1)], (1, 0, 0), 'church_wall', 3)
+    face(out, [(x1, y0, z0), (x1, y1, z0), (x1, y1, z1), (x1, y0, z1)], (-1, 0, 0), 'church_wall', 3)
+    face(out, [(x0, y1, z0), (x1, y1, z0), (x1, y1, z1), (x0, y1, z1)], (0, -1, 0), 'church_wall', 3)
+
+
+# The nave's side walls with their four cross windows each, and how far across (x) each wall reaches.
+CROSS_WALLS = {'ch_wall_cross_02': (43.0, 43.5), 'ch_wall_cross_01': (51.7, 52.2)}
+
+
+def cross_rim(p, across):
+    """Whether a triangle of a side wall lines one of its cross windows: across the wall's thickness, facing along it
+    or up or down, at the windows' height, clear of the wall's ends (and of the annex's doorway at its front)."""
+    n = np.cross(p[1] - p[0], p[2] - p[0])
+    length = np.linalg.norm(n)
+    if length < 1e-12:
+        return False
+    lo, hi = p.min(0), p.max(0)
+    return (abs(n[0]) / length < 0.3 and lo[2] > 15.5 and hi[2] < 17.6 and lo[1] > 288.0 and hi[1] < 297.3
+            and lo[0] >= across[0] - 0.01 and hi[0] <= across[1] + 0.01)
+
+
 def church_triangles():
     v, uvs, tris = read_obj(CHURCH)
     out = []
     for a, b, c, m, g in tris:
-        if any(t in g for t in CHURCH_SKIP) or m not in CHURCH_MATS:
-            continue
-        p = v[[a[0], b[0], c[0]]]
+        if g not in DOOR_LEAVES and (any(t in g for t in CHURCH_SKIP) or m not in CHURCH_MATS):
+            continue  # (the door's battens are Box43x: kept with their leaves)
+        p = open_door(g, v[[a[0], b[0], c[0]]])
         if p[:, 2].max() <= 14.7:
             continue
-        out.append((p, 1 if m in ('ch_roof', 'ch_roof_int') else 0, tri_uv(uvs, a, b, c), texture_index(CHURCH_DIR, CHURCH_TEXTURES, m)))
+        cls = 1 if m in ('ch_roof', 'ch_roof_int') else (3 if g in DOOR_LEAVES else 0)
+        if g in CROSS_WALLS and cross_rim(p, CROSS_WALLS[g]):
+            cls = 4
+        out.append((p, cls, tri_uv(uvs, a, b, c), texture_index(CHURCH_DIR, CHURCH_TEXTURES, m)))
+    entrance_hall(out)
     # Behind the cross windows of the nave's side walls: the interior is not modelled, so a box of stained glass a
     # little inside the walls shows through them (the original art has them glow red).
     glass = texture_index(CHURCH_DIR, CHURCH_TEXTURES, 'vitraliu')
@@ -110,7 +185,10 @@ def church_triangles():
     along_x = lambda p: (p[0] * 0.6, p[2] * 0.6)
     quad((x0, y0, z0), (x0, y1, z0), (x0, y1, z1), (x0, y0, z1), along_y)
     quad((x1, y1, z0), (x1, y0, z0), (x1, y0, z1), (x1, y1, z1), along_y)
-    quad((x1, y0, z0), (x0, y0, z0), (x0, y0, z1), (x1, y0, z1), along_x)
+    # The front: either side of the entrance hall (which stands where it would be).
+    hx0, hx1 = HALL[0], HALL[1]
+    quad((hx0, y0, z0), (x0, y0, z0), (x0, y0, z1), (hx0, y0, z1), along_x)
+    quad((x1, y0, z0), (hx1, y0, z0), (hx1, y0, z1), (x1, y0, z1), along_x)
     quad((x0, y1, z0), (x1, y1, z0), (x1, y1, z1), (x0, y1, z1), along_x)
     return out
 
@@ -130,6 +208,10 @@ PLAZA_BUILDINGS = [
     ('fountain', (84.2, 239.7, 87.0, 242.5)),
 ]
 PLAZA_GROUND = 14.6
+# Open doors of the plaza's buildings: their parts, turned about a hinge (x, y) by an angle. Ogden's tavern door
+# stands open behind him, swung out on its left edge as the original art has it.
+_OGDEN_DOOR = (78.69, 249.89, -100.0)
+PLAZA_OPEN_DOORS = {g: _OGDEN_DOOR for g in ('door_generic_lower015', 'door_generic_upper007', 'door_tr028', 'door_tr029', 'door_tr030', 'door_tr031')}
 ROOF_MATERIALS = ('straw_roof_ext', 'straw_roof_int', 'Roof_straw', 'roof_int')
 
 
@@ -155,6 +237,8 @@ def plaza_triangles(box):
         if g not in inside:
             continue
         p = v[[a[0], b[0], c[0]]]
+        if g in PLAZA_OPEN_DOORS:
+            p = swing(p, *PLAZA_OPEN_DOORS[g])
         if p[:, 2].max() <= PLAZA_GROUND + 0.05:
             continue
         cls = 1 if (m in ROOF_MATERIALS or 'roof' in g.lower()) else (2 if m == 'door' else 0)
