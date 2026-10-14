@@ -168,14 +168,19 @@ constexpr float CaveTopShadow = 1.5F;
 constexpr float CaveTopShadowDrop = 1.0F;
 
 /**
- * The caves' pools of lava (and water): how far the ground eats into them along their shores (a share of the pool
- * among the tile centres around a point, the shore at a half: up to about 0.4 tile in), the dark crust of cooled rock
- * along them (in the same share) and how dark it is (light levels), the shore's ragged grain (PoolNoise samples a
- * tile), and how much of a piece's art must be lava or water (the cycled colours) for its art to be laid on every pool
- * (so the original's dark crust islands go).
+ * The caves' pools of lava (and water) are drawn round a skeleton (PoolCover): their tiles' centres and the lines
+ * between neighbouring ones, `PoolRadius` (tiles) about them, the lines between diagonal neighbours (which carry a
+ * river running diagonally across the grid on from tile to tile, as the game will not let anyone step between them)
+ * `PoolJoinRadius`; the shore wanders `PoolRagged` either way. Then: the dark crust of cooled rock along it (tiles)
+ * and how dark it is (light levels), the shore's grain (PoolNoise samples a tile), and how much of a piece's art must
+ * be lava or water (the cycled colours) for its art to be laid on every pool (so the original's dark crust islands go).
  */
-constexpr float PoolShore = 0.42F;
-constexpr float PoolCrust = 0.07F;
+constexpr float PoolRadius = 0.5F;
+/** Light levels the caves' pools are drawn brighter than the light where they are: lava glows, and a river shows. */
+constexpr float PoolGlow = 3.0F;
+constexpr float PoolJoinRadius = 0.3F;
+constexpr float PoolRagged = 0.1F;
+constexpr float PoolCrust = 0.04F;
 constexpr float PoolCrustDarkness = 3.0F;
 constexpr float PoolNoiseScale = 10.0F;
 constexpr float CleanPoolShare = 0.97F;
@@ -1162,13 +1167,53 @@ bool IsSupport(CleanKind kind)
 
 // --- Lighting ------------------------------------------------------------------------------------------------------
 
-/** @brief 1 where a tile is pool (or rock, or off the map: a pool's shore is where it meets the ground), else 0. */
-inline float PoolAt(int x, int y)
+/** @brief What a tile is to the caves' pools: 2 pool (lava, water), 1 rock (or off the map), 0 ground. */
+inline uint8_t PoolKind(int x, int y)
 {
 	if (x < 0 || y < 0 || x >= MAXDUNX || y >= MAXDUNY)
-		return 1.0F;
+		return 1;
 	const CleanKind kind = Kinds[static_cast<size_t>(y) * MAXDUNX + x];
-	return kind == CleanKind::Flat || kind == CleanKind::Wall || kind == CleanKind::Stairs ? 1.0F : 0.0F;
+	if (kind == CleanKind::Flat)
+		return 2;
+	return kind == CleanKind::Wall || kind == CleanKind::Stairs ? 1 : 0;
+}
+
+/**
+ * @brief How far inside the caves' pools a point is (tiles; below 0 outside): within PoolRadius of the centre of a
+ * pool tile or of the line to a neighbouring one along the grid (pool, or the rock it runs up to), within
+ * PoolJoinRadius of the line to a diagonal one. The point is at (ax, ay) between four tile centres, at (0, 0), (1, 0),
+ * (0, 1) and (1, 1), which are q00, q10, q01, q11 (PoolKind); lines to centres beyond them come no nearer than these.
+ */
+inline float PoolCover(uint8_t q00, uint8_t q10, uint8_t q01, uint8_t q11, float ax, float ay)
+{
+	if ((q00 & q10 & q01 & q11) == 2)
+		return 1.0F; // amid a pool
+	float d2 = 81.0F;
+	auto centre = [&](uint8_t q, float cx, float cy) {
+		if (q == 2)
+			d2 = std::min(d2, (ax - cx) * (ax - cx) + (ay - cy) * (ay - cy));
+	};
+	centre(q00, 0.0F, 0.0F);
+	centre(q10, 1.0F, 0.0F);
+	centre(q01, 0.0F, 1.0F);
+	centre(q11, 1.0F, 1.0F);
+	float d = std::sqrt(d2);
+	auto joined = [](uint8_t a, uint8_t b) { return (a == 2 && b != 0) || (b == 2 && a != 0); };
+	if (joined(q00, q10))
+		d = std::min(d, ay);
+	if (joined(q01, q11))
+		d = std::min(d, 1.0F - ay);
+	if (joined(q00, q01))
+		d = std::min(d, ax);
+	if (joined(q10, q11))
+		d = std::min(d, 1.0F - ax);
+	float cover = PoolRadius - d;
+	constexpr float InvSqrt2 = 0.70710678F;
+	if (q00 == 2 && q11 == 2)
+		cover = std::max(cover, PoolJoinRadius - std::abs(ax - ay) * InvSqrt2);
+	if (q10 == 2 && q01 == 2)
+		cover = std::max(cover, PoolJoinRadius - std::abs(ax + ay - 1.0F) * InvSqrt2);
+	return cover;
 }
 
 inline float TileLight(int x, int y)
@@ -1397,11 +1442,12 @@ void DrawCleanFloorAndCeiling(const Surface &out, const Projection &proj, std::v
 		bool flat = false;
 		const std::vector<int16_t> *flatArt = nullptr;
 		bool cleanArt = false;
-		// The caves' pools: how much of the tile centres around a point are pool (or rock), interpolated like the light.
-		float p00 = 1.0F;
-		float p10 = 1.0F;
-		float p01 = 1.0F;
-		float p11 = 1.0F;
+		// The caves' pools: what the tile centres around a point are to them (PoolKind), and whether any is pool.
+		uint8_t q00 = 0;
+		uint8_t q10 = 0;
+		uint8_t q01 = 0;
+		uint8_t q11 = 0;
+		bool poolCell = false;
 		// Up close, the pools' art is sampled at a dithered point, which blends its texels instead of showing squares.
 		const bool jitterPool = across * FloorTextureSize < 1.0F;
 		// The pools' warp (PoolWarp) changes slowly: worked out every WarpStep pixels along the row, interpolated between.
@@ -1431,10 +1477,11 @@ void DrawCleanFloorAndCeiling(const Surface &out, const Projection &proj, std::v
 				l01 = TileLight(cx, cy + 1);
 				l11 = TileLight(cx + 1, cy + 1);
 				if (raggedPools && isFloor) {
-					p00 = PoolAt(cx, cy);
-					p10 = PoolAt(cx + 1, cy);
-					p01 = PoolAt(cx, cy + 1);
-					p11 = PoolAt(cx + 1, cy + 1);
+					q00 = PoolKind(cx, cy);
+					q10 = PoolKind(cx + 1, cy);
+					q01 = PoolKind(cx, cy + 1);
+					q11 = PoolKind(cx + 1, cy + 1);
+					poolCell = q00 == 2 || q10 == 2 || q01 == 2 || q11 == 2;
 				}
 			}
 			const float ax = fx - static_cast<float>(cx);
@@ -1446,20 +1493,19 @@ void DrawCleanFloorAndCeiling(const Surface &out, const Projection &proj, std::v
 				if (tx != cachedTile.x || ty != cachedTile.y) {
 					cachedTile = { tx, ty };
 					flat = Kinds[static_cast<size_t>(ty) * MAXDUNX + tx] == CleanKind::Flat;
-					cleanArt = flat && !CleanPoolArt.empty();
-					flatArt = !flat ? nullptr : (cleanArt ? &CleanPoolArt.front() : &GetPieceTextures(dPiece[tx][ty]).floor);
+					// The caves' pools reach a little onto the ground (PoolCover): their art there is the clean pool art.
+					cleanArt = raggedPools && !CleanPoolArt.empty();
+					flatArt = cleanArt ? &CleanPoolArt.front() : (flat ? &GetPieceTextures(dPiece[tx][ty]).floor : nullptr);
 				}
 				depthRow[x] = depth;
-				if (flat && flatArt != nullptr && flatArt->size() == static_cast<size_t>(FloorTextureSize) * FloorTextureSize) {
-					// The caves' pools: the ground eats into them along their shores, raggedly, a dark crust of cooled rock
-					// between (PoolShore).
+				if ((raggedPools ? poolCell : flat) && flatArt != nullptr && flatArt->size() == static_cast<size_t>(FloorTextureSize) * FloorTextureSize) {
+					// The caves' pools: round their skeleton (PoolCover), the shore ragged, a dark crust of cooled rock
+					// along it.
 					float inside = 1.0F;
 					if (raggedPools) {
-						const float near = p00 + (p10 - p00) * ax;
-						const float far = p01 + (p11 - p01) * ax;
-						const float pool = near + (far - near) * ay;
-						if (pool < 0.9999F)
-							inside = pool - 0.5F - PoolShore * PoolNoise(wx, wy);
+						inside = PoolCover(q00, q10, q01, q11, ax, ay);
+						if (inside < PoolRagged + PoolCrust && inside > -PoolRagged)
+							inside += PoolRagged * (2.0F * PoolNoise(wx, wy) - 1.0F);
 					}
 					if (inside <= 0.0F) {
 						dst[x] = sampler.At(wx, wy, LightLevel(light, x, y), x, y);
@@ -1502,7 +1548,16 @@ void DrawCleanFloorAndCeiling(const Surface &out, const Projection &proj, std::v
 								break;
 						}
 					}
-					dst[x] = texel <= 0 ? 0 : LightTables[LightLevel(light, x, y)][texel];
+					if (texel <= 0) {
+						dst[x] = 0;
+						continue;
+					}
+					// The caves' lava glows (PoolGlow), and its colours never go black (a step past the end of their ramp).
+					int level = LightLevel(raggedPools ? light - PoolGlow : light, x, y);
+					uint8_t color = LightTables[level][texel];
+					while (color == 0 && raggedPools && level > 0)
+						color = LightTables[--level][texel];
+					dst[x] = color;
 					continue;
 				}
 			}

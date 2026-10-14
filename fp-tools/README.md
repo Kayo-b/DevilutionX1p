@@ -333,10 +333,13 @@ The caves (levels 9-12, and the Poisoned Water Supply) are the clean dungeon's f
   that is lava or water through and through (`FindCleanPools`: the original paints dark crust islands in its pools,
   flat blotches up close), its empty texels filled, still in the cycled colours (so still animated), bent by smooth
   noise as it is laid on (`PoolWarp`, worked out every 8 pixels of a row) so it flows and has no straight seams, and
-  sampled at a dithered point up close. Their shores are ragged (`PoolShore`): how much of the tile centres around a
-  point are pool (or rock: `PoolAt`), interpolated like the light, against `PoolNoise`, so the ground eats into the
-  pool's tiles (never the other way: what looks like lava cannot be walked on) with no straight lines or right
-  angles, a thin dark crust of cooled rock between (`PoolCrust`).
+  sampled at a dithered point up close, glowing (`PoolGlow`: drawn brighter than the light there, its colours never
+  going black). Their shape is drawn round a skeleton (`PoolCover`): `PoolRadius` about their tiles' centres and the
+  lines between neighbouring ones along the grid (and to the rock they run up to), `PoolJoinRadius` about the lines
+  between diagonal neighbours, so a river running diagonally across the grid (as the caves' do, a staircase of tiles
+  touching at their corners) is one stream, not a row of patches; there it reaches onto a corner of the ground beside
+  it, where the game will not let anyone step across anyway. The shore wanders `PoolRagged` either way (`PoolNoise`):
+  no straight lines or right angles; a thin dark crust of cooled rock along it (`PoolCrust`).
 - **Stalagmites:** lone rock tiles (`Pillar`), a leaning spike of rings narrowing to a tip, most with one or two
   smaller ones beside it (`Stalagmite*`).
 - **Fences** (`Fence`, `f` in `cleanmap`): the solid pieces of the megatiles the generator lays fences with (130-140,
