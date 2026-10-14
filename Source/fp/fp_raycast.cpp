@@ -54,9 +54,10 @@ bool IsOpaque(Point tile)
 		return false;
 	if (!InDungeonBounds(tile))
 		return true;
-	// A doorway stays a wall with an opening when its door is open (and walkable).
+	// A doorway stays a wall with an opening when its door is open (and walkable); the caves' gates stand in their
+	// fences, meshes.
 	if (IsDoorwayTile(tile))
-		return true;
+		return !CleanDoorwaysAreGates();
 	if (!IsTileSolid(tile))
 		return false;
 	if (IsCleanDungeon()) {

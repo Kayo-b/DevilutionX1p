@@ -19,6 +19,7 @@ Repository: `/home/kxyx/projects/DevilutionX1p`, the fork `Kayo-b/DevilutionX1p`
 |---|---|
 | **`fp-buildings`** | **the working branch**: first person plus everything 3D (houses, church, dungeon structures, arcades, doors...) |
 | `fp-dungeon-overhaul` | the clean dungeon for the cathedral, catacombs and crypt (fp_dungeon.cpp), on top of `fp-wall-depth` |
+| `fp-cave-overhaul` | the caves (levels 9-12) in the clean dungeon too, on top of `fp-dungeon-overhaul` (hell, 13-16: `fp-hell-overhaul`) |
 | `fp` | the earlier first-person base (`fp-buildings` is built on it, not merged back) |
 | `fp-voxel` | paused experiment (voxel monsters) |
 | `master` | tracks upstream DevilutionX |
@@ -46,7 +47,7 @@ All first-person code lives in `Source/fp/` of each checkout:
 | File | Responsibility |
 |---|---|
 | `fp_view.cpp` | the frame: floor/ceiling pass, wall raycaster for town, caves and hell (art faces, recesses, doors), sprite pass, phase timers; outlines (as the iso view: the item under the crosshair in its quality's colour; enemies in melee range, next to the player, in red: `OutlineColor`) and the items' name labels (the game's item highlighting key and option, `AddItemToLabelQueueAt`) |
-| `fp_dungeon.cpp/.hpp` | **the clean dungeon** (cathedral, catacombs, crypt): tile kinds, texture sets, its floor/ceiling and wall passes, the geometry of its pillars, arches and stairwells |
+| `fp_dungeon.cpp/.hpp` | **the clean dungeon** (cathedral, catacombs, caves, crypt): tile kinds, texture sets, its floor/ceiling and wall passes, the geometry of its pillars, arches and stairwells, the caves' crest, stalagmites, fences, gates and shoring |
 | `fp_raycast.cpp/.hpp` | camera projection, `CastRay`, what counts as a wall (`IsOpaque`), `WallHeight()`, `VerticalScale()` |
 | `fp_textures.cpp/.hpp` | turns each tile piece's iso art into wall-face, floor and column textures; detects pillars, lava and recesses; supplies the filler wall pair (the clean dungeon reads it only to classify tiles) |
 | `fp_doors.cpp/.hpp` | doorways (the door tile stays a wall with an opening through it: a clean arched one, or read off the caves' art) and the door leaf's swing |
@@ -66,7 +67,7 @@ Assets the game loads come from `assets/fp/` and are listed in `CMake/Assets.cma
 | `housemesh.bin` | cottage triangle meshes | `fp-tools/export/export_meshes.py` |
 | `landmarks.bin` | every town building: the plaza's houses, smithy, tavern, fountain, and the church | `fp-tools/export/export_landmarks.py` |
 | `dungeonkit.bin` | dungeon kit pieces (the entrance stairs, the sarcophagus, the caves' door wood) | `fp-tools/export/export_kit.py` |
-| `dungeontex.bin` | the clean dungeon's texture sets (cathedral, catacombs, crypt), made from the dungeon kit's textures | `fp-tools/export/export_dungeon_textures.py` |
+| `dungeontex.bin` | the clean dungeon's texture sets (cathedral, catacombs, caves, crypt), made from the dungeon kit's textures and the Tiny Texture Pack's | `fp-tools/export/export_dungeon_textures.py` |
 
 ---
 
@@ -88,6 +89,17 @@ fp-tools/run.sh          # builds only the files that changed, then launches
 fp-tools/run.sh -f       # extra arguments go to the game (-f shows FPS)
 ```
 In game, **F4** toggles first person. Single player only.
+
+To start straight on a level, in first person and god mode (no hits taken; a missile or spell kills), set `LEVEL`:
+the menu is clicked through for you, the dev commands run (the autotest's steps, section 4), then the game is yours.
+```bash
+LEVEL=9 fp-tools/run.sh                  # caves, level 9 (0: town; 17-24: Hellfire, its data set up for you)
+LEVEL=9 SEED=900 fp-tools/run.sh         # always the same layout (every quest active, as in the selftests)
+GOD=0 FP=0 LEVEL=5 fp-tools/run.sh       # without god mode, in the original view
+LEVEL=9 SEED=900 STEPS="lua:dev.fp.teleport(53,30)" fp-tools/run.sh   # more steps once there
+```
+With `LEVEL` set you play a scratch copy of the test hero (`fp-tools/selftest/out/save.orig`, copied afresh to
+`out/play-save` each run), so your own heroes are left alone; `REAL_SAVES=1` plays your own (the first hero).
 
 **When you add a new asset file**, put it in `assets/fp/` and add it to the `fp/...` list in `CMake/Assets.cmake`.
 The build copies it to `build/assets/fp/`.
@@ -123,10 +135,12 @@ Open the console with the backtick key, then run `dev = require('devilutionx.dev
 | `dev.fp.dumpiso(x0,y0,x1,y1,path)` | save the **original iso art** of a tile rectangle as a PPM image |
 | `dev.fp.dumppiece(x,y,path)` / `dev.fp.dumpfaces(...)` | one tile's iso column, or its extracted wall faces (openings in red) |
 | `dev.fp.buildings / housemodels / housemeshes / housetextures / recesses (bool)` | switch individual features off to compare (recesses: the caves' and hell's, and the cathedral's blind arches) |
-| `dev.fp.cleanmap(x0,y0,x1,y1)` | ASCII map of the clean dungeon's tile kinds: `#` wall, `l` low wall, `o` pillar, `t` torch stand, `D` doorway, `S` stairwell, `~` lava, `^` arch over the tile |
+| `dev.fp.cleanmap(x0,y0,x1,y1)` | ASCII map of the clean dungeon's tile kinds: `#` wall, `l` low wall, `c` wall with a corner cut (the caves'), `o` pillar (the caves': a stalagmite), `t` torch stand, `D` doorway (the caves': a gate), `S` stairwell, `~` lava or water, `f` fence, `^` arch over the tile |
+| `dev.level.warp.quest(n)` | go to a quest level (4: the Poisoned Water Supply, on the caves' tiles) |
 | `dev.fp.dumpfile(gamePath, outPath)` | copy a file out of the game data (a palette: `levels/l1data/l1_1.pal`), for offline tools |
 | `dev.quests.activateAll()` | activate every quest: a level and seed then always give the same layout (a new game picks its quests at random, and they change the levels' set pieces) |
 | `dev.fp.walkto(x,y)`, `dev.fp.where()` | test click-walks; print the camera position |
+| `dev.fp.pick()` | what the crosshair aims at (a monster, a door, an object, an item), as a click there takes it |
 | `dev.fp.operate(x, y)` | operate the object at a tile as a click would (open a sarcophagus, a door, a chest) |
 | `dev.fp.weapon(file, record, frame)` | show one Daggerfall weapon frame (`WEAPON<file>.CIF`; record 0 rest, 1-6 strikes); no arguments to follow the player again |
 | `dev.fp.modeltextures(bool)` | town buildings with the 3D models' own textures (default) or their projected iso art |
@@ -210,15 +224,18 @@ Known test spots:
 | Level 2, seed 4242 | colonnade: pillars x = 52/58, y = 38–44; view from (55,42) |
 | Level 5, seed 500 | catacombs: stairs up (46,25), town stairs (48,31), stairs down (30,87) (look from (30,89), yaw 270, pitch -0.3) |
 | Level 21, seed 2100 (Hellfire) | crypt: town stairs (70,50) and stairs down (73,68), both in notches of the wall; pillared hall (59,58) |
-| Levels 9 / 13 | caves (lava) / hell: still drawn from their art |
+| Level 9, seed 900, all quests | caves: stairs up (37,60), seen from (37,61) yaw 270; lava and stalagmites from (53,30); a gate in a fence (45,30): from (46,30) yaw 180; shoring (62,66) yaw 270 |
+| Level 10, seed 1000, all quests | caves on a green palette; lava pools from (62,27) yaw 150 |
+| Quest level 4 (`dev.level.warp.quest(4)`) | the Poisoned Water Supply: the caves' tiles, water, its own palette |
+| Level 13 | hell: still drawn from its art |
 
 ---
 
 ## 5. How things work, and how to change them
 
 ### 5.1 The clean dungeon: the cathedral, the catacombs and the crypt
-`fp_dungeon.cpp` draws levels 1-8 and Hellfire's 21-24 without their iso art: plain stone with new textures, simple
-geometry. The art is only read to tell what a tile is.
+`fp_dungeon.cpp` draws levels 1-12 and Hellfire's 21-24 without their iso art: plain stone with new textures, simple
+geometry. The art is only read to tell what a tile is. (The caves differ in places: 5.1.1.)
 
 - **Tile kinds** (`ClassifyTiles`, per level and whenever the map changes: doors, levers; `dev.fp.cleanmap` shows them):
   a solid tile is a `Wall` (a block up to the ceiling, or a low wall as tall as its art), a solid tile with no solid
@@ -299,7 +316,71 @@ geometry. The art is only read to tell what a tile is.
 - **Proportions** at the top of `fp_dungeon.cpp` (drawn tiles: walls are `WallHeight() * VerticalScale()` high, about
   3.1 in the cathedral).
 
-### 5.1.1 Art walls: the caves and hell
+### 5.1.1 The caves
+The caves (levels 9-12, and the Poisoned Water Supply) are the clean dungeon's fourth tileset, with their own pieces
+(constants at the top of `fp_dungeon.cpp`, geometry in `AddCaveGeometry`):
+
+- **No ceiling** (`CleanHasCeiling`): the dark above, as the original shows nothing over its cliffs. The walls are
+  `CaveWallHeight` (2.5) high instead of their art's four tiles, so their tops stay in sight.
+- **Rock walls:** flat faces of rock (the set's `wall`), shaded darker towards their top (`CaveTopShadow`), each way a
+  face looks shifted along by its own `CaveFaceShifts`, so inner corners and the two sides of a passage do not mirror
+  each other.
+- **Cut corners** (`FindChamfers`, `c` in `cleanmap`): a rock tile with open ground on two sides and between them,
+  the rock going on behind it both ways, has that corner cut off along the diagonal, so cliffs stepping across the
+  grid run diagonally and the corners of rock round off (not on timber or stairwells). The tile stays a wall for the
+  rays: the wall pass follows a ray into it to the diagonal (`DrawCleanWalls`), or on through the corner cut off.
+- **The crest** along the top of the rock: a ragged rim of darker rock (`crest`) jutting out over the face
+  (`CrestOut*`), its lip hanging down (`CrestDrop*`), its top edge rising into the dark (`CrestRiseMax`), its middle
+  bulging. It follows the outline of the rock (`AddCaveGeometry`: an edge along each open face, a cut corner's
+  diagonal instead of its two faces); each point's shape comes from where it is (`CaveNoise`, `CrestSegments` points a
+  tile), so edges share their corner points, and there both rims are pushed out to meet (`mitre`, at any angle). Over
+  a stairwell's opening the lip stays high (`CrestOverOpening`). About 18 triangles a tile of edge.
+- **Roots** hang from the crest's lip on a few of its segments (`Root*`): one to three thin strands swaying out from
+  the rock and wandering along it, each two ribbons crossed, seen from both sides (`CleanQuad::twoSided`).
+- **Lava and water** (`Flat`): solid pieces whose floor art is in good part the colours the level cycles
+  (`IsCycledFloor`), so whole pools are found, not just their edges. They wear the art of the level's commonest piece
+  that is lava or water through and through (`FindCleanPools`: the original paints dark crust islands in its pools,
+  flat blotches up close), its empty texels filled, still in the cycled colours (so still animated), bent by smooth
+  noise as it is laid on (`PoolWarp`, worked out every 8 pixels of a row) so it flows and has no straight seams, and
+  sampled at a dithered point up close, glowing (`PoolGlow`: drawn brighter than the light there, its colours never
+  going black). Their shape is drawn round a skeleton (`PoolCover`): `PoolRadius` about their tiles' centres and the
+  lines between neighbouring ones along the grid (and to the rock they run up to), `PoolJoinRadius` about the lines
+  between diagonal neighbours, so a river running diagonally across the grid (as the caves' do, a staircase of tiles
+  touching at their corners) is one stream, not a row of patches; there it reaches onto a corner of the ground beside
+  it, where the game will not let anyone step across anyway. The shore wanders `PoolRagged` either way (`PoolNoise`):
+  no straight lines or right angles; a thin dark crust of cooled rock along it (`PoolCrust`).
+- **Stalagmites:** lone rock tiles (`Pillar`), a leaning spike of rings narrowing to a tip, most with one or two
+  smaller ones beside it (`Stalagmite*`).
+- **Fences** (`Fence`, `f` in `cleanmap`): the solid pieces of the megatiles the generator lays fences with (130-140,
+  146, 147; `dungeon`, which the automap keeps) whose art is sparse (`ArtDensity` under `FenceArtDensity`: a fence's
+  end shares its megatile with the rock it runs into). Posts at each tile's middle and edge and two rails
+  (`Fence*`), along their fence neighbours, the rails reaching into the rock or the gates they meet. Rays pass them.
+- **Gates** (`CleanDoorwaysAreGates`): the caves' doors stand in their fences. A doorway there is no wall
+  (`IsOpaque`): a frame of two posts and a lintel (`Gate*` in fp_dungeon.cpp) round the door leaf (fp_doors), whose
+  opening is flat-topped (`CleanOpening::flat`). The leaf is a see-through lattice of the fences' beams
+  (`BuildGateLattice`, `Gate*` in fp_buildings.cpp): two stiles, pickets, three rails and a brace, wearing the `wood` by
+  each beam's texture positions. With no wall face to aim at, `PickAt` (fp_pick.cpp) selects a gate where the
+  crosshair's ray crosses the line through its tile's middle below its top; an open gate only when nothing else is
+  aimed at (what is seen through it comes first).
+- **Shoring:** the megatiles of timber propping a cliff (121-129, 150-152; their pieces alternate timber and rock
+  along the cliff, so all are drawn as rock): posts and two beams along the rock's open faces (`Shoring*`).
+- **Stairwells:** as in the other tilesets (5.1) but like a mine's: their opening flat-topped (`CaveStairsTop`), in
+  a timber frame of two posts and a lintel standing out of the face (`StairsFrame*`), their steps of wood.
+- **Colours:** the levels draw one of four palettes at random (red-brown, green, ...). The rock and the floor take
+  their hue from the level's own art (`ArtHue`: its commonest wall face, its commonest floor), each texel keeping its
+  brightness and a little of its own colour (`OwnChroma`), so a green cave is green. The palette cycles colours 1-31
+  (lava): no texture uses them (`IsCycledColor`).
+- **Textures** (`caves()` in the export script): the Tiny Texture Pack's craggy `Stone_13` on the walls (512 x 512 for
+  two tiles, sharpened: `sharpen`, the pack's textures are soft up close), the stairwells' insides and the
+  stalagmites, its `Stone_14` darker on the crest, `Dirt_05` underfoot (512 for two tiles, sharpened) and `Dirt_06`
+  on steps; the kit's weathered beams (`grinda_02`) on the fences, gate frames and
+  shoring, its plank door on the gates. Graded to the art of level 9 (seed 900): walls (39, 29, 26), floor
+  (55, 42, 38).
+- **Speed:** level 9 ran at about 410 ms a frame, the lava's colour cycling rebuilding all the art structures every
+  frame (the palette fix: 5.7); drawn clean, the caves take 17-26 ms (1280 x 720, headless), about 26 ms looking down
+  at a pool and 32 ms right in front of a stairwell (the wall and its frame fill the view).
+
+### 5.1.2 Art walls: hell (the caves before `fp-cave-overhaul`)
 - Every solid tile is a cube. Each face uses its tile's own iso art, unsheared into a texture (`ExtractFace` in
   `fp_textures.cpp`).
 - Faces the iso camera never drew use the **filler pair**: two neighbouring faces from the level's most common
@@ -357,9 +438,10 @@ geometry. The art is only read to tell what a tile is.
   level (`GetColorPairs`).
 - Copies are made on first use and cached per level, keyed by the texture's storage (`ForgetUpscaledTexture` when it
   is freed: `BuildStructures` does it for the structure art). Structure art is only upscaled in town, the cathedral
-  and the catacombs (`FineCanvas`; in the clean dungeon that is only the torch stands): the caves and hell cycle their
-  palettes, which rebuilds their structures every frame. The clean dungeon's textures are not upscaled: they are
-  finer than the art to begin with, and blend up close by their dithered sampling (5.1).
+  and the catacombs (`FineCanvas`; in the clean dungeon that is only the torch stands): not in the caves, whose art
+  cycles its lava colours, which the smoothing would mix as they stand at one moment, nor in hell. The clean
+  dungeon's textures are not upscaled: they are finer than the art to begin with, and blend up close by their
+  dithered sampling (5.1).
 
 ### 5.3 Controls
 `fp_controls.cpp`:
@@ -574,6 +656,10 @@ Texturing modes for structure faces (`AddStructureFace(..., mapping)`):
   tile light level.
 - Palette entries **112–127** are special near-blacks that also turn red. Run art through `PatchColor()` before
   storing it in textures.
+- The caves (and the crypt, the hive) **cycle colours 0–31** every frame: their lava and water (`IsCycledColor`).
+  Tables and caches built from the palette check `StablePaletteVersion()`, which ignores those colours, not
+  `PaletteVersion()`, which changes every frame there: keyed on it, the caves rebuilt all their structures each
+  frame (about 400 ms a frame). `DrawFirstPersonView` notes palette changes once a frame (`NotePaletteChange`).
 
 ### 5.8 Performance tips
 - Turn on `FP_PHASE_TIMES` first to see which phase is slow.
@@ -607,8 +693,10 @@ commit.
   - Forge and anvil props under the smithy porch.
   - Remaining dark slabs on the ground north of the church (possibly original art).
 - **Dungeon:**
-  - The caves and hell in the clean style (fp_dungeon.cpp is written to take more tilesets: a texture set in the export
-    script, a `SetName`, a `PillarStyleFor`, and the tileset in `IsCleanDungeon`); their stairs have no model either.
+  - Hell in the clean style (`fp-hell-overhaul`; fp_dungeon.cpp is written to take more tilesets: a texture set in the
+    export script, a `SetName`, a `PillarStyleFor`, and the tileset in `IsCleanDungeon`); its stairs have no model either.
+  - The caves: a cut corner's diagonal face and the axis faces beside it do not carry the rock's texture on from one to
+    the other.
   - The clean dungeon's floors are one texture: the art's floor markings (blood, the pentagram of Lazarus' lair) are
     gone; wall decorations painted in the art too (banners and torches that are objects stay, as sprites).
   - The black capital top on plain fallback pillars (caves, hell).

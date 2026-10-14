@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export the texture sets of the first-person dungeon (cathedral, catacombs, Hellfire's crypt): `dungeontex.bin`.
+"""Export the texture sets of the first-person dungeon (cathedral, catacombs, caves, Hellfire's crypt): `dungeontex.bin`.
 
 The textures are the Diablo 1 dungeon kit's: "Dungeon Pieces" of the fan rebuild of Diablo 1's assets (Nexus Mods,
 mod 67266; terms and credits in assets/fp/CREDITS.md), read from where it was unpacked (FP_DUNGEON_PIECES_DIR; a
@@ -8,11 +8,12 @@ way the kit does: its stone blocks on the walls, arches and ceilings, its church
 marble on the pillar shafts with its column-head stone above and below, its plank door with iron bands. The blocks
 repeat once a tile, as on the kit's own wall pieces (a wall is about three repeats high there and here), and the
 kit's normal and specular maps are baked in as light from above, so the blocks stand out of their joints like the
-original's pre-rendered art. The cathedral's sarcophagus stone and torch stand bases are from Screaming Brain
-Studios' "Tiny Texture Pack 2" (CC0), read from its 512 x 512 folder (FP_SBS_TEXTURES_DIR).
+original's pre-rendered art. The cathedral's sarcophagus stone and torch stand bases, and the caves' rock and
+floor, are from Screaming Brain Studios' "Tiny Texture Pack 2" (CC0), read from its 512 x 512 folder
+(FP_SBS_TEXTURES_DIR).
 
 Every texture is then graded to the colours of its tileset's own art, measured on the original iso tiles (full
-light, levels 1, 5 and 21): its own pattern of light and dark, scaled to the art's mean and spread, in the art's hue
+light, levels 1, 5, 9 and 21): its own pattern of light and dark, scaled to the art's mean and spread, in the art's hue
 with a little of its own (`match`). The game converts the RGB to the level's palette when the level loads
 (fp_dungeon.cpp).
 
@@ -74,6 +75,12 @@ def blur(rgb, radius):
     tiled = np.pad(rgb, ((pad, pad), (pad, pad), (0, 0)), mode='wrap')
     im = Image.fromarray(np.clip(tiled, 0, 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(radius))
     return np.asarray(im, dtype=np.float32)[pad:pad + h, pad:pad + w]
+
+
+def sharpen(rgb, radius, amount):
+    """Unsharp mask (wrapping round the edges, so the texture still tiles): the detail finer than `radius` raised by
+    `amount`, for textures that look soft up close."""
+    return np.clip(rgb + amount * (rgb - blur(rgb, radius)), 0, 255)
 
 
 def seamless(rgb, border):
@@ -370,8 +377,9 @@ def sized(rgb, texels_across, texels_down=None):
 # doorways), door (a door leaf: stretched over the whole leaf, not tiled), marble, lid and iron (the sarcophagus: its
 # stone, its bronze lid with the carving stretched over its top, its handles), ivory (the bases of the torch stands);
 # marble2 and ivory2 are second versions of those, each sarcophagus or stand wearing one or the other; band (the
-# cathedral's blind arches' ring: the wall's bricks stood on end, set round the arch). Every size is a power of two
-# (the game wraps textures with bit masks).
+# cathedral's blind arches' ring: the wall's bricks stood on end, set round the arch); crest (the caves' ragged rim
+# along the tops of their walls) and wood (the caves' fences and gate frames). Every size is a power of two (the game
+# wraps textures with bit masks).
 #
 # The colours (R, G, B) and spreads are the original art's, fully lit:
 #   cathedral: walls (77, 62, 62) +-26 (luminance 66: the brightness its walls keep in the floor's colours),
@@ -379,6 +387,7 @@ def sized(rgb, texels_across, texels_down=None):
 #              its lid's bronze (77, 68, 43) +-19
 #   catacombs: walls (58, 57, 58) +-29, floor (61, 68, 74) +-18
 #   crypt:     walls (64, 61, 73) +-20, floor (59, 32, 21) +-18
+#   caves:     walls (39, 29, 26) +-14 (their lit half (51, 40, 36)), floor (55, 42, 38) +-13
 
 def cathedral():
     out = {}
@@ -445,7 +454,26 @@ def crypt():
     return out
 
 
-SETS = {'cathedral': cathedral, 'catacombs': catacombs, 'crypt': crypt}
+def caves():
+    out = {}
+    # The caves (levels 9-12): red-brown rock, flat faces of the Tiny Texture Pack's craggy stone (Stone_13), two
+    # tiles a repeat, sharpened (the pack is soft up close); a darker crust of its twin (Stone_14) on the ragged crest along the walls' tops; a pebbly
+    # brown floor (Dirt_05); the fences and the gates' frames of the kit's weathered beams (grinda_02), the gates of
+    # its plank door. No ceiling: the dark above, as the original shows nothing over its cliffs. (Its palette cycles
+    # colours 1-31, the lava: they are left out.)
+    rock = sharpen(sbs('Stone/Stone_13-512x512.png'), 1.5, 0.8)
+    out['wall'] = (match(rock, (48, 37, 33), 16, 0.15), 2.0, 2.0)
+    out['arch'] = (blur(match(sized(rock, 128), (40, 31, 28), 14, 0.15), 0.4), 1.0, 1.0)
+    out['pillar'] = (blur(match(sized(rock, 128), (50, 39, 34), 16, 0.15), 0.4), 1.0, 1.0)
+    out['crest'] = (blur(match(sized(sbs('Stone/Stone_14-512x512.png'), 128), (30, 23, 20), 13, 0.15), 0.4), 1.0, 1.0)
+    out['floor'] = (match(sharpen(sbs('Dirt/Dirt_05-512x512.png'), 1.5, 0.6), (55, 42, 38), 13, 0.15), 2.0, 2.0)
+    out['stone'] = (blur(match(sized(sbs('Dirt/Dirt_06-512x512.png'), 128), (50, 39, 35), 12, 0.15), 0.4), 1.0, 1.0)
+    out['wood'] = (blur(match(sized(load('grinda_02.jpg'), 128), (58, 46, 36), 14, 0.2), 0.4), 1.0, 1.0)
+    out['door'] = (blur(door((60, 47, 37), 15), 0.3), 1.0, 1.0)
+    return out
+
+
+SETS = {'cathedral': cathedral, 'catacombs': catacombs, 'crypt': crypt, 'caves': caves}
 
 
 def build():

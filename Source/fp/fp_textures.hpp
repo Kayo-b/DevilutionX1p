@@ -124,6 +124,13 @@ void CleanGroundFloor(const std::array<uint8_t, 256> &kind, const std::array<int
  * NotePaletteChange). Colour tables built from the palette compare against it and rebuild.
  */
 [[nodiscard]] uint32_t PaletteVersion();
+/**
+ * @brief As PaletteVersion, but blind to the colours the level cycles every frame (IsCycledColor): tables that do not
+ * need those exact (structures, shading, colour matching) compare against it, so lava does not rebuild them each frame.
+ */
+[[nodiscard]] uint32_t StablePaletteVersion();
+/** @brief Whether the level cycles a palette colour every frame: the lava and water of the caves, the crypt and the hive (0-31). */
+[[nodiscard]] bool IsCycledColor(int index);
 void NotePaletteChange();
 /** @brief Debug: only the floor part of a piece's iso column (its bottom 32 rows), NoPixel elsewhere. */
 [[nodiscard]] std::vector<int16_t> RenderPieceFloor(uint16_t pieceId);

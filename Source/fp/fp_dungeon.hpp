@@ -1,8 +1,8 @@
 /**
  * @file fp/fp_dungeon.hpp
  *
- * The clean dungeon: how the cathedral (levels 1-4), the catacombs (5-8) and Hellfire's crypt (21-24) look in first
- * person.
+ * The clean dungeon: how the cathedral (levels 1-4), the catacombs (5-8), the caves (9-12) and Hellfire's crypt (21-24)
+ * look in first person.
  *
  * These levels are not drawn from their iso art. A solid tile is a plain block of stone as tall as the ceiling (or a
  * low block where the art shows a low wall), a lone solid tile a plain pillar, a door tile a block with a round-arched
@@ -17,6 +17,13 @@
  * Kept as they were: the cathedral's stairs, the torch stands and the sarcophagus (3D models, fp_buildings.cpp),
  * every sprite, lava and water (drawn from their own floor art), and the door leaves (fp_doors.cpp,
  * fp_buildings.cpp), which now hang in the clean doorways.
+ *
+ * The caves are rock: flat faces of rock from the floor to the walls' tops, their outer corners cut off along the
+ * diagonal, and along the top of the rock a ragged crest of darker rock jutting out over it, its lower edge and its
+ * outline against the dark uneven, roots hanging from it here and there (the original shows nothing over its cliffs:
+ * the caves have no ceiling). Their lone rock tiles are stalagmites, their wooden fences posts and rails, their doors
+ * gates in those fences (a lattice of beams in a frame; rays pass all of them), their stairwells mine entrances in a
+ * timber frame.
  */
 #pragma once
 
@@ -45,18 +52,24 @@ enum class CleanKind : uint8_t {
 	Doorway,  // a door tile: a block with a doorway through it
 	Stairs,   // the wall beside a stairs trigger: a block with an arched opening and steps inside (see CleanStairs)
 	Flat,     // lava or water: solid, drawn as its own floor art
+	Fence,    // the caves' wooden fences: posts and rails (a mesh: rays pass it)
 };
 
 [[nodiscard]] CleanKind CleanKindAt(Point tile);
 /** @brief Height (drawn tiles) of a wall tile: the ceiling, or less for a low wall. */
 [[nodiscard]] float CleanWallHeight(Point tile);
-/** @brief Height (drawn tiles) of the ceiling: WallHeight() * VerticalScale(). */
+/** @brief Height (drawn tiles) of the ceiling: WallHeight() * VerticalScale(); in the caves, which have none, their walls' height. */
 [[nodiscard]] float CleanCeiling();
+/** @brief Whether the level has a ceiling over it (the caves have the dark). */
+[[nodiscard]] bool CleanHasCeiling();
+/** @brief Whether the level's doorways are gates in its fences, a frame of beams round the leaf (the caves), not openings through a wall. */
+[[nodiscard]] bool CleanDoorwaysAreGates();
 
-/** @brief A round-arched opening centred on its tile: straight sides up to the springing, then a half circle. */
+/** @brief A round-arched opening centred on its tile: straight sides up to the springing, then a half circle (or flat there: a gate). */
 struct CleanOpening {
 	float halfWidth; // tiles
 	float spring;    // drawn tiles above the floor
+	bool flat = false;
 };
 /** @brief The doorway through a door tile. */
 [[nodiscard]] CleanOpening CleanDoorOpening();
@@ -81,6 +94,8 @@ enum class CleanSurface : uint8_t {
 	MarbleAlt, // a second version of Marble, for every other sarcophagus (falls back to Marble)
 	IvoryAlt,  // a second version of Ivory, for every other torch stand (falls back to Ivory)
 	Band,      // the cathedral's blind arches' ring: four bricks stood on end across, one brick long down (falls back to Wall)
+	Crest,     // the caves' ragged rim along the tops of their walls (falls back to Wall)
+	Wood,      // the caves' fences and gate frames (falls back to Door)
 	Count
 };
 
@@ -95,13 +110,15 @@ enum class CleanSurface : uint8_t {
 /** @brief The light level at a point of the floor plan, interpolated between the tile centres (0 lit, LightsMax dark). */
 [[nodiscard]] float CleanLightAt(float x, float y);
 
-/** @brief A flat quad of the clean geometry (pillars, arches, steps): corners in world tiles, z in drawn tiles. */
+/** @brief A flat quad of the clean geometry (pillars, arches, steps), or a triangle: corners in world tiles, z in drawn tiles. */
 struct CleanQuad {
 	std::array<std::array<float, 3>, 4> p;
 	std::array<float, 3> normal; // outward
 	std::array<std::array<float, 2>, 4> uv; // texture position (tiles) of each corner
 	CleanSurface surface;
 	float darkness = 0; // light levels added (the inside of a stairwell)
+	bool triangle = false; // only the first three corners (the caves' crests and stalagmites)
+	bool twoSided = false; // seen from both sides (the caves' roots)
 };
 /**
  * @brief The level's pillars, arches and stairs as quads; `stands` gets the tiles to give the kept torch stand, and
