@@ -27,6 +27,7 @@
 #include "engine/palette.h"
 #include "fp/fp_doors.hpp"
 #include "fp/fp_dungeon.hpp"
+#include "fp/fp_hell.hpp"
 #include "fp/fp_textures.hpp"
 #include "fp/fp_world.hpp"
 #include "levels/gendung.h"
@@ -5661,6 +5662,96 @@ void BuildCathedralStairs()
 }
 
 /**
+ * @brief Hell's stairs (fp_hell.hpp): the hell stairs' rib cage over each flight, its rims round the pit and the spine
+ * going down into it for the stairs down (the floor cut open over it); the cage alone for the stairs up and to town.
+ * Laid on the middle of the flight's tiles, its entrance (where the spine comes up out of the pit) towards the
+ * trigger, in the bone of hell's set. hell_stairs.obj (model units): x -1.347 .. 4.042, y -3.369 .. 3.07, the floor
+ * at z 0 (3.66 above its lowest point, 2.852 below its highest); the pit's rims round (1.346, 0), open about 1.35
+ * across x and 2 along y; the spine comes up at -y.
+ */
+void BuildHellStairs()
+{
+	const LandmarkMesh *whole = KitMesh("hell_stairs");
+	const LandmarkMesh *cage = KitMesh("hell_ribs");
+	if (whole == nullptr || cage == nullptr)
+		return;
+	constexpr float Scale = 0.6F; // tiles per model unit
+	constexpr float ModelX0 = -1.347F;
+	constexpr float ModelX1 = 4.042F;
+	constexpr float ModelY0 = -3.369F;
+	constexpr float ModelY1 = 3.07F;
+	constexpr float ModelBelow = 3.66F;
+	constexpr float ModelAbove = 2.852F;
+	constexpr float PitX = 1.346F;
+	constexpr float HoleHalfX = 0.95F;
+	constexpr float HoleHalfY = 1.4F;
+	const float stretch = VerticalScale();
+	for (int i = 0; i < numtrigs; i++) {
+		const interface_mode msg = trigs[i]._tmsg;
+		const bool down = msg == WM_DIABNEXTLVL;
+		if (!down && msg != WM_DIABPREVLVL && msg != WM_DIABTWARPUP)
+			continue;
+		const Point trigger = trigs[i].position;
+		// The flight's tiles: those of its stairs next to the trigger, and all that touch them.
+		std::vector<Point> tiles;
+		for (int dy = -2; dy <= 2; dy++)
+			for (int dx = -2; dx <= 2; dx++)
+				if (const Point t = trigger + Displacement { dx, dy }; IsHellStairsTile(t))
+					tiles.push_back(t);
+		for (size_t k = 0; k < tiles.size() && tiles.size() < 64; k++) {
+			for (int dy = -1; dy <= 1; dy++) {
+				for (int dx = -1; dx <= 1; dx++) {
+					const Point t = tiles[k] + Displacement { dx, dy };
+					if (IsHellStairsTile(t) && std::find(tiles.begin(), tiles.end(), t) == tiles.end())
+						tiles.push_back(t);
+				}
+			}
+		}
+		if (tiles.empty())
+			continue;
+		int minX = MAXDUNX;
+		int minY = MAXDUNY;
+		int maxX = -1;
+		int maxY = -1;
+		for (const Point t : tiles) {
+			minX = std::min(minX, t.x);
+			maxX = std::max(maxX, t.x);
+			minY = std::min(minY, t.y);
+			maxY = std::max(maxY, t.y);
+		}
+		const Vec2 centre { static_cast<float>(minX + maxX + 1) / 2.0F, static_cast<float>(minY + maxY + 1) / 2.0F };
+		const Vec2 toTrigger { static_cast<float>(trigger.x) + 0.5F - centre.x, static_cast<float>(trigger.y) + 0.5F - centre.y };
+		const Vec2 front = std::abs(toTrigger.x) > std::abs(toTrigger.y) ? Vec2 { toTrigger.x < 0 ? -1.0F : 1.0F, 0 } : Vec2 { 0, toTrigger.y < 0 ? -1.0F : 1.0F };
+		// The model's y runs from its entrance (-y) into the pit: away from the trigger. Its x across.
+		const Vec2 axisW { -front.x, -front.y };
+		const Vec2 axisU { -axisW.y, axisW.x };
+		// The pit's middle on the flight's middle; the model's frame is centred on its extent.
+		const float frameX = (ModelX0 + ModelX1) / 2.0F;
+		const float frameY = (ModelY0 + ModelY1) / 2.0F;
+		auto toWorld = [&](float mx, float my) {
+			return Vec2 { centre.x + (axisU.x * (mx - PitX) + axisW.x * my) * Scale, centre.y + (axisU.y * (mx - PitX) + axisW.y * my) * Scale };
+		};
+		const Vec2 c = toWorld(frameX, frameY);
+		Structure st;
+		// Meshes are kept in art units, stretched up when drawn.
+		AddKitModelOriented(st.art, down ? *whole : *cage, c, axisU, axisW, (ModelX1 - ModelX0) * Scale, (ModelY1 - ModelY0) * Scale, -ModelBelow * Scale / stretch,
+		    (ModelBelow + ModelAbove) * Scale / stretch, false);
+		if (st.art.mesh.empty())
+			continue;
+		SetStructureFallbacks(st);
+		RetextureClean(st, CleanSurface::Pillar, CleanSurface::Pillar, CleanSurface::Pillar, CleanSurface::Stone);
+		if (down) {
+			const Vec2 a = toWorld(PitX - HoleHalfX, -HoleHalfY);
+			const Vec2 b = toWorld(PitX + HoleHalfX, HoleHalfY);
+			FloorHoles.push_back({ std::min(a.x, b.x), std::min(a.y, b.y), std::max(a.x, b.x), std::max(a.y, b.y) });
+		}
+		for (const Point t : tiles)
+			StructureTiles[static_cast<size_t>(t.y) * MAXDUNX + t.x] = 1;
+		Structures.push_back(std::move(st));
+	}
+}
+
+/**
  * @brief The clean dungeon's structures (fp_dungeon.hpp): the cathedral's stairs, the torch stands (their 3D model
  * read off the art, as before), and the pillars and arches, gathered in chunks of tiles so they are culled together.
  */
@@ -5668,6 +5759,8 @@ void BuildCleanStructures()
 {
 	if (leveltype == DTYPE_CATHEDRAL)
 		BuildCathedralStairs();
+	if (IsHell())
+		BuildHellStairs();
 	std::vector<CleanQuad> quads;
 	std::vector<Point> stands;
 	std::vector<std::array<float, 4>> holes;
@@ -9044,8 +9137,21 @@ void DrawStructures(const Surface &out, const Projection &proj, std::vector<floa
 	if (leveltype == DTYPE_TOWN)
 		return;
 	EnsureStructures();
-	for (const Structure &st : Structures)
-		DrawStructure(out, proj, depthBuffer, st);
+	// Nearest first, so the depth test turns hidden pixels away before their colour is looked up. Hell's bone stands
+	// in the dark beyond HellMeshReach (only the sky would show its outline), where it is left out.
+	static std::vector<std::pair<float, const Structure *>> order;
+	order.clear();
+	const float reach = IsHell() ? HellMeshReach : std::numeric_limits<float>::infinity();
+	for (const Structure &st : Structures) {
+		const float dx = std::max({ st.art.x0 - proj.pos.x, 0.0F, proj.pos.x - st.art.x1 });
+		const float dy = std::max({ st.art.y0 - proj.pos.y, 0.0F, proj.pos.y - st.art.y1 });
+		const float distance = std::sqrt(dx * dx + dy * dy);
+		if (distance <= reach)
+			order.emplace_back(distance, &st);
+	}
+	std::sort(order.begin(), order.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+	for (const auto &[distance, st] : order)
+		DrawStructure(out, proj, depthBuffer, *st);
 	DrawObjectBoxes(out, proj, depthBuffer);
 	DrawDoorLeaves(out, proj, depthBuffer);
 }

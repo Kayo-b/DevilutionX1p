@@ -13,6 +13,7 @@
 #include "fp/fp_controls.hpp"
 #include "fp/fp_doors.hpp"
 #include "fp/fp_dungeon.hpp"
+#include "fp/fp_hell.hpp"
 #include "fp/fp_textures.hpp"
 #include "levels/dun_tile_data.hpp"
 #include "levels/gendung.h"
@@ -119,6 +120,8 @@ bool IsHoleAt(const RayHit &hit, float height)
 		return false;
 	if (DoorwaySpanAt(hit.tile).door != nullptr && IsDoorwayHole(hit, height))
 		return true;
+	if (IsHell())
+		return height > CleanWallHeight(hit.tile); // its walls are low: aimed over, the ray goes on
 	if (IsCleanDungeon())
 		return false; // clean walls are solid: aiming at a stairwell walks to its trigger
 	const PieceTextures &textures = GetPieceTextures(dPiece[hit.tile.x][hit.tile.y]);

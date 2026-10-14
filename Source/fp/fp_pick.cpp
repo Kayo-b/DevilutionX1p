@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "engine/render/clx_render.hpp"
+#include "fp/fp_hell.hpp"
 #include "fp/fp_raycast.hpp"
 #include "levels/dun_tile_data.hpp"
 #include "monster.h"
@@ -86,7 +87,7 @@ Pick PickAt(Point screenPosition, bool ignoreMonsters)
 	const RayHit wall = CastRayThroughHoles(proj.pos, ray, slope);
 	const float wallDepth = wall.hit ? wall.distance : std::numeric_limits<float>::infinity();
 	const float floorDepth = slope < 0 ? EyeHeight / -slope : std::numeric_limits<float>::infinity();
-	const float ceilingDepth = slope > 0 ? (WallHeight() * VerticalScale() - EyeHeight) / slope : std::numeric_limits<float>::infinity();
+	const float ceilingDepth = slope > 0 && !IsHell() ? (WallHeight() * VerticalScale() - EyeHeight) / slope : std::numeric_limits<float>::infinity();
 	const float surfaceDepth = std::min({ wallDepth, floorDepth, ceilingDepth, MaxPickDistance });
 
 	Pick pick {};

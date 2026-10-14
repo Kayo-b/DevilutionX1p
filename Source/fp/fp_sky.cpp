@@ -1,7 +1,8 @@
 /**
  * @file fp/fp_sky.cpp
  *
- * The night sky over town: a cube map drawn behind everything else, looked up per pixel through the camera's ray.
+ * The night sky over town, and hell's dark red haze over its open pits: cube maps drawn behind everything else,
+ * looked up per pixel through the camera's ray.
  *
  * World axes: x and y along the tile grid (y down the map), z up. The faces are ft (+x), lf (+y), bk (-x), rt (-y)
  * and up (+z), as export_sky.py describes; the down face is never seen (the ground is in the way) and is not shipped.
@@ -51,30 +52,32 @@ struct SkyBox {
 	bool loaded = false;
 };
 
-SkyBox Sky;
-bool SkyTried = false;
+/** The town's night sky (sky.bin) and hell's dark red haze (hellsky.bin, made by export_hell_sky.py). */
+SkyBox TownSky;
+SkyBox HellSky;
+bool TownSkyTried = false;
+bool HellSkyTried = false;
 bool SkyOn = true;
 
-FILE *OpenSkyAsset()
+FILE *OpenSkyAsset(const char *envName, const char *fileName)
 {
 	std::vector<std::string> candidates;
-	if (const char *env = std::getenv("FP_SKY"))
+	if (const char *env = std::getenv(envName))
 		candidates.emplace_back(env);
-	candidates.push_back(StrCat(paths::AssetsPath(), "fp/sky.bin"));
-	candidates.push_back(StrCat(paths::BasePath(), "assets/fp/sky.bin"));
+	candidates.push_back(StrCat(paths::AssetsPath(), "fp/", fileName));
+	candidates.push_back(StrCat(paths::BasePath(), "assets/fp/", fileName));
 	for (const std::string &path : candidates)
 		if (FILE *f = std::fopen(path.c_str(), "rb"))
 			return f;
 	return nullptr;
 }
 
-void LoadSky()
+void LoadSky(SkyBox &sky, const char *envName, const char *fileName)
 {
-	SkyTried = true;
 #ifdef DEVILUTIONX_FP_ZLIB
-	FILE *f = OpenSkyAsset();
+	FILE *f = OpenSkyAsset(envName, fileName);
 	if (f == nullptr) {
-		LogInfo("fp: sky.bin not found; the town sky is a flat colour");
+		LogInfo("fp: {} not found; the sky is a flat colour", fileName);
 		return;
 	}
 	auto readAll = [&](void *dst, size_t size) { return std::fread(dst, 1, size, f) == size; };
@@ -100,39 +103,45 @@ void LoadSky()
 	std::vector<uint8_t> data(sideBytes * 4 + upBytes);
 	uLongf length = static_cast<uLongf>(data.size());
 	if (uncompress(data.data(), &length, packed.data(), static_cast<uLong>(packed.size())) != Z_OK || length != data.size()) {
-		LogInfo("fp: sky.bin is damaged");
+		LogInfo("fp: {} is damaged", fileName);
 		return;
 	}
 	for (int i = 0; i < 256; i++)
-		Sky.palette[i] = SDL_Color { palette[i * 3], palette[i * 3 + 1], palette[i * 3 + 2], 255 };
+		sky.palette[i] = SDL_Color { palette[i * 3], palette[i * 3 + 1], palette[i * 3 + 2], 255 };
 	for (int face = 0; face < 4; face++)
-		Sky.faces[face].assign(data.begin() + static_cast<ptrdiff_t>(sideBytes * face), data.begin() + static_cast<ptrdiff_t>(sideBytes * (face + 1)));
-	Sky.faces[FaceUp].assign(data.begin() + static_cast<ptrdiff_t>(sideBytes * 4), data.end());
-	Sky.size = size;
-	Sky.sideRows = sideRows;
-	Sky.loaded = true;
-	LogInfo("fp: loaded the {} px night sky", size);
+		sky.faces[face].assign(data.begin() + static_cast<ptrdiff_t>(sideBytes * face), data.begin() + static_cast<ptrdiff_t>(sideBytes * (face + 1)));
+	sky.faces[FaceUp].assign(data.begin() + static_cast<ptrdiff_t>(sideBytes * 4), data.end());
+	sky.size = size;
+	sky.sideRows = sideRows;
+	sky.loaded = true;
+	LogInfo("fp: loaded the {} px sky {}", size, fileName);
 #else
 	LogInfo("fp: built without zlib; the town sky is a flat colour");
 #endif
 }
 
-/** @brief Maps the sky's own palette onto the game's, once per palette (in town they are the same colours). */
-void PrepareRemap()
+/**
+ * @brief Maps the sky's own palette onto the game's, once per palette (in town they are the same colours). Hell's
+ * cycled blood (1-31) and the bright UI ramps (128-159) are left out.
+ */
+void PrepareRemap(SkyBox &sky)
 {
-	if (Sky.remapFor == PaletteVersion())
+	if (sky.remapFor == PaletteVersion())
 		return;
-	Sky.remapFor = PaletteVersion();
+	sky.remapFor = PaletteVersion();
+	const bool hell = leveltype == DTYPE_HELL;
 	for (int i = 0; i < 256; i++) {
-		const SDL_Color c = Sky.palette[i];
+		const SDL_Color c = sky.palette[i];
 		int best = std::numeric_limits<int>::max();
-		Sky.remap[i] = static_cast<uint8_t>(i);
+		sky.remap[i] = static_cast<uint8_t>(i);
 		for (int j = 1; j < 256; j++) {
+			if (hell && (j < 32 || (j >= 128 && j < 160) || j == 255))
+				continue;
 			const SDL_Color o = logical_palette[j];
 			const int d = (o.r - c.r) * (o.r - c.r) * 3 + (o.g - c.g) * (o.g - c.g) * 6 + (o.b - c.b) * (o.b - c.b);
 			if (d < best) {
 				best = d;
-				Sky.remap[i] = static_cast<uint8_t>(j);
+				sky.remap[i] = static_cast<uint8_t>(j);
 				if (d == 0)
 					break;
 			}
@@ -147,11 +156,11 @@ struct SkyTexel {
 	float row;
 };
 
-SkyTexel Lookup(float dx, float dy, float dz)
+SkyTexel Lookup(const SkyBox &sky, float dx, float dy, float dz)
 {
 	const float ax = std::abs(dx);
 	const float ay = std::abs(dy);
-	const float half = static_cast<float>(Sky.size) * 0.5F;
+	const float half = static_cast<float>(sky.size) * 0.5F;
 	float u;
 	float v;
 	uint8_t face;
@@ -192,17 +201,25 @@ void SetSkyEnabled(bool enabled)
 
 bool DrawSky(const Surface &out, const Projection &proj, const std::vector<float> &depthBuffer)
 {
-	if (leveltype != DTYPE_TOWN || !SkyOn)
+	if (!SkyOn || (leveltype != DTYPE_TOWN && leveltype != DTYPE_HELL))
 		return false;
-	if (!SkyTried)
-		LoadSky();
-	if (!Sky.loaded)
+	const bool town = leveltype == DTYPE_TOWN;
+	SkyBox &sky = town ? TownSky : HellSky;
+	bool &tried = town ? TownSkyTried : HellSkyTried;
+	if (!tried) {
+		tried = true;
+		if (town)
+			LoadSky(sky, "FP_SKY", "sky.bin");
+		else
+			LoadSky(sky, "FP_HELL_SKY", "hellsky.bin");
+	}
+	if (!sky.loaded)
 		return false;
-	PrepareRemap();
-	const int size = Sky.size;
-	const int lastRow[5] = { Sky.sideRows - 1, Sky.sideRows - 1, Sky.sideRows - 1, Sky.sideRows - 1, size - 1 };
-	const std::array<const uint8_t *, 5> faces { Sky.faces[0].data(), Sky.faces[1].data(), Sky.faces[2].data(), Sky.faces[3].data(), Sky.faces[4].data() };
-	const uint8_t *remap = Sky.remap.data();
+	PrepareRemap(sky);
+	const int size = sky.size;
+	const int lastRow[5] = { sky.sideRows - 1, sky.sideRows - 1, sky.sideRows - 1, sky.sideRows - 1, size - 1 };
+	const std::array<const uint8_t *, 5> faces { sky.faces[0].data(), sky.faces[1].data(), sky.faces[2].data(), sky.faces[3].data(), sky.faces[4].data() };
+	const uint8_t *remap = sky.remap.data();
 	auto texel = [&](uint8_t face, float col, float row) {
 		const int c = std::clamp(static_cast<int>(col), 0, size - 1);
 		const int r = std::clamp(static_cast<int>(row), 0, lastRow[face]);
@@ -222,8 +239,8 @@ bool DrawSky(const Surface &out, const Projection &proj, const std::vector<float
 				continue;
 			const Vec2 r0 = proj.columnRay(x0);
 			const Vec2 r1 = proj.columnRay(x1);
-			const SkyTexel a = Lookup(r0.x, r0.y, dz);
-			const SkyTexel b = Lookup(r1.x, r1.y, dz);
+			const SkyTexel a = Lookup(sky, r0.x, r0.y, dz);
+			const SkyTexel b = Lookup(sky, r1.x, r1.y, dz);
 			if (a.face == b.face) {
 				// Both ends clamped to the face: everything between them is inside it too. 16.16 fixed point.
 				const float maxRow = static_cast<float>(lastRow[a.face]);
@@ -246,7 +263,7 @@ bool DrawSky(const Surface &out, const Projection &proj, const std::vector<float
 					if (depth[x] != Infinity)
 						continue;
 					const Vec2 ray = proj.columnRay(x);
-					const SkyTexel t = Lookup(ray.x, ray.y, dz);
+					const SkyTexel t = Lookup(sky, ray.x, ray.y, dz);
 					dst[x] = texel(t.face, t.col, t.row);
 				}
 			}

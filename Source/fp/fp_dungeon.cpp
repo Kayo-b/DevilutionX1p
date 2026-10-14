@@ -19,6 +19,7 @@
 #include "engine/palette.h"
 #include "fp/fp_buildings.hpp"
 #include "fp/fp_doors.hpp"
+#include "fp/fp_hell.hpp"
 #include "fp/fp_textures.hpp"
 #include "fp/fp_world.hpp"
 #include "interfac.h"
@@ -111,30 +112,9 @@ constexpr float BlindArchBackShift = 0.0625F;
 /** Light levels added to the sloping sides of a pillar's stone block (they face a little down; brick ones go on into their arches unshaded). */
 constexpr float FlareDarkness = 0.5F;
 
-// --- Ordered dither ------------------------------------------------------------------------------------------------
-
-/** A 4 x 4 Bayer matrix: thresholds 0..15 in a pattern without clumps. */
-constexpr std::array<std::array<uint8_t, 4>, 4> Bayer { { { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 } } };
-
-/** Dither offsets in [-0.5, 0.5): one for the light, two (decorrelated) for the texture position. */
-inline float DitherLight(int x, int y) { return (static_cast<float>(Bayer[y & 3][x & 3]) + 0.5F) / 16.0F; }
-inline float DitherU(int x, int y) { return (static_cast<float>(Bayer[(y + 1) & 3][(x + 2) & 3]) + 0.5F) / 16.0F - 0.5F; }
-inline float DitherV(int x, int y) { return (static_cast<float>(Bayer[(y + 3) & 3][(x + 1) & 3]) + 0.5F) / 16.0F - 0.5F; }
-
-inline int LightLevel(float light, int x, int y)
-{
-	return std::clamp(static_cast<int>(light + DitherLight(x, y)), 0, static_cast<int>(LightsMax));
-}
-
 // --- Texture sets --------------------------------------------------------------------------------------------------
 
-struct SourceTexture {
-	int width = 0;
-	int height = 0;
-	float tilesAcross = 1;
-	float tilesDown = 1;
-	std::vector<uint8_t> rgb;
-};
+using SourceTexture = CleanSourceTexture;
 
 std::unordered_map<std::string, SourceTexture> SourceTextures;
 bool SourcesLoaded = false;
@@ -216,6 +196,7 @@ const char *SetName(dungeon_type type)
 	switch (type) {
 	case DTYPE_CATACOMBS: return "catacombs";
 	case DTYPE_CRYPT: return "crypt";
+	case DTYPE_HELL: return "hell";
 	default: return "cathedral";
 	}
 }
@@ -229,8 +210,8 @@ bool IsAllowedColor(int index)
 		return false;
 	if (index >= 112 && index < 160)
 		return false; // near-blacks that light to red, then the bright UI ramps
-	if (leveltype == DTYPE_CRYPT && index < 32)
-		return false; // lava, colour cycled
+	if (IsAnyOf(leveltype, DTYPE_CRYPT, DTYPE_HELL) && index < 32)
+		return false; // lava and blood, colour cycled
 	return true;
 }
 
@@ -410,7 +391,9 @@ void EnsureTextures()
 			const auto it = SourceTextures.find(StrCat(set, "/", name));
 			return it != SourceTextures.end() ? &it->second : nullptr;
 		};
-		const SourceTexture *source = find(SlotNames[slot]);
+		// Hell's flesh is cut out of its own art (fp_hell.cpp) when the level loads.
+		SourceTexture art;
+		const SourceTexture *source = HellArtTexture(surface, art) ? &art : find(SlotNames[slot]);
 		if (surface == CleanSurface::Base)
 			Textures.baseBand = source != nullptr ? source->tilesDown : 0.0F;
 		if (surface == CleanSurface::Top)
@@ -428,52 +411,38 @@ void EnsureTextures()
 		if (source == nullptr && surface != CleanSurface::Base && surface != CleanSurface::Top)
 			source = find("wall");
 		const SourceTexture plain = PlainTexture(surface);
+		if (IsHell() && source != nullptr && source != &art) {
+			art = *source; // the bone, in the level's own palette's bone colours
+			HellTintTexture(surface, art);
+			source = &art;
+		}
 		BuildTexture(Textures.surfaces[slot], source != nullptr ? *source : plain, quantize, factors);
 	}
 	LogInfo("fp: clean dungeon textures ready ({} set)", set);
 }
 
-/** Samples one texture with the detail level for a pixel's footprint; up close, the sample point is dithered. */
-struct Sampler {
-	const std::array<std::vector<uint8_t>, NumLightingLevels> *lit = nullptr;
-	int maskU = 0;
-	int maskV = 0;
-	int shift = 0; // log2 of the width
-	float scaleU = 1; // texels per tile at this detail level
-	float scaleV = 1;
-	bool jitter = false;
+/** Points a sampler at the detail level of a texture for a pixel's footprint (up close, its sample point is dithered). */
+void PrepareSampler(CleanSampler &s, const CleanTexture &tex, float worldPerPixel)
+{
+	const float footprint = worldPerPixel * tex.texelsPerTileU; // full-size texels per pixel
+	int level = 0;
+	if (footprint >= 1.5F)
+		level = std::min(static_cast<int>(std::log2(footprint / 1.5F)) + 1, static_cast<int>(tex.mips.size()) - 1);
+	const CleanTexture::Mip &mip = tex.mips[level];
+	s.lit = &mip.lit;
+	s.maskU = mip.width - 1;
+	s.maskV = mip.height - 1;
+	s.shift = 0;
+	while ((1 << s.shift) < mip.width)
+		s.shift++;
+	const float down = static_cast<float>(1 << level);
+	s.scaleU = tex.texelsPerTileU / down;
+	s.scaleV = tex.texelsPerTileV / down;
+	s.jitter = footprint < 1.0F;
+}
 
-	void Prepare(const CleanTexture &tex, float worldPerPixel)
-	{
-		const float footprint = worldPerPixel * tex.texelsPerTileU; // full-size texels per pixel
-		int level = 0;
-		if (footprint >= 1.5F)
-			level = std::min(static_cast<int>(std::log2(footprint / 1.5F)) + 1, static_cast<int>(tex.mips.size()) - 1);
-		const CleanTexture::Mip &mip = tex.mips[level];
-		lit = &mip.lit;
-		maskU = mip.width - 1;
-		maskV = mip.height - 1;
-		shift = 0;
-		while ((1 << shift) < mip.width)
-			shift++;
-		const float down = static_cast<float>(1 << level);
-		scaleU = tex.texelsPerTileU / down;
-		scaleV = tex.texelsPerTileV / down;
-		jitter = footprint < 1.0F;
-	}
-
-	[[nodiscard]] uint8_t At(float u, float v, int level, int x, int y) const
-	{
-		float tu = u * scaleU;
-		float tv = v * scaleV;
-		if (jitter) {
-			tu += DitherU(x, y);
-			tv += DitherV(x, y);
-		}
-		const int iu = static_cast<int>(std::floor(tu)) & maskU;
-		const int iv = static_cast<int>(std::floor(tv)) & maskV;
-		return (*lit)[level][static_cast<size_t>(iv << shift | iu)];
-	}
+struct Sampler : CleanSampler {
+	void Prepare(const CleanTexture &tex, float worldPerPixel) { PrepareSampler(*this, tex, worldPerPixel); }
 };
 
 // --- Tile kinds ----------------------------------------------------------------------------------------------------
@@ -660,6 +629,15 @@ void ClassifyTiles()
 {
 	Kinds.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY, CleanKind::Open);
 	WallHeights.assign(Kinds.size(), CleanCeiling());
+	if (IsHell()) {
+		// Hell's tiles are told apart by the tiles of its map (fp_hell.cpp); its stairs are rib cages, not stairwells.
+		ClassifyHellTiles(Kinds, WallHeights);
+		Stairs.clear();
+		StairsIndex.assign(Kinds.size(), -1);
+		BlindArches.clear();
+		BlindArchIndex.clear();
+		return;
+	}
 	const float ceiling = CleanCeiling();
 	const int levelRows = LevelWallRows();
 	auto solid = [](Point p) { return !InDungeonBounds(p) || IsTileSolid(p); };
@@ -802,7 +780,24 @@ struct ColumnSamplers {
 
 bool IsCleanDungeon()
 {
-	return IsAnyOf(leveltype, DTYPE_CATHEDRAL, DTYPE_CATACOMBS, DTYPE_CRYPT);
+	return IsAnyOf(leveltype, DTYPE_CATHEDRAL, DTYPE_CATACOMBS, DTYPE_CRYPT, DTYPE_HELL);
+}
+
+const CleanKind *CleanKindMap()
+{
+	EnsureKindsForLevel();
+	return Kinds.data();
+}
+
+const float *CleanWallHeightMap()
+{
+	EnsureKindsForLevel();
+	return WallHeights.data();
+}
+
+void PrepareCleanSampler(CleanSampler &sampler, CleanSurface surface, float worldPerPixel)
+{
+	PrepareSampler(sampler, Textures.surfaces[static_cast<size_t>(surface)], worldPerPixel);
 }
 
 float CleanCeiling()
@@ -880,6 +875,8 @@ float CleanLightAt(float x, float y)
 
 uint8_t CleanColor(CleanSurface surface, float u, float v, float worldPerPixel, float light, int x, int y)
 {
+	if (light >= static_cast<float>(LightsMax))
+		return 0; // the darkest light level leaves every colour black
 	// Called for every pixel of a mesh: the sampler is kept while the surface and its detail level stay the same.
 	static Sampler sampler;
 	static CleanSurface lastSurface = CleanSurface::Count;
@@ -1246,6 +1243,10 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 	quads.clear();
 	stands.clear();
 	holes.clear();
+	if (IsHell()) {
+		BuildHellGeometry(quads);
+		return;
+	}
 	const float ceiling = CleanCeiling();
 	const PillarStyle style = PillarStyleFor(leveltype);
 	using P3 = std::array<float, 3>;
@@ -1563,12 +1564,13 @@ std::string CleanTileMap(int x0, int y0, int x1, int y1)
 			const CleanKind kind = KindAt({ x, y });
 			char c = '.';
 			switch (kind) {
-			case CleanKind::Wall: c = WallHeights[static_cast<size_t>(y) * MAXDUNX + x] < CleanCeiling() - 0.01F ? 'l' : '#'; break;
+			case CleanKind::Wall: c = IsHell() ? (IsHellBlood({ x, y }) ? '~' : '#') : (WallHeights[static_cast<size_t>(y) * MAXDUNX + x] < CleanCeiling() - 0.01F ? 'l' : '#'); break;
 			case CleanKind::Pillar: c = 'o'; break;
 			case CleanKind::Stand: c = 't'; break;
 			case CleanKind::Doorway: c = 'D'; break;
 			case CleanKind::Stairs: c = 'S'; break;
 			case CleanKind::Flat: c = '~'; break;
+			case CleanKind::Prop: c = 'p'; break;
 			default: c = dSpecial[x][y] > 0 ? '^' : '.'; break;
 			}
 			map += c;

@@ -27,6 +27,7 @@
 #include "fp/fp_buildings.hpp"
 #include "fp/fp_doors.hpp"
 #include "fp/fp_dungeon.hpp"
+#include "fp/fp_hell.hpp"
 #include "cursor.h"
 #include "items.h"
 #include "monster.h"
@@ -1126,14 +1127,19 @@ void DrawFirstPersonView(const Surface &out)
 	};
 	depthBuffer.assign(static_cast<size_t>(proj.width) * proj.height, std::numeric_limits<float>::infinity());
 	const bool clean = IsCleanDungeon();
+	const bool hell = IsHell();
 	if (clean)
 		PrepareCleanDungeon();
-	if (clean)
+	if (hell)
+		DrawHellFloor(out, proj, depthBuffer);
+	else if (clean)
 		DrawCleanFloorAndCeiling(out, proj, depthBuffer);
 	else
 		DrawFloorAndCeiling(out, proj, depthBuffer);
 	lap(0);
-	if (clean)
+	if (hell)
+		DrawHellWalls(out, proj, zBuffer, depthBuffer);
+	else if (clean)
 		DrawCleanWalls(out, proj, zBuffer, depthBuffer);
 	else
 		DrawWalls(out, proj, zBuffer, depthBuffer);
