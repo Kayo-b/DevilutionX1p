@@ -323,41 +323,56 @@ not masonry, so its kit is built from that art and drawn low, under the eye, ope
   flesh walls along them (`IsHellBlood`). Spikes and rib cages are `CleanKind::Prop`. `dev.fp.cleanmap` shows `~`
   for walls with blood on top, `p` for props.
 - **What is cut out of the art** when a level loads (nothing of it is shipped): the flesh of the walls' sides
-  (`CutFlesh`: the panel under the beam of the left face of map tile 1's top piece, with one of its braided bone
-  veins, 20 x 35 texels, mirrored so it repeats without a seam, as slot `wall` of the `hell` set, in the level's
-  palette); the blood (`CutBlood`: the top of the lake's map tile put together from its four pieces,
+  (`CutFlesh`: two panels, under the beams of the left faces of map tiles 1 and 63's top pieces, each with braided
+  bone veins, 20 x 35 texels; laid as the first, it mirrored, the second, it mirrored, cross-faded where they meet,
+  they repeat every five tiles without a seam; slot `wall` of the `hell` set, in the level's palette); the blood (`CutBlood`: the top of the lake's map tile put together from its four pieces,
   `ComposeMegatile`, unrotated to 64 x 64 over 2 x 2 tiles; kept in the art's colours 1-31, which hell cycles through
   its light tables, so it shimmers as in the original, and `BloodGlow` light levels brighter); the floors (each
   tile its own floor art, the painted shadows and the floor under rib cages and columns the plain floor's,
   `FloorPieces`); the spikes' billboards without their ground (`HellPropArt`); and the columns' crowns (`CrownFor`:
   the crossed bones and horns above the narrow neck of the column's spine, in its map tile's art, drawn as a
-  billboard on the column's mesh spine, `CollectHellCrowns`, at `ColumnArtScale`).
+  billboard on the column's mesh spine, `CollectHellCrowns`, at `ColumnArtScale`); the wall posts' crowns
+  (`CutPostCrown`: the lyre of horns and the knob where the beams cross on map tile 9's corner post, without the art's
+  beams, drawn on a card facing out of the wall, `HellSprite`, `MeshSprite`); and the spikes' horns (`TraceSpikes`:
+  each horn followed up its art row by row, its middle and width, as a tapering tube).
+- **Rows of hell's art:** the game draws only 12 of hell's 16 micros a piece (`MicroTileLen`), so its columns are
+  192 rows, not the files' 256: count fixed rows of the art up from its bottom (`PostCrownTop` and the rest), never
+  from the top as the Graphics Tool's PNGs show them.
 - **Each hell level has one of four palettes** (`l4_1` .. `l4_4`: the bone tan, pink, grey-blue or olive). What is
   cut from the art follows it; the bone texture from `dungeontex.bin` is scaled from `l4_1`'s bone to the level's
   (`HellTintTexture`).
 - **Floor** (`DrawHellFloor`): the art per tile, lit smoothly like the clean dungeon (the game's light tables, so
-  the colours stay the art's), drawn from its upscaled copy up close; nothing above the horizon (the sky's).
+  the colours stay the art's), drawn from its upscaled copy up close; nothing above the horizon (the sky's). It is
+  drawn after the walls, only where they leave it to be seen.
 - **Walls** (`DrawHellWalls`): every wall is lower than the eye, so each column is walked through the grid once,
   front to back: a wall entered from the floor draws its side (flesh, `FaceYShade` darker along y), then its top up
   to where the ray leaves it (blood, or flesh a light level darker), each only above what is drawn already. The
   lake past the rooms is the same blood, in the dark.
 - **Bone** (`BuildHellGeometry`, quads handed to the mesh pass as the clean dungeon's): beams (round, `BeamRadius`)
   along every run of wall edge facing anything but wall, running on past a wall's end like crossed logs; spine
-  posts (vertebrae, a skull knob, two horns curving up like a lyre's arms) at both ends of each run and about every
-  `PostSpacing` along it, each corner once; lone columns (a taller spine on a spread foot, crowned by the art's
-  crown). `addTube` makes every round part (a ring of quads along a path, its frame carried along it).
+  posts (vertebrae under the art's crown, on a card facing out of the faces they stand on, a corner's between its
+  two) at both ends of each run and about every `PostSpacing` along it, each corner once; lone columns (a taller
+  spine on a spread foot, crowned by the art's crown); the spikes' horns, standing across the view as the art draws
+  them, leaning towards it and away by turns. `addTube` makes every round part (a ring of quads along a path, its
+  frame carried along it). A card is made only of the rectangles of its cut-out that have art (`HellSprite::rects`,
+  bands six texels wide), so its clear texels cost nothing; up close its outline is smoothed (bilinear coverage).
 - **Stairs** (`BuildHellStairs`, fp_buildings.cpp): the stairs to hell model (`hell_stairs` in `dungeonkit.bin`: the
   rib cage, the rims round its pit, the spine going down into it, the ribs under the floor) over each stairs down,
   the floor cut open over its pit; the cage and rims alone (`hell_ribs`) over the stairs up and to town. Laid on the
   middle of the flight's tiles (all the stairs tiles touching those by the trigger), its entrance towards the
-  trigger, `Scale` 0.6 tiles a model unit, in the bone of the set.
+  trigger, `Scale` 0.6 tiles a model unit, in the bone of the set. The pit under a stairs down has flesh sides
+  going down in bands, darker the deeper, and a floor at the bottom, all but black.
 - **Sky:** `hellsky.bin` (fp_sky.cpp: `FP_HELL_SKY`), remapped to the level's palette without the cycled blood
   colours. **Picking** looks over the low walls (`IsHoleAt`), and there is no ceiling to stop it.
 - **Distance:** the bone is drawn only within `HellMeshReach` (26 tiles; beyond, it stands in the dark) and nearest
   first (`DrawStructures` sorts every level's structures so: the depth test then turns hidden pixels away first).
-- **Performance** (Ryzen 5 5600H, 1280 x 720): 19-22 ms a frame in hell's rooms (the cathedral is about 22 ms):
-  floor 6, walls 3-4, meshes 4-10 (a post's horns right in front of the camera cover a lot), sprites 1-2 (Diablo's
-  lair, crowded, 15).
+- **Performance** (Ryzen 5 5600H, 1280 x 720): 15-25 ms a frame in hell (the cathedral about 17, the catacombs
+  14): floor 2-4, walls 2-5, meshes 6-14 (a post's crown or the rib cage right in front of the camera cover much of
+  the screen), sprites 1-9 (Diablo's lair is crowded). What paid: walls before the floor; posts' crowns as cards made
+  of their art's rectangles (not horn meshes); `FloorToInt` instead of `std::floor` in per-pixel loops (the build
+  targets plain x86-64, where `std::floor` is a call into libm; this sped up the cathedral too); small clean
+  triangles lit once a frame at their middle (`SmallForLight`, `CleanTriangleLight`); big structures drawn front to
+  back within themselves.
 
 **Getting at the art.** `fp-tools/d1cli` builds the Diablo 1 Graphics Tool's format code (`~/projects/d1-graphics-tool`,
 Qt 6) into a command line exporter: every subtile, map tile (2.5D) and CEL frame of a level tileset as PNG, with
@@ -680,8 +695,8 @@ commit.
 - **Dungeon:**
   - The caves in the clean style (fp_dungeon.cpp is written to take more tilesets: a texture set in the export
     script, a `SetName`, a `PillarStyleFor`, and the tileset in `IsCleanDungeon`); their stairs have no model either.
-  - Hell (5.1.2): the wall posts' skulls as faces cut from the art; a second flesh panel so the walls repeat less; the
-    stairs' pit walls (the pit is a black rectangle under the rims); the spikes as meshes; the meshes' cost close up.
+  - Hell (5.1.2): the meshes' cost close up (the software rasterizer's per-pixel cost); the spikes' rocky mounds as
+    meshes (their art is on the floor); the stairs up's rib cage could show steps going up.
   - The clean dungeon's floors are one texture: the art's floor markings (blood, the pentagram of Lazarus' lair) are
     gone; wall decorations painted in the art too (banners and torches that are objects stay, as sprites).
   - The black capital top on plain fallback pillars (caves).

@@ -10,13 +10,15 @@
  * on top of the troughs shows, under a dark red sky (fp_sky.hpp).
  *
  * What is cut out of the level's own art when it loads: the flesh of the walls' sides (a texture of the level's set,
- * slot `wall`), the blood (kept in the art's palette colours, which hell cycles), and the floors (each tile its own
- * art, the painted shadows of walls taken out). The bone of the beams, posts and horns is the dungeon kit's bone
- * texture graded to the art's bone (`hell/pillar` and `hell/stone` in dungeontex.bin). The spikes and the rib cages
- * are billboards of their own art (CleanKind::Prop).
+ * slot `wall`), the blood (kept in the art's palette colours, which hell cycles), the floors (each tile its own art,
+ * the painted shadows of walls taken out), the crowns of the wall posts (cards) and of the spine columns
+ * (billboards), and the shapes of the spikes' horns. The bone of the beams, posts, horns and spikes is the stairs to
+ * hell's bone texture graded to the art's bone (`hell/pillar` and `hell/stone` in dungeontex.bin, tinted to the
+ * level's palette). The stairs' rib cages are the stairs to hell model (fp_buildings.cpp's BuildHellStairs).
  */
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -44,6 +46,8 @@ void ClassifyHellTiles(std::vector<CleanKind> &kinds, std::vector<float> &height
 [[nodiscard]] bool IsHellBlood(Point tile);
 /** @brief Whether a tile belongs to one of hell's flights of stairs (their rib cages: fp_buildings.cpp's BuildHellStairs). */
 [[nodiscard]] bool IsHellStairsTile(Point tile);
+/** @brief Whether a prop tile's bone is a model (BuildHellGeometry: the spikes), so it is not a billboard. */
+[[nodiscard]] bool IsHellModelledProp(Point tile);
 
 /**
  * @brief The texture of one of hell's surfaces that is cut out of the level's art (the flesh: CleanSurface::Wall),
@@ -64,10 +68,34 @@ void HellTintTexture(CleanSurface surface, CleanSourceTexture &texture);
  */
 [[nodiscard]] const std::vector<int16_t> &HellPropArt(uint16_t piece);
 
+/** @brief An art cut-out drawn on a card in the mesh pass (CleanQuad::sprite): palette pixels, row 0 the top, NoPixel clear. */
+struct HellSprite {
+	std::vector<int16_t> pixels;
+	int width = 0;
+	int height = 0;
+	/** Its UpscaledTexture, for drawing up close (made with it). */
+	const std::vector<int16_t> *fine = nullptr;
+	/**
+	 * How much of each texel is kept, 0..255, where it was cut out of art that goes on (empty: all of it): drawn through
+	 * an ordered dither, so a cut fades out instead of showing as a straight line. Its own outline stays sharp.
+	 */
+	std::vector<uint8_t> alpha;
+	/**
+	 * Where it has art: rectangles (x0, y0, x1, y1, ends exclusive) of texels covering every drawn one with a texel to
+	 * spare round it. Its cards are made of these alone, so the clear texels between them cost nothing to draw.
+	 */
+	std::vector<std::array<int, 4>> rects;
+};
+/** @brief One of the level's cut-outs (BuildHellGeometry makes them), null if there is no such one. */
+[[nodiscard]] const HellSprite *HellSpriteAt(int index);
+
 /** @brief The crowns of hell's spine columns near the viewer: billboards of their art, on top of their mesh spines. */
 void CollectHellCrowns(Vec2 viewerPos, std::vector<Entity> &entities);
 
-/** @brief Draws hell's floor (each tile its own art, smoothly lit); above the horizon is left for the sky. */
+/**
+ * @brief Draws hell's floor (each tile its own art, smoothly lit) where nothing has been drawn yet (DrawHellWalls goes
+ * first); above the horizon is left for the sky.
+ */
 void DrawHellFloor(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer);
 /** @brief Draws hell's walls: their flesh sides and their tops (blood, or flesh), front to back over the floor. */
 void DrawHellWalls(const Surface &out, const Projection &proj, std::vector<float> &zBuffer, std::vector<float> &depthBuffer);

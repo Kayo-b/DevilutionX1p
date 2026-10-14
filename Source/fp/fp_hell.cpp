@@ -11,6 +11,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <limits>
 #include <map>
 #include <utility>
@@ -24,6 +27,7 @@
 #include "levels/tile_properties.hpp"
 #include "utils/endian_swap.hpp"
 #include "utils/log.hpp"
+#include "utils/str_cat.hpp"
 
 namespace devilution::fp {
 
@@ -52,6 +56,29 @@ constexpr float PostOut = 0.03F;
 constexpr float PostBody = 0.1F;
 constexpr float PostJoint = 0.068F;
 constexpr float PostAbove = 0.1F;
+/**
+ * The posts' crowns, cut out of the corner post of map tile 9 (rows of its art as ComposeMegatile puts it together,
+ * counted up from its bottom row, its axis in the middle): from the tips of its horns (PostCrownTop) to under the knob
+ * where its beams cross (PostCrownBottom), at most PostCrownHalf to each side. The art's beams (meshes here) run out
+ * from the knob, their tops at PostBeamTop beside it (out to PostBeamFlat) and PostBeamSlope rows lower per texel
+ * further out: what lies above them is kept (the horns, the side spikes), and below them only the knob, narrowing
+ * from PostKnobHalf at the beams' top to PostChinHalf at its chin. Those cuts fade out over PostCutFeather texels. The
+ * knob's middle (PostKnobRow) sits on the beams. Drawn at PostCrownScale of the art's size, on a card facing out of
+ * the wall. (Counted from the bottom: the game draws 12 of hell's 16 micros a piece, MicroTileLen, so its columns are
+ * shorter than the files'.)
+ */
+constexpr int PostCrownTile = 9;
+constexpr int PostCrownTop = 184;
+constexpr int PostCrownBottom = 107;
+constexpr int PostKnobRow = 113;
+constexpr int PostCrownHalf = 48;
+constexpr float PostBeamTop = 129.0F;
+constexpr float PostBeamFlat = 20.0F;
+constexpr float PostBeamSlope = 0.5F;
+constexpr float PostKnobHalf = 20.0F;
+constexpr float PostChinHalf = 7.0F;
+constexpr float PostCutFeather = 3.0F;
+constexpr float PostCrownScale = 0.55F;
 /** Lone spine columns: their height to the skull, their radius (body, joints). */
 constexpr float ColumnHeight = 1.3F;
 constexpr float ColumnBody = 0.13F;
@@ -270,27 +297,122 @@ const Crown &CrownAt(Point tile)
 	return CrownFor(MegatileAt(tile), (tile.x & 1) + 2 * (tile.y & 1));
 }
 
+/** The level's art cut-outs drawn on cards (HellSpriteAt), made by BuildHellGeometry. */
+std::vector<HellSprite> Sprites;
+enum : int16_t {
+	PostCrownSprite = 0,
+};
+
+/** The crown of the wall posts (see PostCrownTile), or an empty sprite if the art has not got it. */
+HellSprite CutPostCrown()
+{
+	HellSprite sprite;
+	if (pMegaTiles == nullptr)
+		return sprite;
+	int height;
+	const std::vector<int16_t> canvas = ComposeMegatile(PostCrownTile, height);
+	const int axis = QuadrantOffsets[0].first + ColumnWidth / 2;
+	const int top = height - PostCrownTop;
+	if (top < 0)
+		return sprite;
+	sprite.width = 2 * PostCrownHalf;
+	sprite.height = PostCrownTop - PostCrownBottom;
+	sprite.pixels.assign(static_cast<size_t>(sprite.width) * sprite.height, NoPixel);
+	sprite.alpha.assign(sprite.pixels.size(), 0);
+	int drawn = 0;
+	for (int y = 0; y < sprite.height; y++) {
+		const int row = top + y;
+		const float up = static_cast<float>(height - row); // rows above the art's bottom
+		for (int x = 0; x < sprite.width; x++) {
+			const int sx = axis - PostCrownHalf + x;
+			if (sx < 0 || sx >= MegatileWidth)
+				continue;
+			const float dx = std::abs(static_cast<float>(sx - axis)) + 0.5F;
+			// How far (texels) inside what is kept: above the beams' top, or within the knob under it.
+			const float aboveBeams = up - (PostBeamTop - std::max(0.0F, dx - PostBeamFlat) * PostBeamSlope);
+			const float down = std::clamp((PostBeamTop - up) / (PostBeamTop - static_cast<float>(PostCrownBottom)), 0.0F, 1.0F);
+			const float knobHalf = PostChinHalf + (PostKnobHalf - PostChinHalf) * std::pow(1.0F - down, 0.8F);
+			const float inside = std::max(aboveBeams, knobHalf - dx);
+			const float keep = std::clamp((inside + 0.5F) / PostCutFeather, 0.0F, 1.0F);
+			if (keep <= 0.0F)
+				continue;
+			const size_t at = static_cast<size_t>(y) * sprite.width + x;
+			const int16_t texel = canvas[static_cast<size_t>(row) * MegatileWidth + sx];
+			sprite.pixels[at] = texel;
+			sprite.alpha[at] = static_cast<uint8_t>(keep * 255.0F + 0.5F);
+			drawn += texel > 0 ? 1 : 0;
+		}
+	}
+	if (drawn == 0)
+		sprite = {};
+	return sprite;
+}
+
 /**
- * The flesh of the walls' sides: the panel on the left face of a straight flesh wall's top piece, between its posts
- * and under its beam, with one of the braided bone veins running across it (FleshWidth x FleshRows texels of art,
- * from FleshFrom rows above the face's foot). Mirrored, it repeats every two widths without a seam.
+ * Finds where a cut-out has art (HellSprite::rects): in bands SpriteBand texels wide, each run of rows with art in
+ * the band (gaps under SpriteGap rows bridged), grown by a texel all round for its smoothed outline.
  */
+constexpr int SpriteBand = 6;
+constexpr int SpriteGap = 3;
+
+void FindSpriteRects(HellSprite &sprite)
+{
+	sprite.rects.clear();
+	for (int x0 = 0; x0 < sprite.width; x0 += SpriteBand) {
+		const int x1 = std::min(sprite.width, x0 + SpriteBand);
+		auto rowDrawn = [&](int y) {
+			for (int x = std::max(0, x0 - 1); x < std::min(sprite.width, x1 + 1); x++)
+				if (sprite.pixels[static_cast<size_t>(y) * sprite.width + x] > 0)
+					return true;
+			return false;
+		};
+		int y = 0;
+		while (y < sprite.height) {
+			if (!rowDrawn(y)) {
+				y++;
+				continue;
+			}
+			const int from = y;
+			int last = y;
+			while (y < sprite.height && (rowDrawn(y) || y - last < SpriteGap)) {
+				if (rowDrawn(y))
+					last = y;
+				y++;
+			}
+			sprite.rects.push_back({ x0, std::max(0, from - 1), x1, std::min(sprite.height, last + 2) });
+			y = last + 1;
+		}
+	}
+}
+
+/**
+ * The flesh of the walls' sides: panels on the left faces of two flesh walls' top pieces (map tiles FleshPanelTiles),
+ * between their posts and under their beams, each with braided bone veins running across it (FleshWidth x FleshRows
+ * texels of art, from FleshFrom rows above the face's foot). Laid side by side as the first, it mirrored, the second,
+ * it mirrored (FleshPeriod texels), cross-faded over FleshBlend texels where the two meet, they repeat every five
+ * tiles without a seam.
+ */
+constexpr std::array<int, 2> FleshPanelTiles { FleshWallTile, 63 };
 constexpr int FleshWidth = 20;
 constexpr int FleshFrom = 26;
 constexpr int FleshRows = 35;
-constexpr int FleshSize = 64;
+constexpr int FleshPeriod = 4 * FleshWidth;
+constexpr int FleshBlend = 3;
+constexpr int FleshTextureWidth = 128;
+constexpr int FleshTextureHeight = 64;
 
-bool CutFlesh(CleanSourceTexture &out)
+using Rgb = std::array<float, 3>;
+
+/** A panel of flesh (FleshWidth x FleshRows, row 0 the top) cut out of a map tile's top piece; false if it is not drawn there. */
+bool CutFleshPanel(int megatile, std::vector<Rgb> &art)
 {
-	if (pMegaTiles == nullptr)
-		return false;
-	const std::vector<int16_t> &column = GetPieceTextures(MegatilePiece(FleshWallTile, 0)).column;
+	const std::vector<int16_t> &column = GetPieceTextures(MegatilePiece(megatile, 0)).column;
 	const int rows = static_cast<int>(column.size() / ColumnWidth);
 	if (rows < 64)
 		return false;
 	// The face's foot runs from the diamond's left corner (16 rows above the column's bottom) up to its top vertex;
 	// a face row h is h rows above FaceBaseRows below it.
-	std::vector<std::array<float, 3>> art(static_cast<size_t>(FleshWidth) * FleshRows);
+	art.assign(static_cast<size_t>(FleshWidth) * FleshRows, Rgb {});
 	int drawn = 0;
 	for (int r = 0; r < FleshRows; r++) {
 		const int h = FleshFrom + FleshRows - 1 - r;
@@ -302,37 +424,184 @@ bool CutFlesh(CleanSourceTexture &out)
 			drawn += texel > 0 ? 1 : 0;
 		}
 	}
-	if (drawn < FleshWidth * FleshRows / 2)
+	return drawn >= FleshWidth * FleshRows / 2;
+}
+
+bool CutFlesh(CleanSourceTexture &out)
+{
+	if (pMegaTiles == nullptr)
 		return false;
-	// Resampled (bilinear) to FleshSize square: across, the panel and its mirror image.
-	out.width = FleshSize;
-	out.height = FleshSize;
-	out.tilesAcross = 2.0F * FleshWidth / FaceTextureWidth;
-	out.tilesDown = WallTop;
-	out.rgb.resize(static_cast<size_t>(FleshSize) * FleshSize * 3);
-	const auto at = [&](int u, int r) -> const std::array<float, 3> & {
-		u = ((u % (2 * FleshWidth)) + 2 * FleshWidth) % (2 * FleshWidth);
-		if (u >= FleshWidth)
-			u = 2 * FleshWidth - 1 - u;
-		return art[static_cast<size_t>(std::clamp(r, 0, FleshRows - 1)) * FleshWidth + u];
+	std::array<std::vector<Rgb>, 2> panels;
+	if (!CutFleshPanel(FleshPanelTiles[0], panels[0]))
+		return false;
+	if (!CutFleshPanel(FleshPanelTiles[1], panels[1]))
+		panels[1] = panels[0];
+	// One period across: a texel `u` of it (any integer), row r.
+	const auto at = [&](int u, int r) {
+		u = ((u % FleshPeriod) + FleshPeriod) % FleshPeriod;
+		r = std::clamp(r, 0, FleshRows - 1);
+		const int segment = u / FleshWidth;
+		const int k = u % FleshWidth;
+		const std::vector<Rgb> &panel = panels[segment / 2];
+		const int column = (segment & 1) == 0 ? k : FleshWidth - 1 - k;
+		Rgb c = panel[static_cast<size_t>(r) * FleshWidth + column];
+		// The panels meet where both are at their first column (the first's mirror image and the second, the second's
+		// and the first): near there each fades into the other, half and half at the join.
+		if (column < FleshBlend) {
+			const Rgb &o = panels[1 - segment / 2][static_cast<size_t>(r) * FleshWidth + column];
+			const float t = 0.5F * (1.0F - static_cast<float>(column) / FleshBlend);
+			for (int ch = 0; ch < 3; ch++)
+				c[ch] = c[ch] * (1 - t) + o[ch] * t;
+		}
+		return c;
 	};
-	for (int y = 0; y < FleshSize; y++) {
-		const float sr = (static_cast<float>(y) + 0.5F) / FleshSize * FleshRows - 0.5F;
+	// Resampled (bilinear) to FleshTextureWidth x FleshTextureHeight.
+	out.width = FleshTextureWidth;
+	out.height = FleshTextureHeight;
+	out.tilesAcross = static_cast<float>(FleshPeriod) / FaceTextureWidth;
+	out.tilesDown = WallTop;
+	out.rgb.resize(static_cast<size_t>(out.width) * out.height * 3);
+	for (int y = 0; y < out.height; y++) {
+		const float sr = (static_cast<float>(y) + 0.5F) / static_cast<float>(out.height) * FleshRows - 0.5F;
 		const int r0 = static_cast<int>(std::floor(sr));
 		const float fr = sr - static_cast<float>(r0);
-		for (int x = 0; x < FleshSize; x++) {
-			const float su = (static_cast<float>(x) + 0.5F) / FleshSize * 2.0F * FleshWidth - 0.5F;
+		for (int x = 0; x < out.width; x++) {
+			const float su = (static_cast<float>(x) + 0.5F) / static_cast<float>(out.width) * FleshPeriod - 0.5F;
 			const int u0 = static_cast<int>(std::floor(su));
 			const float fu = su - static_cast<float>(u0);
-			for (int c = 0; c < 3; c++) {
-				const float top = at(u0, r0)[c] * (1 - fu) + at(u0 + 1, r0)[c] * fu;
-				const float bottom = at(u0, r0 + 1)[c] * (1 - fu) + at(u0 + 1, r0 + 1)[c] * fu;
-				out.rgb[(static_cast<size_t>(y) * FleshSize + x) * 3 + c] = static_cast<uint8_t>(std::clamp(top + (bottom - top) * fr + 0.5F, 0.0F, 255.0F));
+			const Rgb a = at(u0, r0);
+			const Rgb b = at(u0 + 1, r0);
+			const Rgb c = at(u0, r0 + 1);
+			const Rgb d = at(u0 + 1, r0 + 1);
+			for (int ch = 0; ch < 3; ch++) {
+				const float top = a[ch] * (1 - fu) + b[ch] * fu;
+				const float bottom = c[ch] * (1 - fu) + d[ch] * fu;
+				out.rgb[(static_cast<size_t>(y) * out.width + x) * 3 + ch] = static_cast<uint8_t>(std::clamp(top + (bottom - top) * fr + 0.5F, 0.0F, 255.0F));
 			}
 		}
 	}
 	return true;
 }
+
+// --- Spikes --------------------------------------------------------------------------------------------------------
+
+/**
+ * A horn of a cluster of spikes as its art draws it: from where it leaves the cluster up to its point, per art row its
+ * middle across (px from the column's left) and its half width (px), from the bottom up.
+ */
+struct SpikeHorn {
+	std::vector<std::array<float, 3>> points; // x middle, row, half width
+	bool growing = true;
+};
+
+/**
+ * Follows the horns of a cluster of bone spikes up its piece's art: the bone (not the ash and mauve ground, 32-63)
+ * from the middle of the floor diamond up, row by row, in runs across. Each horn goes on with the run nearest its
+ * middle that overlaps it; a run no horn goes on into is a horn of its own, branching off the nearest horn below (or,
+ * at the foot, rising from the ground). Horns shorter than SpikeMinRows are left out.
+ */
+constexpr int SpikeMinRows = 14;
+/** The spikes' horns as tubes: as thick as this share of their art's lower third, tapering (radius ~ (1 - t)^SpikeTaper) to a point SpikeTipRows art rows past their last; those rising within SpikeRootRows of the foot are rooted under the floor. */
+constexpr float SpikeThickness = 0.9F;
+constexpr float SpikeTaper = 0.9F;
+constexpr float SpikeTipRows = 4.0F;
+constexpr float SpikeRootRows = 10.0F;
+/** Their base radius at most (tiles); a branch's (one that leaves another above the ground) at most SpikeBranchShare of it. */
+constexpr float SpikeMaxRadius = 0.07F;
+constexpr float SpikeBranchShare = 0.7F;
+
+std::vector<SpikeHorn> TraceSpikes(const std::vector<int16_t> &column)
+{
+	const int rows = static_cast<int>(column.size() / ColumnWidth);
+	const int base = rows - FloorTextureSize / 2;
+	auto bone = [&](int x, int y) {
+		const int16_t t = column[static_cast<size_t>(y) * ColumnWidth + x];
+		return t > 0 && (t < 32 || t >= 64);
+	};
+	std::vector<SpikeHorn> horns;
+	std::vector<std::pair<int, int>> runs;
+	for (int y = base; y >= 0; y--) {
+		runs.clear();
+		for (int x = 0; x < ColumnWidth;) {
+			if (!bone(x, y)) {
+				x++;
+				continue;
+			}
+			const int from = x;
+			while (x < ColumnWidth && bone(x, y))
+				x++;
+			runs.emplace_back(from, x - 1);
+		}
+		std::vector<bool> taken(runs.size(), false);
+		for (SpikeHorn &horn : horns) {
+			if (!horn.growing)
+				continue;
+			const auto &[cx, row, half] = horn.points.back();
+			int best = -1;
+			float bestGap = 1e9F;
+			for (size_t r = 0; r < runs.size(); r++) {
+				const float mid = (static_cast<float>(runs[r].first + runs[r].second)) / 2.0F;
+				if (taken[r] || static_cast<float>(runs[r].second) < cx - half - 1.5F || static_cast<float>(runs[r].first) > cx + half + 1.5F)
+					continue;
+				if (std::abs(mid - cx) < bestGap) {
+					bestGap = std::abs(mid - cx);
+					best = static_cast<int>(r);
+				}
+			}
+			if (best < 0) {
+				horn.growing = false;
+				continue;
+			}
+			taken[best] = true;
+			horn.points.push_back({ (static_cast<float>(runs[best].first + runs[best].second)) / 2.0F, static_cast<float>(y), (static_cast<float>(runs[best].second - runs[best].first) + 1.0F) / 2.0F });
+		}
+		for (size_t r = 0; r < runs.size(); r++) {
+			if (taken[r])
+				continue;
+			const std::array<float, 3> here { (static_cast<float>(runs[r].first + runs[r].second)) / 2.0F, static_cast<float>(y), (static_cast<float>(runs[r].second - runs[r].first) + 1.0F) / 2.0F };
+			SpikeHorn branch;
+			// Off the nearest horn just below, where it was a row ago.
+			const SpikeHorn *parent = nullptr;
+			float parentGap = 8.0F;
+			for (const SpikeHorn &horn : horns) {
+				if (horn.points.size() < 2 || horn.points.back()[1] != static_cast<float>(y))
+					continue;
+				const std::array<float, 3> &below = horn.points[horn.points.size() - 2];
+				const float gap = std::abs(below[0] - here[0]);
+				if (gap < parentGap) {
+					parentGap = gap;
+					parent = &horn;
+				}
+			}
+			if (parent != nullptr)
+				branch.points.push_back(parent->points[parent->points.size() - 2]);
+			branch.points.push_back(here);
+			horns.push_back(std::move(branch));
+		}
+	}
+	std::vector<SpikeHorn> kept;
+	for (SpikeHorn &horn : horns)
+		if (horn.points.front()[1] - horn.points.back()[1] >= SpikeMinRows)
+			kept.push_back(std::move(horn));
+	return kept;
+}
+
+const std::vector<SpikeHorn> &SpikeHornsOf(uint16_t piece)
+{
+	static std::map<uint16_t, std::vector<SpikeHorn>> cache;
+	static const std::byte *cacheFor = nullptr;
+	if (cacheFor != pDungeonCels.get()) {
+		cache.clear();
+		cacheFor = pDungeonCels.get();
+	}
+	auto [it, added] = cache.try_emplace(piece);
+	if (added)
+		it->second = TraceSpikes(GetPieceTextures(piece).column);
+	return it->second;
+}
+
+/** Per tile: 1 where a prop's bone is a model (the spikes), not a billboard. */
+std::vector<uint8_t> ModelledProps;
 
 // --- Lighting ------------------------------------------------------------------------------------------------------
 
@@ -403,6 +672,9 @@ void ClassifyHellTiles(std::vector<CleanKind> &kinds, std::vector<float> &height
 			case Megatile::Stairs:
 				kinds[at] = CleanKind::Prop;
 				props++;
+				// A spike's solid piece has no floor art of its own: the plain floor's under its model.
+				if (pMegaTiles != nullptr)
+					FloorPieces[at] = MegatilePiece(PlainFloorTile, (x & 1) + 2 * (y & 1));
 				break;
 			default: {
 				const bool lone = !solid(tile + Displacement { 1, 0 }) && !solid(tile + Displacement { -1, 0 }) && !solid(tile + Displacement { 0, 1 }) && !solid(tile + Displacement { 0, -1 });
@@ -442,6 +714,11 @@ bool IsHellBlood(Point tile)
 	return (Flags[static_cast<size_t>(tile.y) * MAXDUNX + tile.x] & TileBloodTop) != 0;
 }
 
+bool IsHellModelledProp(Point tile)
+{
+	return IsHell() && InDungeonBounds(tile) && !ModelledProps.empty() && ModelledProps[static_cast<size_t>(tile.y) * MAXDUNX + tile.x] != 0;
+}
+
 bool IsHellStairsTile(Point tile)
 {
 	return IsHell() && InDungeonBounds(tile) && ClassOf(MegatileAt(tile)) == Megatile::Stairs;
@@ -466,6 +743,13 @@ void HellTintTexture(CleanSurface surface, CleanSourceTexture &texture)
 		const float scaled = static_cast<float>(texture.rgb[i]) * bone[i % 3] / L4Bone[i % 3];
 		texture.rgb[i] = static_cast<uint8_t>(std::clamp(scaled + 0.5F, 0.0F, 255.0F));
 	}
+}
+
+const HellSprite *HellSpriteAt(int index)
+{
+	if (index < 0 || static_cast<size_t>(index) >= Sprites.size() || Sprites[index].pixels.empty())
+		return nullptr;
+	return &Sprites[index];
 }
 
 bool HellArtTexture(CleanSurface surface, CleanSourceTexture &out)
@@ -534,6 +818,7 @@ void CollectHellCrowns(Vec2 viewerPos, std::vector<Entity> &entities)
 
 void DrawHellFloor(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer)
 {
+	constexpr float Unseen = std::numeric_limits<float>::infinity(); // what the depth buffer starts as
 	EnsureBlood();
 	const bool holes = HasFloorHoles();
 	const Vec2 rayLeft { proj.dir.x - proj.plane.x, proj.dir.y - proj.plane.y };
@@ -564,8 +849,10 @@ void DrawHellFloor(const Surface &out, const Projection &proj, std::vector<float
 		float l01 = 0;
 		float l11 = 0;
 		for (int x = 0; x < proj.width; x++, wx += stepX, wy += stepY) {
-			const int tx = static_cast<int>(std::floor(wx));
-			const int ty = static_cast<int>(std::floor(wy));
+			if (depthRow[x] != Unseen)
+				continue; // a wall stands in front (DrawHellWalls draws first)
+			const int tx = FloorToInt(wx);
+			const int ty = FloorToInt(wy);
 			if (tx < 0 || ty < 0 || tx >= MAXDUNX || ty >= MAXDUNY) {
 				dst[x] = 0;
 				continue;
@@ -585,8 +872,8 @@ void DrawHellFloor(const Surface &out, const Projection &proj, std::vector<float
 			// The light, interpolated between tile centres.
 			const float fx = wx - 0.5F;
 			const float fy = wy - 0.5F;
-			const int cx = static_cast<int>(std::floor(fx));
-			const int cy = static_cast<int>(std::floor(fy));
+			const int cx = FloorToInt(fx);
+			const int cy = FloorToInt(fy);
 			if (cx != cellX || cy != cellY) {
 				cellX = cx;
 				cellY = cy;
@@ -687,8 +974,8 @@ void DrawHellWalls(const Surface &out, const Projection &proj, std::vector<float
 					uint8_t color;
 					if (bloodTop) {
 						// Across the blood's stretch of BloodTiles tiles, wherever it lies.
-						const float lu = std::clamp(p.x / BloodTiles - std::floor(p.x / BloodTiles), 0.0F, 0.9999F);
-						const float lv = std::clamp(p.y / BloodTiles - std::floor(p.y / BloodTiles), 0.0F, 0.9999F);
+						const float lu = std::clamp(p.x / BloodTiles - static_cast<float>(FloorToInt(p.x / BloodTiles)), 0.0F, 0.9999F);
+						const float lv = std::clamp(p.y / BloodTiles - static_cast<float>(FloorToInt(p.y / BloodTiles)), 0.0F, 0.9999F);
 						const int16_t texel = t / proj.focal * FloorTextureSize < UpscaleBelow
 						    ? bloodFine[static_cast<size_t>(lv * FineSize) * FineSize + static_cast<size_t>(lu * FineSize)]
 						    : blood[static_cast<size_t>(lv * BloodSize) * BloodSize + static_cast<size_t>(lu * BloodSize)];
@@ -720,6 +1007,33 @@ void BuildHellGeometry(std::vector<CleanQuad> &quads)
 {
 	using P3 = std::array<float, 3>;
 	const CleanKind *kinds = CleanKindMap();
+	// The art's cut-outs drawn on cards, made anew with the geometry.
+	for (const HellSprite &sprite : Sprites)
+		ForgetUpscaledTexture(sprite.pixels);
+	Sprites.clear();
+	Sprites.push_back(CutPostCrown()); // PostCrownSprite
+	for (HellSprite &sprite : Sprites) {
+		if (sprite.pixels.empty())
+			continue;
+		FindSpriteRects(sprite);
+		sprite.fine = &UpscaledTexture(sprite.pixels, sprite.width);
+	}
+	// Debug: FP_DUMP_HELL_SPRITES=dir writes each cut-out as a PPM (clear: magenta).
+	if (const char *dir = std::getenv("FP_DUMP_HELL_SPRITES"); dir != nullptr) {
+		for (size_t i = 0; i < Sprites.size(); i++) {
+			const HellSprite &sprite = Sprites[i];
+			const std::string path = StrCat(dir, "/hell_sprite_", i, ".ppm");
+			if (FILE *f = std::fopen(path.c_str(), "wb"); f != nullptr) {
+				std::fprintf(f, "P6\n%d %d\n255\n", sprite.width, sprite.height);
+				for (const int16_t texel : sprite.pixels) {
+					const SDL_Color c = texel > 0 ? logical_palette[texel] : SDL_Color { 255, 0, 255, 255 };
+					const uint8_t rgb[3] { c.r, c.g, c.b };
+					std::fwrite(rgb, 1, 3, f);
+				}
+				std::fclose(f);
+			}
+		}
+	}
 	auto kindAt = [&](Point t) { return InDungeonBounds(t) ? kinds[static_cast<size_t>(t.y) * MAXDUNX + t.x] : CleanKind::Wall; };
 	auto isWall = [&](Point t) { return kindAt(t) == CleanKind::Wall; };
 
@@ -884,8 +1198,13 @@ void BuildHellGeometry(std::vector<CleanQuad> &quads)
 			}
 		}
 	}
-	// Posts: at both ends of every run and evenly between, each corner once.
-	std::map<std::pair<int, int>, bool> posts;
+	// Posts: at both ends of every run and evenly between, each corner once, facing out of the faces they stand on
+	// (a corner's between its two). Keyed by their place (in 1/20 tiles).
+	struct Post {
+		P3 at;
+		P3 facing;
+	};
+	std::map<std::pair<int, int>, Post> posts;
 	int beams = 0;
 	for (const Run &run : runs) {
 		const Displacement front = Fronts[run.face];
@@ -909,18 +1228,119 @@ void BuildHellGeometry(std::vector<CleanQuad> &quads)
 		beams++;
 		const float length = b - a;
 		const int count = std::max(1, static_cast<int>(std::lround(length / PostSpacing)));
-		const P3 alongDir = xFace ? P3 { 0, 1, 0 } : P3 { 1, 0, 0 };
 		const P3 facing = xFace ? P3 { normalAcross, 0, 0 } : P3 { 0, normalAcross, 0 };
 		for (int i = 0; i <= count; i++) {
 			const float s = a + length * static_cast<float>(i) / static_cast<float>(count);
-			// Corners are shared by two runs: posts keyed by their place (in 1/20 tiles) are put up once.
-			const P3 p = point(s, plane + normalAcross * PostOut, 0);
+			const P3 p = point(s, plane, 0);
 			const std::pair<int, int> key { static_cast<int>(std::lround(p[0] * 20.0F)), static_cast<int>(std::lround(p[1] * 20.0F)) };
-			if (posts.count(key) != 0)
+			auto [it, added] = posts.try_emplace(key, Post { p, { 0, 0, 0 } });
+			it->second.facing = add(it->second.facing, facing);
+		}
+	}
+	// The posts: a spine standing just out of the face, and on it the crown cut out of the art (PostCrownTile), on a
+	// card facing out (or a skull knob and horns of its own, if the art has none).
+	const HellSprite *crown = HellSpriteAt(PostCrownSprite);
+	for (const auto &[key, post] : posts) {
+		P3 facing = post.facing;
+		facing[2] = 0;
+		facing = unit(std::abs(facing[0]) + std::abs(facing[1]) > 1e-3F ? facing : P3 { 1, 0, 0 });
+		const P3 alongDir { -facing[1], facing[0], 0 };
+		const P3 at = add(post.at, mul(facing, PostOut));
+		addSpine(at[0], at[1], WallTop + PostAbove, PostBody, PostJoint, alongDir, facing, 0.62F, crown == nullptr);
+		if (crown == nullptr)
+			continue;
+		const float scale = PostCrownScale / SpritePixelsPerTileY;
+		const float halfWidth = static_cast<float>(crown->width) * PostCrownScale / SpritePixelsPerTileX / 2.0F;
+		const float bottom = WallTop + BeamLift - static_cast<float>(PostKnobRow - PostCrownBottom) * scale;
+		const float top = bottom + static_cast<float>(crown->height) * scale;
+		const P3 middle = add(at, mul(facing, PostBody + 0.02F));
+		// The card: a quad for each of the crown's rectangles with art, laid where they lie on it.
+		for (const auto &[rx0, ry0, rx1, ry1] : crown->rects) {
+			const float u0 = static_cast<float>(rx0) / static_cast<float>(crown->width);
+			const float u1 = static_cast<float>(rx1) / static_cast<float>(crown->width);
+			const float v0 = static_cast<float>(ry0) / static_cast<float>(crown->height);
+			const float v1 = static_cast<float>(ry1) / static_cast<float>(crown->height);
+			const P3 left = add(middle, mul(alongDir, halfWidth * (2 * u0 - 1)));
+			const P3 right = add(middle, mul(alongDir, halfWidth * (2 * u1 - 1)));
+			const float zTop = top - (top - bottom) * v0;
+			const float zBottom = top - (top - bottom) * v1;
+			CleanQuad card;
+			card.p = { P3 { left[0], left[1], zBottom }, P3 { right[0], right[1], zBottom }, P3 { right[0], right[1], zTop }, P3 { left[0], left[1], zTop } };
+			card.normal = facing;
+			card.uv = { { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } } };
+			card.surface = CleanSurface::Pillar;
+			card.sprite = PostCrownSprite;
+			card.spriteWidth = 2.0F * halfWidth;
+			quads.push_back(card);
+		}
+	}
+	// The spikes: each horn its art draws a tapering tube, standing where it stands in the art across the view (the
+	// iso camera's screen runs along x - y) and leaning a little towards it and away by turns.
+	ModelledProps.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY, 0);
+	int spikes = 0;
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			if (kinds[static_cast<size_t>(y) * MAXDUNX + x] != CleanKind::Prop || ClassOf(MegatileAt({ x, y })) != Megatile::Spike)
 				continue;
-			// Inside corners lie in the angle of two faces: the post there is set back into it.
-			posts[key] = true;
-			addSpine(p[0], p[1], WallTop + PostAbove, PostBody, PostJoint, alongDir, facing, 0.62F, true);
+			const std::vector<SpikeHorn> &horns = SpikeHornsOf(dPiece[x][y]);
+			if (horns.empty())
+				continue;
+			const int rows = static_cast<int>(GetPieceTextures(dPiece[x][y]).column.size() / ColumnWidth);
+			const float base = static_cast<float>(rows - FloorTextureSize / 2);
+			const P3 across { 0.70710678F, -0.70710678F, 0 }; // screen x
+			const P3 toward { 0.70710678F, 0.70710678F, 0 };  // towards the iso camera
+			const P3 centre { static_cast<float>(x) + 0.5F, static_cast<float>(y) + 0.5F, 0 };
+			int k = 0;
+			for (const SpikeHorn &horn : horns) {
+				const float lean = ((k++ & 1) == 0 ? 0.25F : -0.25F);
+				auto at = [&](float px, float row) {
+					const float z = (base - row) / SpritePixelsPerTileY * ArtScale;
+					const float side = (px - ColumnWidth / 2.0F) / SpritePixelsPerTileX * ArtScale;
+					return add(add(centre, mul(across, side)), add(mul(toward, lean * z), P3 { 0, 0, z }));
+				};
+				// Its middle line smoothed (the art's runs wobble), its thickness that of its lower third, tapering to a
+				// point SpikeTipRows past its last row, on along its last stretch.
+				const size_t n = horn.points.size();
+				std::vector<float> middle(n);
+				for (size_t i = 0; i < n; i++) {
+					float sum = 0;
+					int count = 0;
+					for (size_t j = i >= 2 ? i - 2 : 0; j <= std::min(n - 1, i + 2); j++, count++)
+						sum += horn.points[j][0];
+					middle[i] = sum / static_cast<float>(count);
+				}
+				float thick = 0;
+				const size_t lower = std::max<size_t>(1, n / 3);
+				for (size_t i = 0; i < lower; i++)
+					thick += horn.points[i][2];
+				// Rooted in the ground (it rises from the foot of the cluster), or a branch, thinner.
+				const bool rooted = base - horn.points.front()[1] <= SpikeRootRows;
+				const float baseRadius = std::clamp(thick / static_cast<float>(lower) * SpikeThickness / SpritePixelsPerTileX * ArtScale, 0.02F, SpikeMaxRadius * (rooted ? 1.0F : SpikeBranchShare));
+				const float length = static_cast<float>(n - 1) + SpikeTipRows;
+				std::vector<P3> path;
+				std::vector<float> radius;
+				// A rooted one starts a little under the floor.
+				if (rooted) {
+					P3 root = at(middle.front(), horn.points.front()[1]);
+					root[2] = -0.06F;
+					path.push_back(root);
+					radius.push_back(baseRadius * 1.15F);
+				}
+				const size_t step = std::max<size_t>(1, n / 7);
+				for (size_t i = 0; i + 1 < n; i += step) {
+					path.push_back(at(middle[i], horn.points[i][1]));
+					radius.push_back(baseRadius * std::pow(1.0F - static_cast<float>(i) / length, SpikeTaper));
+				}
+				path.push_back(at(middle[n - 1], horn.points[n - 1][1]));
+				radius.push_back(baseRadius * std::pow(SpikeTipRows / length, SpikeTaper));
+				const size_t back = std::min<size_t>(4, n - 1);
+				const float dxPerRow = back > 0 ? (middle[n - 1] - middle[n - 1 - back]) / static_cast<float>(back) : 0.0F;
+				path.push_back(at(middle[n - 1] + dxPerRow * SpikeTipRows, horn.points[n - 1][1] - SpikeTipRows));
+				radius.push_back(0.0F);
+				addTube(path, radius, 6, CleanSurface::Stone, false, false);
+			}
+			ModelledProps[static_cast<size_t>(y) * MAXDUNX + x] = 1;
+			spikes++;
 		}
 	}
 	// The lone spine columns.
@@ -939,7 +1359,7 @@ void BuildHellGeometry(std::vector<CleanQuad> &quads)
 			columns++;
 		}
 	}
-	LogInfo("fp: hell geometry: {} quads, {} beams, {} posts, {} spine columns", quads.size(), beams, posts.size(), columns);
+	LogInfo("fp: hell geometry: {} quads, {} beams, {} posts, {} spine columns, {} spikes", quads.size(), beams, posts.size(), columns, spikes);
 }
 
 } // namespace devilution::fp

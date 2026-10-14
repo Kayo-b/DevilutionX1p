@@ -861,8 +861,8 @@ float CleanLightAt(float x, float y)
 {
 	const float fx = x - 0.5F;
 	const float fy = y - 0.5F;
-	const int ix = static_cast<int>(std::floor(fx));
-	const int iy = static_cast<int>(std::floor(fy));
+	const int ix = FloorToInt(fx);
+	const int iy = FloorToInt(fy);
 	if (ix != LastLightCell.x || iy != LastLightCell.y)
 		LastLightCell = { ix, iy, TileLight(ix, iy), TileLight(ix + 1, iy), TileLight(ix, iy + 1), TileLight(ix + 1, iy + 1) };
 	const LightCell &c = LastLightCell;
@@ -936,8 +936,8 @@ void DrawCleanFloorAndCeiling(const Surface &out, const Projection &proj, std::v
 		bool flat = false;
 		const std::vector<int16_t> *flatArt = nullptr;
 		for (int x = 0; x < proj.width; x++, wx += stepX, wy += stepY) {
-			const int tx = static_cast<int>(std::floor(wx));
-			const int ty = static_cast<int>(std::floor(wy));
+			const int tx = FloorToInt(wx);
+			const int ty = FloorToInt(wy);
 			if (tx < 0 || ty < 0 || tx >= MAXDUNX || ty >= MAXDUNY) {
 				dst[x] = 0;
 				continue;
@@ -948,8 +948,8 @@ void DrawCleanFloorAndCeiling(const Surface &out, const Projection &proj, std::v
 			}
 			const float fx = wx - 0.5F;
 			const float fy = wy - 0.5F;
-			const int cx = static_cast<int>(std::floor(fx));
-			const int cy = static_cast<int>(std::floor(fy));
+			const int cx = FloorToInt(fx);
+			const int cy = FloorToInt(fy);
 			if (cx != cellX || cy != cellY) {
 				cellX = cx;
 				cellY = cy;

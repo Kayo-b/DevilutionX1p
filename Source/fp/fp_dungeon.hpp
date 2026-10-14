@@ -135,8 +135,8 @@ struct CleanSampler {
 			tu += DitherU(x, y);
 			tv += DitherV(x, y);
 		}
-		const int iu = static_cast<int>(std::floor(tu)) & maskU;
-		const int iv = static_cast<int>(std::floor(tv)) & maskV;
+		const int iu = FloorToInt(tu) & maskU;
+		const int iv = FloorToInt(tv) & maskV;
 		return (*lit)[level][static_cast<size_t>(iv << shift | iu)];
 	}
 };
@@ -164,6 +164,8 @@ struct CleanQuad {
 	std::array<std::array<float, 2>, 4> uv; // texture position (tiles) of each corner
 	CleanSurface surface;
 	float darkness = 0; // light levels added (the inside of a stairwell)
+	int16_t sprite = -1; // instead of the surface: an art cut-out (fp_hell.hpp's HellSpriteAt), u and v 0..1 over it, clear where it has no art
+	float spriteWidth = 0; // the cut-out's whole width on its card (tiles), for its detail level
 };
 /**
  * @brief The level's pillars, arches and stairs as quads; `stands` gets the tiles to give the kept torch stand, and

@@ -78,10 +78,10 @@ struct Body {
 };
 
 struct Params {
-	bool ridgeAlongX;
-	float eave;     // wall height
-	float rise;     // height of the ridge above the eave
-	float overhang; // how far the roof sticks out over the eaves
+	bool ridgeAlongX = false;
+	float eave = 0;     // wall height
+	float rise = 0;     // height of the ridge above the eave
+	float overhang = 0; // how far the roof sticks out over the eaves (screen culling reads it for every structure)
 };
 
 /** Side limits of the texture patches cut from a house's art, in art pixels. */
@@ -138,6 +138,8 @@ struct WorldTriangle {
 	int16_t artY = -1;
 	uint8_t fallback;   // colour where the art has no pixel
 	CleanSurface cleanSurface = CleanSurface::Wall; // MeshClean: the texture, laid on by uv (tiles)
+	int16_t sprite = -1;                            // MeshSprite: the cut-out (HellSpriteAt)
+	bool smallLight = false; // MeshClean, MeshSprite: small enough to be lit as a whole (CleanTriangleLight)
 	// MeshClean: extra shade (light levels) at a point z high, the sum of two ramps max(0, at0 + perZ * z): a
 	// sarcophagus's shadow under its rim and towards its foot.
 	struct Ramp {
@@ -164,6 +166,7 @@ enum : uint8_t {
 	MeshTiled,      // a model texture (WorldTriangle::texture) tiled over the surface in world space (the town's low walls)
 	MeshPane,       // window glass, glowing with its house's light (LitLandmarks[arch]); see AddWindowPane
 	MeshFrame,      // a window's wooden frame
+	MeshSprite,     // an art cut-out on a card (hell's posts: HellSpriteAt(sprite)), by uv 0..1, clear where it has no art
 };
 
 struct Building {
@@ -347,6 +350,8 @@ uint8_t ShadeColor(uint8_t color, int darkness)
 float ShadePixelWorld = 0;
 int ShadeX = 0;
 int ShadeY = 0;
+/** Counts DrawStructures calls: what is worked out once a frame per triangle is kept with it (CleanTriangleLight). */
+uint32_t StructureFrame = 0;
 /**
  * @brief Whether SampleArt may read the art's UpscaledTexture up close: not on levels that cycle their palettes, whose
  * structures (and art) are rebuilt every frame.
@@ -5608,6 +5613,39 @@ uint8_t DoorLeafColor(uint8_t color)
 void FinishStructureBounds();
 
 /**
+ * @brief Whether a triangle is small enough to be lit as a whole, at its middle: the light is the tiles' interpolated
+ * between their centres (CleanLightAt), and changes little over a fifth of a tile. Looked up per pixel, it was a good
+ * part of the bone's cost.
+ */
+bool SmallForLight(const WorldTriangle &tri)
+{
+	constexpr float Reach = 0.2F;
+	for (int k = 0; k < 3; k++) {
+		const V3 &a = tri.p[k];
+		const V3 &b = tri.p[(k + 1) % 3];
+		if (std::abs(a.x - b.x) > Reach || std::abs(a.y - b.y) > Reach)
+			return false;
+	}
+	return true;
+}
+
+/** @brief The light (CleanLightAt) on a clean triangle at a point: once a frame at its middle for a small one. */
+float CleanTriangleLight(const WorldTriangle &tri, float wx, float wy)
+{
+	if (!tri.smallLight)
+		return CleanLightAt(wx, wy);
+	static const WorldTriangle *last = nullptr;
+	static uint32_t lastFrame = 0;
+	static float light = 0;
+	if (&tri != last || lastFrame != StructureFrame) {
+		last = &tri;
+		lastFrame = StructureFrame;
+		light = CleanLightAt((tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F, (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F);
+	}
+	return light;
+}
+
+/**
  * @brief Lays the clean dungeon's textures on a kept model (the cathedral's stairs) by the way each triangle faces, in
  * world coordinates: `vertical` on its sides (`pillar` on round parts), `top` on what faces up, `under` below; parts
  * under the floor (a pit) darken with their depth.
@@ -5637,6 +5675,7 @@ void RetextureClean(Structure &st, CleanSurface vertical, CleanSurface pillar, C
 		tri.darkness = static_cast<uint8_t>(std::min(tri.darkness + static_cast<int>(-lowest * stretch * 3.0F), 24));
 		tri.mapping = MeshClean;
 		tri.texture = 0;
+		tri.smallLight = SmallForLight(tri);
 		PrepareUvLookup(tri);
 	}
 }
@@ -5658,6 +5697,37 @@ void BuildCathedralStairs()
 				RetextureClean(st, CleanSurface::Wall, CleanSurface::Stone, CleanSurface::Stone, CleanSurface::Arch);
 			Structures.push_back(std::move(st));
 		}
+	}
+}
+
+/** @brief Adds a quad of the clean dungeon's geometry (CleanQuad: drawn tiles, z stretched) to a structure's mesh. */
+void AddCleanQuad(Building &b, const CleanQuad &quad)
+{
+	const float stretch = VerticalScale();
+	// Meshes are kept in art units, stretched up when drawn: so are the normals (for culling).
+	const auto at = [&](int k) { return V3 { quad.p[k][0], quad.p[k][1], quad.p[k][2] / stretch }; };
+	const size_t first = b.mesh.size();
+	AddStructureFace(b, { at(0), at(1), at(2), at(3) }, { quad.normal[0], quad.normal[1], quad.normal[2] * stretch }, { 0, 0 }, MeshClean);
+	for (size_t t = first; t < b.mesh.size(); t++) {
+		WorldTriangle &tri = b.mesh[t];
+		// AddStructureFace fans the quad from its first corner: (0, 1, 2), then (0, 2, 3).
+		const std::array<int, 3> corners { 0, static_cast<int>(t - first) + 1, static_cast<int>(t - first) + 2 };
+		for (int v = 0; v < 3; v++) {
+			tri.uv[v * 2] = quad.uv[corners[v]][0];
+			tri.uv[v * 2 + 1] = quad.uv[corners[v]][1];
+		}
+		tri.cleanSurface = quad.surface;
+		// Half a light level per step: undersides, and the inside of stairwells.
+		tri.darkness = static_cast<uint8_t>((quad.normal[2] < -0.5F ? 3 : 0) + std::lround(quad.darkness * 2.0F));
+		tri.smallLight = SmallForLight(tri);
+		if (quad.sprite >= 0) {
+			// A card: seen from both sides.
+			tri.mapping = MeshSprite;
+			tri.sprite = quad.sprite;
+			tri.cull = false;
+			tri.slopeScale = quad.spriteWidth; // the cut-out's width, for the detail level
+		}
+		PrepareUvLookup(tri);
 	}
 }
 
@@ -5743,7 +5813,41 @@ void BuildHellStairs()
 		if (down) {
 			const Vec2 a = toWorld(PitX - HoleHalfX, -HoleHalfY);
 			const Vec2 b = toWorld(PitX + HoleHalfX, HoleHalfY);
-			FloorHoles.push_back({ std::min(a.x, b.x), std::min(a.y, b.y), std::max(a.x, b.x), std::max(a.y, b.y) });
+			const float x0 = std::min(a.x, b.x);
+			const float y0 = std::min(a.y, b.y);
+			const float x1 = std::max(a.x, b.x);
+			const float y1 = std::max(a.y, b.y);
+			FloorHoles.push_back({ x0, y0, x1, y1 });
+			// The pit under the hole: flesh sides going down in bands, darker the deeper, and a floor at the bottom
+			// (the spine goes down to it), all but black.
+			const float bottom = -ModelBelow * Scale;
+			constexpr int Bands = 3;
+			using P3 = std::array<float, 3>;
+			const std::array<std::array<float, 4>, 4> sides { { { x0, y0, x1, y0 }, { x1, y0, x1, y1 }, { x1, y1, x0, y1 }, { x0, y1, x0, y0 } } };
+			for (const auto &[ax, ay, bx, by] : sides) {
+				const float len = std::hypot(bx - ax, by - ay);
+				// Inward: the hole's middle is on the left of each side, walked round counter-clockwise.
+				const P3 inward { -(by - ay) / len, (bx - ax) / len, 0 };
+				for (int band = 0; band < Bands; band++) {
+					const float z0 = bottom * static_cast<float>(band + 1) / Bands;
+					const float z1 = bottom * static_cast<float>(band) / Bands;
+					CleanQuad side;
+					side.p = { P3 { ax, ay, z0 }, P3 { bx, by, z0 }, P3 { bx, by, z1 }, P3 { ax, ay, z1 } };
+					side.normal = inward;
+					const float u0 = ax + ay;
+					side.uv = { { { u0, -z0 }, { u0 + len, -z0 }, { u0 + len, -z1 }, { u0, -z1 } } };
+					side.surface = CleanSurface::Wall;
+					side.darkness = 1.5F + 2.5F * static_cast<float>(band);
+					AddCleanQuad(st.art, side);
+				}
+			}
+			CleanQuad floor;
+			floor.p = { P3 { x0, y0, bottom }, P3 { x1, y0, bottom }, P3 { x1, y1, bottom }, P3 { x0, y1, bottom } };
+			floor.normal = { 0, 0, 1 };
+			floor.uv = { { { x0, y0 }, { x1, y0 }, { x1, y1 }, { x0, y1 } } };
+			floor.surface = CleanSurface::Wall;
+			floor.darkness = 8.0F;
+			AddCleanQuad(st.art, floor);
 		}
 		for (const Point t : tiles)
 			StructureTiles[static_cast<size_t>(t.y) * MAXDUNX + t.x] = 1;
@@ -5775,7 +5879,6 @@ void BuildCleanStructures()
 		mark = 1;
 		Structures.push_back(std::move(st));
 	}
-	const float stretch = VerticalScale();
 	constexpr int Chunk = 4;
 	std::unordered_map<int, size_t> chunks;
 	for (const CleanQuad &quad : quads) {
@@ -5786,24 +5889,7 @@ void BuildCleanStructures()
 		auto [it, added] = chunks.try_emplace(key, Structures.size());
 		if (added)
 			Structures.emplace_back();
-		Building &b = Structures[it->second].art;
-		// Meshes are kept in art units, stretched up when drawn: so are the normals (for culling).
-		const auto at = [&](int k) { return V3 { quad.p[k][0], quad.p[k][1], quad.p[k][2] / stretch }; };
-		const size_t first = b.mesh.size();
-		AddStructureFace(b, { at(0), at(1), at(2), at(3) }, { quad.normal[0], quad.normal[1], quad.normal[2] * stretch }, { 0, 0 }, MeshClean);
-		for (size_t t = first; t < b.mesh.size(); t++) {
-			WorldTriangle &tri = b.mesh[t];
-			// AddStructureFace fans the quad from its first corner: (0, 1, 2), then (0, 2, 3).
-			const std::array<int, 3> corners { 0, static_cast<int>(t - first) + 1, static_cast<int>(t - first) + 2 };
-			for (int v = 0; v < 3; v++) {
-				tri.uv[v * 2] = quad.uv[corners[v]][0];
-				tri.uv[v * 2 + 1] = quad.uv[corners[v]][1];
-			}
-			tri.cleanSurface = quad.surface;
-			// Half a light level per step: undersides, and the inside of stairwells.
-			tri.darkness = static_cast<uint8_t>((quad.normal[2] < -0.5F ? 3 : 0) + std::lround(quad.darkness * 2.0F));
-			PrepareUvLookup(tri);
-		}
+		AddCleanQuad(Structures[it->second].art, quad);
 	}
 	for (int y = 0; y < MAXDUNY; y++)
 		for (int x = 0; x < MAXDUNX; x++)
@@ -5986,6 +6072,72 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 	if (!ScreenBounds(st.art, proj, left, top, right, bottom))
 		return;
 	RasterizeTriangles(out, proj, depthBuffer, st.art.mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
+		if (tri.mapping == MeshSprite) {
+			const HellSprite *sprite = HellSpriteAt(tri.sprite);
+			if (sprite == nullptr)
+				return -1;
+			const auto [da, db] = DropAxis(tri.bakeAxis, wx - tri.p[0].x, wy - tri.p[0].y, wz - tri.p[0].z);
+			const float w1 = tri.bakeInv[0] * da + tri.bakeInv[1] * db;
+			const float w2 = tri.bakeInv[2] * da + tri.bakeInv[3] * db;
+			const float w0 = 1.0F - w1 - w2;
+			const float u = std::clamp(w0 * tri.uv[0] + w1 * tri.uv[2] + w2 * tri.uv[4], 0.0F, 0.9999F);
+			const float v = std::clamp(w0 * tri.uv[1] + w1 * tri.uv[3] + w2 * tri.uv[5], 0.0F, 0.9999F);
+			// Blown up (up close), from its smoothed copy at TextureUpscale times the resolution. Its outline is where the
+			// coverage of the four texels round the point crosses one half (smooth, not in steps); the colour is the
+			// nearest of them that is drawn.
+			const float texelsPerWorld = static_cast<float>(sprite->width) / std::max(tri.slopeScale, 1e-3F);
+			const bool fineLevel = ShadePixelWorld * texelsPerWorld < UpscaleBelow && sprite->fine != nullptr;
+			const std::vector<int16_t> &pixels = fineLevel && sprite->fine != nullptr ? *sprite->fine : sprite->pixels;
+			const int w = fineLevel ? sprite->width * TextureUpscale : sprite->width;
+			const int h = fineLevel ? sprite->height * TextureUpscale : sprite->height;
+			const float fu = u * static_cast<float>(w) - 0.5F;
+			const float fv = v * static_cast<float>(h) - 0.5F;
+			const int u0 = FloorToInt(fu);
+			const int v0 = FloorToInt(fv);
+			const float tu = fu - static_cast<float>(u0);
+			const float tv = fv - static_cast<float>(v0);
+			auto sample = [&](int su, int sv) -> int16_t {
+				if (su < 0 || sv < 0 || su >= w || sv >= h)
+					return NoPixel;
+				return pixels[static_cast<size_t>(sv) * w + su];
+			};
+			const std::array<int16_t, 4> texels { sample(u0, v0), sample(u0 + 1, v0), sample(u0, v0 + 1), sample(u0 + 1, v0 + 1) };
+			const std::array<float, 4> weights { (1 - tu) * (1 - tv), tu * (1 - tv), (1 - tu) * tv, tu * tv };
+			float coverage = 0;
+			int16_t texel = 0;
+			float best = -1;
+			for (size_t k = 0; k < 4; k++) {
+				if (texels[k] <= 0)
+					continue;
+				coverage += weights[k];
+				if (weights[k] > best) {
+					best = weights[k];
+					texel = texels[k];
+				}
+			}
+			if (coverage < 0.5F || texel <= 0)
+				return -1;
+			// Where it was cut out of art that goes on, it fades out through an ordered dither (bilinear over its texels).
+			if (!sprite->alpha.empty()) {
+				const float cu = u * static_cast<float>(sprite->width) - 0.5F;
+				const float cv = v * static_cast<float>(sprite->height) - 0.5F;
+				const int au = FloorToInt(cu);
+				const int av = FloorToInt(cv);
+				const float su = cu - static_cast<float>(au);
+				const float sv = cv - static_cast<float>(av);
+				auto alphaAt = [&](int x, int y) -> float {
+					x = std::clamp(x, 0, sprite->width - 1);
+					y = std::clamp(y, 0, sprite->height - 1);
+					return static_cast<float>(sprite->alpha[static_cast<size_t>(y) * sprite->width + x]);
+				};
+				const float top = alphaAt(au, av) * (1 - su) + alphaAt(au + 1, av) * su;
+				const float bottom = alphaAt(au, av + 1) * (1 - su) + alphaAt(au + 1, av + 1) * su;
+				if (top + (bottom - top) * sv < (static_cast<float>(CleanBayer[ShadeY & 3][ShadeX & 3]) + 0.5F) * 16.0F)
+					return -1;
+			}
+			const float light = CleanTriangleLight(tri, wx, wy) + tri.darkness * 0.5F;
+			return light >= LightsMax ? 0 : static_cast<int>(FpLightTable(LightLevel(light, ShadeX, ShadeY))[static_cast<uint8_t>(texel)]);
+		}
 		if (tri.mapping == MeshClean) {
 			const auto [da, db] = DropAxis(tri.bakeAxis, wx - tri.p[0].x, wy - tri.p[0].y, wz - tri.p[0].z);
 			const float w1 = tri.bakeInv[0] * da + tri.bakeInv[1] * db;
@@ -5995,7 +6147,7 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 			const float v = w0 * tri.uv[1] + w1 * tri.uv[3] + w2 * tri.uv[5];
 			const float shade = tri.darkness * 0.5F + std::max(0.0F, tri.occlusion[0].at0 + tri.occlusion[0].perZ * wz)
 			    + std::max(0.0F, tri.occlusion[1].at0 + tri.occlusion[1].perZ * wz);
-			return static_cast<int>(CleanColor(tri.cleanSurface, u, v, ShadePixelWorld, CleanLightAt(wx, wy) + shade, ShadeX, ShadeY));
+			return static_cast<int>(CleanColor(tri.cleanSurface, u, v, ShadePixelWorld, CleanTriangleLight(tri, wx, wy) + shade, ShadeX, ShadeY));
 		}
 		if (tri.mapping == MeshArcade) {
 			const float along = (wx - tri.mirrorX) * tri.downX + (wy - tri.mirrorY) * tri.downY;
@@ -9137,6 +9289,7 @@ void DrawStructures(const Surface &out, const Projection &proj, std::vector<floa
 	if (leveltype == DTYPE_TOWN)
 		return;
 	EnsureStructures();
+	StructureFrame++;
 	// Nearest first, so the depth test turns hidden pixels away before their colour is looked up. Hell's bone stands
 	// in the dark beyond HellMeshReach (only the sky would show its outline), where it is left out.
 	static std::vector<std::pair<float, const Structure *>> order;
@@ -9150,8 +9303,27 @@ void DrawStructures(const Surface &out, const Projection &proj, std::vector<floa
 			order.emplace_back(distance, &st);
 	}
 	std::sort(order.begin(), order.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
-	for (const auto &[distance, st] : order)
+	for (const auto &[distance, st] : order) {
+		// Big models (hell's stairs) front to back within themselves too.
+		if (st->art.mesh.size() > 2000) {
+			static std::vector<std::pair<float, uint32_t>> byDistance;
+			static std::vector<uint32_t> sorted;
+			byDistance.clear();
+			for (uint32_t i = 0; i < st->art.mesh.size(); i++) {
+				const WorldTriangle &tri = st->art.mesh[i];
+				const float dx = (tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F - proj.pos.x;
+				const float dy = (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F - proj.pos.y;
+				byDistance.emplace_back(dx * dx + dy * dy, i);
+			}
+			std::sort(byDistance.begin(), byDistance.end());
+			sorted.clear();
+			for (const auto &[d, i] : byDistance)
+				sorted.push_back(i);
+			DrawStructure(out, proj, depthBuffer, *st, VerticalScale(), &sorted);
+			continue;
+		}
 		DrawStructure(out, proj, depthBuffer, *st);
+	}
 	DrawObjectBoxes(out, proj, depthBuffer);
 	DrawDoorLeaves(out, proj, depthBuffer);
 }

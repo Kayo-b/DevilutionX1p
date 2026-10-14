@@ -316,7 +316,7 @@ bool IsPropTile(Point tile)
 		return false;
 	const bool town = leveltype == DTYPE_TOWN;
 	if (IsHell())
-		return CleanKindAt(tile) == CleanKind::Prop && !IsStructureTile(tile); // its bone spikes (the stairs' rib cages are models)
+		return CleanKindAt(tile) == CleanKind::Prop && !IsStructureTile(tile) && !IsHellModelledProp(tile); // models now: spikes, rib cages
 	const PieceTextures &textures = GetPieceTextures(dPiece[tile.x][tile.y]);
 	if (!textures.hasTallArt || (!town && !textures.isFreeStanding))
 		return false;

@@ -1130,20 +1130,24 @@ void DrawFirstPersonView(const Surface &out)
 	const bool hell = IsHell();
 	if (clean)
 		PrepareCleanDungeon();
-	if (hell)
-		DrawHellFloor(out, proj, depthBuffer);
-	else if (clean)
-		DrawCleanFloorAndCeiling(out, proj, depthBuffer);
-	else
-		DrawFloorAndCeiling(out, proj, depthBuffer);
-	lap(0);
-	if (hell)
+	if (hell) {
+		// Hell's walls first: its floor is then only drawn where they leave it to be seen.
 		DrawHellWalls(out, proj, zBuffer, depthBuffer);
-	else if (clean)
-		DrawCleanWalls(out, proj, zBuffer, depthBuffer);
-	else
-		DrawWalls(out, proj, zBuffer, depthBuffer);
-	lap(1);
+		lap(1);
+		DrawHellFloor(out, proj, depthBuffer);
+		lap(0);
+	} else {
+		if (clean)
+			DrawCleanFloorAndCeiling(out, proj, depthBuffer);
+		else
+			DrawFloorAndCeiling(out, proj, depthBuffer);
+		lap(0);
+		if (clean)
+			DrawCleanWalls(out, proj, zBuffer, depthBuffer);
+		else
+			DrawWalls(out, proj, zBuffer, depthBuffer);
+		lap(1);
+	}
 	if (leveltype == DTYPE_TOWN && BuildingsEnabled())
 		DrawBuildings(out, proj, zBuffer, depthBuffer);
 	else
