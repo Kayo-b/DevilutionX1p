@@ -55,13 +55,12 @@ noise and gradients by `fp-tools/export/export_hell_sky.py`, quantized to hell's
 
 # Dungeon texture credits (`dungeontex.bin`)
 
-`dungeontex.bin` holds the texture sets of the first-person dungeon: the cathedral (levels 1-4), the catacombs (5-8),
-the caves (9-12), Hellfire's crypt (21-24) and the bone of hell (13-16). Walls, floors, ceilings, pillars, the inside of arches and doorways, and the door leaves
+`dungeontex.bin` holds the texture sets of the first-person dungeon: the cathedral (levels 1-4), the caves (9-12),
+Hellfire's crypt (21-24) and the bone of hell (13-16). Walls, floors, ceilings, pillars, the inside of arches and doorways, and the door leaves
 wear them instead of the original game's art. They are (but for the four below) the textures of the same release's dungeon kit
 (`Dungeon Pieces-67266-.7z`), under the terms above: its stone blocks (`Modern-Cream-Blocks_seamless`, with its
 normal and specular maps), church pavement (`Pavement_01_UV_H_CM_1`), Diablo marble (`marble_diablo`), column-head
-stone (`d_column_extr`), door planks (`door_diff`, with its normal map), steel (`Steel_02_UV_H_CM_1`), black marble
-(`Black marble seamless`), white marble (`marble_06`), yellow stone (`yellow stone seamless`), weathered beams
+stone (`d_column_extr`), door planks (`door_diff`, with its normal map), steel (`Steel_02_UV_H_CM_1`), white marble (`marble_06`), yellow stone (`yellow stone seamless`), weathered beams
 (`grinda_02`: the caves' fences, gate frames and shoring) and the carving of its sarcophagus lid (`capac_bump`). They were scaled, lit by their normal and relief maps and colour graded to the
 original tilesets' colours (measured on the original art, none of which is copied into the file) by
 `fp-tools/export/export_dungeon_textures.py`; their creators are the ones credited under Textures above.
@@ -70,6 +69,10 @@ Hell's bone (`hell/pillar`, `hell/stone`: its beams, posts, horns, columns and s
 `bone_bump.jpg` (same release, same terms), graded to the colour of the bone in hell's art (measured, none copied)
 with soft brown stains. Hell's flesh, blood and floors are not in this file: the game cuts them out of the player's
 own copy of the original art when a level loads (`Source/fp/fp_hell.cpp`).
+
+The catacombs (levels 5-8) have no textures in this file, nor any other new art: their walls, floors, flagstone
+ceiling, towers, arches, steps, doors and scaffolds wear textures the game cuts out of the player's own copy of the
+original art when a level loads (`Source/fp/fp_catacombs.cpp`), made finer by the game's xBR upscaler.
 
 Two pairs of the cathedral's textures are not the kit's: the sarcophagus's stone (`marble`, `marble2`) and the torch
 stands' bases (`ivory`, `ivory2`) are Screaming Brain Studios' "Tiny Texture Pack 2" (`Elements_11`, `Elements_12`,

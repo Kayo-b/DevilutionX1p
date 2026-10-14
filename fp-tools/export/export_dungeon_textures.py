@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export the texture sets of the first-person dungeon (cathedral, catacombs, caves, Hellfire's crypt): `dungeontex.bin`.
+"""Export the texture sets of the first-person dungeon (cathedral, caves, Hellfire's crypt, hell's bone): `dungeontex.bin`.
 
 The textures are the Diablo 1 dungeon kit's: "Dungeon Pieces" of the fan rebuild of Diablo 1's assets (Nexus Mods,
 mod 67266; terms and credits in assets/fp/CREDITS.md), read from where it was unpacked (FP_DUNGEON_PIECES_DIR; a
@@ -10,10 +10,11 @@ repeat once a tile, as on the kit's own wall pieces (a wall is about three repea
 kit's normal and specular maps are baked in as light from above, so the blocks stand out of their joints like the
 original's pre-rendered art. The cathedral's sarcophagus stone and torch stand bases, and the caves' rock and
 floor, are from Screaming Brain Studios' "Tiny Texture Pack 2" (CC0), read from its 512 x 512 folder
-(FP_SBS_TEXTURES_DIR).
+(FP_SBS_TEXTURES_DIR). The catacombs have no set here: the game cuts theirs out of their own art when a level loads
+(fp_catacombs.cpp).
 
 Every texture is then graded to the colours of its tileset's own art, measured on the original iso tiles (full
-light, levels 1, 5, 9 and 21): its own pattern of light and dark, scaled to the art's mean and spread, in the art's hue
+light, levels 1, 9 and 21): its own pattern of light and dark, scaled to the art's mean and spread, in the art's hue
 with a little of its own (`match`). The game converts the RGB to the level's palette when the level loads
 (fp_dungeon.cpp).
 
@@ -268,28 +269,17 @@ def block_tones(joints, variation, seed):
     return tones
 
 
-def grain(name, width, height, strength):
-    """A texture's luminance as a multiplier around 1 (`strength` its relative spread), scaled to width x height."""
-    rgb = resize(load(name), width, height)
-    luma = rgb @ LUMA
-    return 1.0 + strength * (luma - luma.mean()) / max(float(luma.std()), 1.0)
-
-
 # --- The kit's surfaces ----------------------------------------------------------------------------------------------
 
-def blocks(variation, seed, depth=0.55, rough=None):
+def blocks(variation, seed, depth=0.55):
     """The kit's wall blocks (dungeon_wall): per-block tones, its normal map baked in as light from above, the joints
-    darkened by its specular map; optionally the kit's rough stone laid over them (`rough`: its strength). One repeat:
-    2 blocks across, 8 courses down (a running bond)."""
+    darkened by its specular map. One repeat: 2 blocks across, 8 courses down (a running bond)."""
     albedo = load('Modern-Cream-Blocks_seamless.tga')
     normal = load('Modern-Cream-Blocks_seamless_nrm.tga')
     joints = joint_mask(load('Modern-Cream-Blocks_seamless_spec.tga'))
     rgb = albedo * block_tones(joints, variation, seed)[..., None]
     rgb = relief(rgb, normal, 0.8)
     rgb = rgb * (1.0 - depth * joints)[..., None]
-    if rough:
-        h, w = rgb.shape[:2]
-        rgb = rgb * grain('yellow stone seamless.tga', w, h, rough)[..., None]
     return rgb
 
 
@@ -406,7 +396,6 @@ def sized(rgb, texels_across, texels_down=None):
 #   cathedral: walls (77, 62, 62) +-26 (luminance 66: the brightness its walls keep in the floor's colours),
 #              floor (47, 52, 60) +-17, the marble shafts' green (39, 54, 55) +-20, the sarcophagus grey 86 +-21 and
 #              its lid's bronze (77, 68, 43) +-19
-#   catacombs: walls (58, 57, 58) +-29, floor (61, 68, 74) +-18
 #   crypt:     walls (64, 61, 73) +-20, floor (59, 32, 21) +-18
 #   caves:     walls (39, 29, 26) +-14 (their lit half (51, 40, 36)), floor (55, 42, 38) +-13
 #   hell:      the bone of its beams and posts (74, 63, 51) +-33 with their shading (the bone ramps 80-127 of l4.cel's
@@ -444,21 +433,6 @@ def cathedral():
     out['iron'] = (blur(match(sized(seamless(load('Steel_02_UV_H_CM_1.jpg'), 48), 64), (50, 48, 50), 12, 0.3), 0.4), 0.25, 0.25)
     out['stone'] = (blur(recolor(sized(seamless(load('d_column_extr.tga'), 64), 128), grey, 68, 12), 0.4), 1.0, 1.0)
     out['door'] = (blur(door((78, 54, 40), 18), 0.3), 1.0, 1.0)
-    return out
-
-
-def catacombs():
-    out = {}
-    # Dark grey rubble: the kit's blocks, each stone its own tone, rough with the kit's yellow stone; teal-grey
-    # speckled floor (the kit's black marble), round pillars of the same rubble.
-    wall = blocks(0.3, 3, depth=0.7, rough=0.35)
-    out['wall'] = (blur(match(sized(wall, 256), (58, 57, 58), 24, 0.1), 0.4), 1.0, 1.0)
-    out['pillar'] = out['wall']
-    out['arch'] = (blur(match(sized(wall, 128), (50, 49, 50), 22, 0.1), 0.4), 1.0, 1.0)
-    out['ceiling'] = (blur(match(sized(wall, 128), (40, 39, 41), 16, 0.1), 0.5), 1.0, 1.0)
-    out['floor'] = (blur(match(sized(load('Black marble seamless.tga'), 256), (61, 68, 74), 18, 0.15), 0.4), 1.0, 1.0)
-    out['stone'] = (blur(match(sized(seamless(load('d_column_extr.tga'), 64), 128), (62, 60, 62), 14, 0.1), 0.4), 1.0, 1.0)
-    out['door'] = (blur(door((62, 50, 42), 16), 0.3), 1.0, 1.0)
     return out
 
 
@@ -513,7 +487,7 @@ def hell():
     return out
 
 
-SETS = {'cathedral': cathedral, 'catacombs': catacombs, 'crypt': crypt, 'caves': caves, 'hell': hell}
+SETS = {'cathedral': cathedral, 'crypt': crypt, 'caves': caves, 'hell': hell}
 
 
 def build():
