@@ -130,8 +130,9 @@ const Starter StarterInstance;
 
 void AutotestTick()
 {
-	if (!Steps.empty())
-		PauseMode = 0; // the offscreen window never has focus, which would pause the game
+	if (NextStep < Steps.size() || BenchFrames > 0)
+		PauseMode = 0; // the offscreen window never has focus, which would pause the game (once the steps are done, a
+		               // player at a window may pause again)
 	if (BenchFrames > 0) {
 		if (--BenchFrames == 0)
 			LogInfo("autotest bench: {:.1f} ms per frame over {} frames", static_cast<double>(SDL_GetTicks() - BenchStart) / BenchTotal, BenchTotal);

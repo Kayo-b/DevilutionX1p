@@ -90,6 +90,17 @@ fp-tools/run.sh -f       # extra arguments go to the game (-f shows FPS)
 ```
 In game, **F4** toggles first person. Single player only.
 
+To start straight on a level, in first person and god mode (no hits taken; a missile or spell kills), set `LEVEL`:
+the menu is clicked through for you, the dev commands run (the autotest's steps, section 4), then the game is yours.
+```bash
+LEVEL=9 fp-tools/run.sh                  # caves, level 9 (0: town; 17-24: Hellfire, its data set up for you)
+LEVEL=9 SEED=900 fp-tools/run.sh         # always the same layout (every quest active, as in the selftests)
+GOD=0 FP=0 LEVEL=5 fp-tools/run.sh       # without god mode, in the original view
+LEVEL=9 SEED=900 STEPS="lua:dev.fp.teleport(53,30)" fp-tools/run.sh   # more steps once there
+```
+With `LEVEL` set you play a scratch copy of the test hero (`fp-tools/selftest/out/save.orig`, copied afresh to
+`out/play-save` each run), so your own heroes are left alone; `REAL_SAVES=1` plays your own (the first hero).
+
 **When you add a new asset file**, put it in `assets/fp/` and add it to the `fp/...` list in `CMake/Assets.cmake`.
 The build copies it to `build/assets/fp/`.
 
