@@ -18,10 +18,12 @@
  * every sprite, lava and water (drawn from their own floor art), and the door leaves (fp_doors.cpp,
  * fp_buildings.cpp), which now hang in the clean doorways.
  *
- * The caves are rock: flat faces of rock from the floor to the walls' tops, and along the top of every face a ragged
- * crest of darker rock jutting out over it, its lower edge and its outline against the dark uneven (the original
- * shows nothing over its cliffs: the caves have no ceiling). Their lone rock tiles are stalagmites, their wooden fences
- * posts and rails, and their doors gates in those fences, a frame of beams round the leaf (rays pass all of them).
+ * The caves are rock: flat faces of rock from the floor to the walls' tops, their outer corners cut off along the
+ * diagonal, and along the top of the rock a ragged crest of darker rock jutting out over it, its lower edge and its
+ * outline against the dark uneven, roots hanging from it here and there (the original shows nothing over its cliffs:
+ * the caves have no ceiling). Their lone rock tiles are stalagmites, their wooden fences posts and rails, their doors
+ * gates in those fences (a lattice of beams in a frame; rays pass all of them), their stairwells mine entrances in a
+ * timber frame.
  */
 #pragma once
 
@@ -116,6 +118,7 @@ struct CleanQuad {
 	CleanSurface surface;
 	float darkness = 0; // light levels added (the inside of a stairwell)
 	bool triangle = false; // only the first three corners (the caves' crests and stalagmites)
+	bool twoSided = false; // seen from both sides (the caves' roots)
 };
 /**
  * @brief The level's pillars, arches and stairs as quads; `stands` gets the tiles to give the kept torch stand, and

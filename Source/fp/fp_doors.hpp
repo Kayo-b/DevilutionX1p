@@ -5,8 +5,8 @@
  * hinged in it that swings open when the door is opened and stays open.
  *
  * In the clean dungeon (the cathedral, the catacombs, the crypt: fp_dungeon.hpp) the doorway is a plain round-arched
- * opening through the door tile (CleanDoorOpening); the caves' doors are gates in their fences, a flat-topped opening
- * in a frame of beams, no wall round it (CleanDoorwaysAreGates). Elsewhere (hell) it is the closed door's art with
+ * opening through the door tile (CleanDoorOpening); the caves' doors are gates in their fences, a lattice of beams
+ * in a flat-topped frame, no wall round it (CleanDoorwaysAreGates, BuildGateLattice). Elsewhere (hell) it is the closed door's art with
  * the opening read off it; the walls are drawn taller than the art (VerticalScale, and the wall cap cut off), so a doorway one tile wide
  * would look narrow beside its iso picture: the art and its opening are widened by DoorwayWidthScale around the tile's
  * middle, reaching a little into the wall tiles either side of it.

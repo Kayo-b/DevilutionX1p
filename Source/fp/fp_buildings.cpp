@@ -2791,6 +2791,16 @@ void PrepareUvLookup(WorldTriangle &tri)
 	tri.bakeInv = { b2 / det, -a2 / det, -b1 / det, a1 / det };
 }
 
+/** @brief A triangle's texture position at a point of it, from its corners' (`uv`, set up by PrepareUvLookup). */
+inline std::pair<float, float> TriangleUv(const WorldTriangle &tri, float wx, float wy, float wz)
+{
+	const auto [da, db] = DropAxis(tri.bakeAxis, wx - tri.p[0].x, wy - tri.p[0].y, wz - tri.p[0].z);
+	const float w1 = tri.bakeInv[0] * da + tri.bakeInv[1] * db;
+	const float w2 = tri.bakeInv[2] * da + tri.bakeInv[3] * db;
+	const float w0 = 1.0F - w1 - w2;
+	return { w0 * tri.uv[0] + w1 * tri.uv[2] + w2 * tri.uv[4], w0 * tri.uv[1] + w1 * tri.uv[3] + w2 * tri.uv[5] };
+}
+
 /** @brief Texture colour of a kit-textured triangle at a point; -1 if it has none. */
 int KitMeshColor(const WorldTriangle &tri, float wx, float wy, float wz)
 {
@@ -3681,6 +3691,87 @@ int DoorWoodTexture()
 	return -1;
 }
 
+/**
+ * The caves' gates: a see-through lattice of beams like their fences' (fp_dungeon.cpp), drawn tiles: the stiles at its
+ * edges and the pickets between them (their width), the rails across (their height, and where they are: up from the
+ * foot, a share of the way up, down from the top), the brace from the foot at the hinge to the top at the far stile,
+ * and the beams' thickness.
+ */
+constexpr float GateStile = 0.08F;
+constexpr float GatePicket = 0.05F;
+constexpr int GatePickets = 3;
+constexpr float GateRail = 0.09F;
+constexpr std::array<float, 3> GateRails { 0.2F, 0.5F, 0.045F };
+constexpr float GateBrace = 0.07F;
+constexpr float GateThickness = 0.06F;
+
+/**
+ * @brief The leaf of one of the caves' gates (CleanDoorwaysAreGates) as a lattice of wooden beams wearing the clean
+ * dungeon's `wood`: `d` runs along the leaf from its hinge, `m` through it, `point(offset, through, z)` places a point
+ * (z in art units).
+ */
+template <typename PointFn>
+void BuildGateLattice(DoorLeaf &leaf, Vec2 d, Vec2 m, PointFn point)
+{
+	const float stretch = VerticalScale();
+	const float width = leaf.width;
+	const float height = leaf.height * stretch; // drawn
+	const float half = GateThickness / 2.0F;
+	// A face from four corners (offset along the leaf, through it, drawn height), its normal from `along` (the leaf),
+	// `through` and `up`, and each corner's texture position.
+	auto face = [&](std::array<std::array<float, 3>, 4> c, float along, float through, float up, std::array<std::array<float, 2>, 4> uv) {
+		Building b {};
+		const V3 normal { d.x * along + m.x * through, d.y * along + m.y * through, up * stretch };
+		AddStructureFace(b, { point(c[0][0], c[0][1], c[0][2] / stretch), point(c[1][0], c[1][1], c[1][2] / stretch), point(c[2][0], c[2][1], c[2][2] / stretch), point(c[3][0], c[3][1], c[3][2] / stretch) },
+		    normal, leaf.hinge, MeshClean, 0);
+		for (size_t t = 0; t < b.mesh.size(); t++) {
+			WorldTriangle &tri = b.mesh[t];
+			const std::array<size_t, 3> k { 0, t + 1, t + 2 }; // AddStructureFace fans from the first corner
+			for (size_t v = 0; v < 3; v++) {
+				tri.uv[v * 2] = uv[k[v]][0];
+				tri.uv[v * 2 + 1] = uv[k[v]][1];
+			}
+			tri.cleanSurface = CleanSurface::Wood;
+			tri.darkness = up < -0.5F ? 2 : (std::abs(along) > 0.5F ? 1 : 0); // undersides and ends a little darker
+			PrepareUvLookup(tri);
+			leaf.mesh.push_back(tri);
+		}
+	};
+	// A straight beam in the leaf's plane from (o0, z0) to (o1, z1), `w` wide: its two broad faces and its two long
+	// sides (its ends meet other beams). The grain runs along it.
+	auto beam = [&](float o0, float z0, float o1, float z1, float w) {
+		const float len = std::hypot(o1 - o0, z1 - z0);
+		if (len < 1e-4F)
+			return;
+		const float uo = (o1 - o0) / len;
+		const float uz = (z1 - z0) / len;
+		const float po = -uz * w / 2.0F; // across the beam, in the leaf's plane
+		const float pz = uo * w / 2.0F;
+		const std::array<std::array<float, 2>, 4> grain { { { -w / 2.0F, 0.0F }, { w / 2.0F, 0.0F }, { w / 2.0F, len }, { -w / 2.0F, len } } };
+		for (const float t : { half, -half }) {
+			face({ { { o0 - po, t, z0 - pz }, { o0 + po, t, z0 + pz }, { o1 + po, t, z1 + pz }, { o1 - po, t, z1 - pz } } }, 0.0F, t > 0 ? 1.0F : -1.0F, 0.0F, grain);
+		}
+		for (const float s : { 1.0F, -1.0F }) {
+			const std::array<std::array<float, 2>, 4> side { { { -half, 0.0F }, { half, 0.0F }, { half, len }, { -half, len } } };
+			face({ { { o0 + s * po, -half, z0 + s * pz }, { o0 + s * po, half, z0 + s * pz }, { o1 + s * po, half, z1 + s * pz }, { o1 + s * po, -half, z1 + s * pz } } },
+			    s * po / (w / 2.0F), 0.0F, s * pz / (w / 2.0F), side);
+		}
+	};
+	// The stiles, the pickets between them, the rails across and the brace.
+	const float railLow = GateRails[0];
+	const float railMid = height * GateRails[1];
+	const float railHigh = height - GateRails[2];
+	beam(GateStile / 2.0F, 0.0F, GateStile / 2.0F, height, GateStile);
+	beam(width - GateStile / 2.0F, 0.0F, width - GateStile / 2.0F, height, GateStile);
+	for (int i = 1; i <= GatePickets; i++) {
+		const float o = GateStile + (width - 2.0F * GateStile) * static_cast<float>(i) / (GatePickets + 1);
+		beam(o, railLow, o, railHigh, GatePicket);
+	}
+	for (const float z : { railLow, railMid, railHigh })
+		beam(GateStile, z, width - GateStile, z, GateRail);
+	beam(GateStile, railLow, width - GateStile, railHigh, GateBrace);
+}
+
 void BuildDoorLeaf(DoorLeaf &leaf, const Doorway &door, float angle, int side)
 {
 	leaf.angle = angle;
@@ -3718,10 +3809,14 @@ void BuildDoorLeaf(DoorLeaf &leaf, const Doorway &door, float angle, int side)
 		heights[i] = std::max(0.1F, WallArtHeight(row) - DoorLeafGap);
 		leaf.height = std::max(leaf.height, heights[i]);
 	}
-	const int wood = DoorWoodTexture();
 	auto point = [&](float offset, float t, float z) {
 		return V3 { leaf.hinge.x + d.x * offset + m.x * t, leaf.hinge.y + d.y * offset + m.y * t, z };
 	};
+	if (CleanDoorwaysAreGates()) {
+		BuildGateLattice(leaf, d, m, point);
+		return;
+	}
+	const int wood = DoorWoodTexture();
 	// `corners` as (offset along the leaf, offset through it, height); the wood is laid on by offset along and height.
 	auto add = [&](std::initializer_list<std::array<float, 3>> corners, V3 normal, uint8_t darkness) {
 		std::vector<std::array<float, 3>> c(corners);
@@ -3931,6 +4026,7 @@ void BuildCleanStructures()
 			tri.cleanSurface = quad.surface;
 			// Half a light level per step: undersides, and the inside of stairwells.
 			tri.darkness = static_cast<uint8_t>((quad.normal[2] < -0.5F ? 3 : 0) + std::lround(quad.darkness * 2.0F));
+			tri.cull = !quad.twoSided;
 			PrepareUvLookup(tri);
 		}
 	}
@@ -4116,12 +4212,7 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 		return;
 	RasterizeTriangles(out, proj, depthBuffer, st.art.mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
 		if (tri.mapping == MeshClean) {
-			const auto [da, db] = DropAxis(tri.bakeAxis, wx - tri.p[0].x, wy - tri.p[0].y, wz - tri.p[0].z);
-			const float w1 = tri.bakeInv[0] * da + tri.bakeInv[1] * db;
-			const float w2 = tri.bakeInv[2] * da + tri.bakeInv[3] * db;
-			const float w0 = 1.0F - w1 - w2;
-			const float u = w0 * tri.uv[0] + w1 * tri.uv[2] + w2 * tri.uv[4];
-			const float v = w0 * tri.uv[1] + w1 * tri.uv[3] + w2 * tri.uv[5];
+			const auto [u, v] = TriangleUv(tri, wx, wy, wz);
 			const float shade = tri.darkness * 0.5F + std::max(0.0F, tri.occlusion[0].at0 + tri.occlusion[0].perZ * wz)
 			    + std::max(0.0F, tri.occlusion[1].at0 + tri.occlusion[1].perZ * wz);
 			return static_cast<int>(CleanColor(tri.cleanSurface, u, v, ShadePixelWorld, CleanLightAt(wx, wy) + shade, ShadeX, ShadeY));
@@ -4239,6 +4330,11 @@ void DrawDoorLeaves(const Surface &out, const Projection &proj, std::vector<floa
 		RasterizeTriangles(out, proj, depthBuffer, leaf.mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
 			uint8_t darkness = tri.darkness;
 			const float offset = (wx - leaf.hinge.x) * leaf.direction.x + (wy - leaf.hinge.y) * leaf.direction.y;
+			if (clean && CleanDoorwaysAreGates()) {
+				// The caves' gates: a lattice of beams, each wearing the wood by its own texture positions.
+				const auto [u, v] = TriangleUv(tri, wx, wy, wz);
+				return static_cast<int>(CleanColor(CleanSurface::Wood, u, v, ShadePixelWorld, CleanLightAt(wx, wy) + static_cast<float>(darkness) * 0.5F, ShadeX, ShadeY));
+			}
 			if (clean) {
 				// The clean dungeon's door texture over the whole leaf (its planks and irons are painted on).
 				const float u = std::clamp(offset / std::max(leaf.width, 0.01F), 0.0F, 0.999F);

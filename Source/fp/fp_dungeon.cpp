@@ -133,16 +133,37 @@ constexpr float CrestOverOpening = 0.15F;
 constexpr float CrestLowerDarkness = 0.5F;
 constexpr float CrestUndersideDarkness = 0.5F;
 /**
+ * Roots hanging from the crest's lip, as the original draws some over its cliffs: the share of the crest's segments
+ * that have them (one to three strands), how far down they hang (drawn tiles), their width at the top (they taper to
+ * a third), how far apart the strands of one are, how many points along them, and the light levels added to their
+ * wood.
+ */
+constexpr float RootChance = 0.07F;
+constexpr float RootMin = 0.35F;
+constexpr float RootMax = 1.1F;
+constexpr float RootWidth = 0.016F;
+constexpr float RootSpacing = 0.35F; // between the strands of one, a share of the crest's segment
+constexpr int RootPoints = 6;
+constexpr float RootDarkness = 0.0F;
+/**
  * The caves' walls: how high they stand (drawn tiles; their art's 104 rows would make them four tiles high, and the
  * crest out of sight from a few tiles off), and the shade the crest casts on the face under it: light levels added at
  * the wall's top, fading out CaveTopShadowDrop below it.
  */
 constexpr float CaveWallHeight = 2.5F;
+/** The top of the caves' stairwells (flat), and their timber frame: how far its posts and lintel stand out of the face, their width, the lintel's height. */
+constexpr float CaveStairsTop = 2.0F;
+constexpr float StairsFrameOut = 0.06F;
+constexpr float StairsFramePost = 0.1F;
+constexpr float StairsFrameLintel = 0.14F;
 /**
  * The caves' rock is laid on each way a face can look (towards +x, -x, +y, -y) this far along (tiles), so the two faces
  * of an inner corner, or the two sides of a passage, do not mirror each other.
  */
 constexpr std::array<float, 4> CaveFaceShifts { 0.0F, 1.13F, 0.61F, 1.74F };
+/** The same for the diagonal faces of cut corners; and the length of a diagonal's normal's components (1 / sqrt(2)). */
+constexpr float CaveDiagonalShift = 0.37F;
+constexpr float DiagonalNormal = 0.70710678F;
 constexpr float CaveTopShadow = 1.5F;
 constexpr float CaveTopShadowDrop = 1.0F;
 
@@ -739,6 +760,8 @@ bool IsFencePiece(Point tile)
 
 std::vector<CleanStairs> Stairs;
 std::vector<int16_t> StairsIndex; // per tile: index into Stairs of the stairs whose opening is in it, -1 if none
+/** Per tile: the caves' rock tiles whose corner is cut (FindChamfers), 1 + (cut towards +x) + 2 * (towards +y); 0 if none. */
+std::vector<uint8_t> Chamfers;
 
 /** Whether a trigger is a flight of stairs without a 3D model, and which way it goes. */
 bool IsUnmodelledStairs(interface_mode msg, bool &down)
@@ -870,6 +893,56 @@ void FindBlindArches()
 	}
 }
 
+/**
+ * @brief The caves' cut corners: a rock tile whose two neighbours on one side and the other (and the one between them,
+ * diagonally) are open ground, the rock going on behind it both ways, has that corner cut off along the diagonal, so
+ * cliffs stepping across the grid run diagonally and the corners of rock round off. Not where timber or a stairwell is.
+ */
+CleanKind KindAt(Point tile);
+
+void FindChamfers()
+{
+	Chamfers.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY, 0);
+	if (leveltype != DTYPE_CAVES)
+		return;
+	auto rockAt = [](Point t) {
+		const CleanKind kind = KindAt(t);
+		return kind == CleanKind::Wall || kind == CleanKind::Stairs;
+	};
+	auto openAt = [](Point t) {
+		if (!InDungeonBounds(t))
+			return false;
+		const CleanKind kind = KindAt(t);
+		return kind == CleanKind::Open || kind == CleanKind::Flat;
+	};
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			const Point tile { x, y };
+			if (KindAt(tile) != CleanKind::Wall || IsShoringMegatile(tile))
+				continue;
+			for (const int cy : { -1, 1 }) {
+				for (const int cx : { -1, 1 }) {
+					if (openAt(tile + Displacement { cx, 0 }) && openAt(tile + Displacement { 0, cy }) && openAt(tile + Displacement { cx, cy })
+					    && rockAt(tile - Displacement { cx, 0 }) && rockAt(tile - Displacement { 0, cy })) {
+						Chamfers[static_cast<size_t>(y) * MAXDUNX + x] = static_cast<uint8_t>(1 + (cx > 0 ? 1 : 0) + (cy > 0 ? 2 : 0));
+					}
+				}
+			}
+		}
+	}
+}
+
+/** @brief Towards which corner a rock tile is cut (FindChamfers), {0, 0} if it is not. */
+Displacement ChamferAt(Point tile)
+{
+	if (!InDungeonBounds(tile) || Chamfers.empty())
+		return { 0, 0 };
+	const uint8_t code = Chamfers[static_cast<size_t>(tile.y) * MAXDUNX + tile.x];
+	if (code == 0)
+		return { 0, 0 };
+	return { (code - 1) & 1 ? 1 : -1, (code - 1) & 2 ? 1 : -1 };
+}
+
 void ClassifyTiles()
 {
 	Kinds.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY, CleanKind::Open);
@@ -919,6 +992,7 @@ void ClassifyTiles()
 	}
 	FindStairs();
 	FindBlindArches();
+	FindChamfers();
 	LogInfo("fp: clean dungeon tiles: {} walls, {} pillars, {} torch stands, {} doorways, {} stairs, {} lava or water, {} fences, {} blind arches", counts[1], counts[2], counts[3], counts[4], Stairs.size(), counts[6], counts[7], BlindArches.size());
 }
 
@@ -1034,6 +1108,7 @@ bool CleanDoorwaysAreGates()
 	return leveltype == DTYPE_CAVES;
 }
 
+
 float CleanCeiling()
 {
 	if (leveltype == DTYPE_CAVES)
@@ -1067,9 +1142,11 @@ uint32_t CleanDungeonVersion()
 	return Version * 2654435761U ^ TexturesPalette;
 }
 
-/** The arched opening of a stairwell: wide, its crown under the ceiling. */
+/** The arched opening of a stairwell: wide, its crown under the ceiling (the caves': flat-topped, in a timber frame). */
 CleanOpening StairsOpening()
 {
+	if (leveltype == DTYPE_CAVES)
+		return { StairsHalfWidth, CaveStairsTop, true };
 	return { StairsHalfWidth, CleanCeiling() - ArchLintel - StairsHalfWidth };
 }
 
@@ -1264,12 +1341,38 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 		const Vec2 ray = proj.columnRay(x);
 		std::fill(filled.begin(), filled.end(), uint8_t { 0 });
 		zBuffer[x] = MaxRayDistance;
+		bool hitSomething = false;
 		for (int layer = 0; layer < MaxWallLayers; layer++) {
-			const RayHit hit = CastRay(proj.pos, ray, layer);
+			RayHit hit = CastRay(proj.pos, ray, layer);
 			if (!hit.hit)
 				break;
-			if (layer == 0)
+			// A cut corner (the caves'): the ray meets the diagonal face inside the tile, or passes through the corner
+			// cut off and on.
+			const Displacement cut = caves ? ChamferAt(hit.tile) : Displacement { 0, 0 };
+			float diagonalAlong = 0.0F;
+			if (cut != Displacement { 0, 0 }) {
+				const float nx = static_cast<float>(cut.deltaX) * DiagonalNormal;
+				const float ny = static_cast<float>(cut.deltaY) * DiagonalNormal;
+				// A point of the diagonal: the corner beside the cut one, along x.
+				const float qx = static_cast<float>(hit.tile.x + (cut.deltaX > 0 ? 1 : 0));
+				const float qy = static_cast<float>(hit.tile.y + (cut.deltaY > 0 ? 0 : 1));
+				const float before = (hit.point.x - qx) * nx + (hit.point.y - qy) * ny;
+				const float rate = ray.x * nx + ray.y * ny;
+				if (rate >= -1e-6F)
+					continue;
+				const float t = std::max(before, 0.0F) / -rate;
+				const Vec2 c { hit.point.x + ray.x * t, hit.point.y + ray.y * t };
+				constexpr float Slack = 1e-3F;
+				if (c.x < static_cast<float>(hit.tile.x) - Slack || c.x > static_cast<float>(hit.tile.x) + 1.0F + Slack || c.y < static_cast<float>(hit.tile.y) - Slack || c.y > static_cast<float>(hit.tile.y) + 1.0F + Slack)
+					continue;
+				hit.distance += t;
+				hit.point = c;
+				// Along the diagonal, the way it runs with the rock on its left (as the crest does).
+				diagonalAlong = c.x * -ny + c.y * nx;
+			}
+			if (!hitSomething)
 				zBuffer[x] = hit.distance;
+			hitSomething = true;
 			const CleanKind kind = KindAt(hit.tile);
 			const float d = std::max(hit.distance, 0.01F);
 			const float wallTop = kind == CleanKind::Wall ? WallHeights[static_cast<size_t>(hit.tile.y) * MAXDUNX + hit.tile.x] : ceiling;
@@ -1316,7 +1419,9 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 			// The caves' crest shades the rock under it; their rock is shifted along each way a face looks (CaveFaceShifts).
 			const bool topShadow = caves && (kind == CleanKind::Wall || kind == CleanKind::Stairs);
 			const int facing = hit.xSide ? (hit.previous.x > hit.tile.x ? 0 : 1) : (hit.previous.y > hit.tile.y ? 2 : 3);
-			const float textureAlong = caves ? worldAlong + CaveFaceShifts[facing] : worldAlong;
+			float textureAlong = caves ? worldAlong + CaveFaceShifts[facing] : worldAlong;
+			if (cut != Displacement { 0, 0 })
+				textureAlong = diagonalAlong + CaveDiagonalShift;
 			const float archHalf = archFace ? arch->halfWidth : 0.0F;
 			const float archBottom = Textures.baseBand;
 			const float archSpring = ceiling - Textures.topBand - BlindArchLintel - BlindArchRing - archHalf;
@@ -1418,6 +1523,13 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 						if (t < exit) {
 							exit = t;
 							how = 3;
+						}
+					} else if (slope > 0.0F && opening->flat) {
+						// A flat top.
+						const float t = (opening->spring - h) / slope;
+						if (t < exit) {
+							exit = t;
+							how = 2;
 						}
 					} else if (slope > 0.0F) {
 						// The arched top: where the ray, above the springing, leaves the half circle.
@@ -1535,9 +1647,71 @@ void AddCaveGeometry(std::vector<CleanQuad> &quads, AddTri &addTri)
 		}
 		return false;
 	};
-	// The crest's section at a point of a face: where its underside meets the face, its lip, its bulge and its top
-	// edge, pushed out along `dir` (the face's normal, plus at a corner the other face's: the two rims meet on the
-	// diagonal).
+	// The outline of the rock: an edge along every face of it with open ground in front, a cut corner's diagonal
+	// instead of the two faces it cuts off, each running with the rock on its left (from `a` to `b`, `n` its outward
+	// normal).
+	struct Edge {
+		float ax, ay, bx, by;
+		float nx, ny;
+		float top;
+	};
+	std::vector<Edge> edges;
+	constexpr std::array<Displacement, 4> Sides { { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } } };
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			const Point tile { x, y };
+			if (!rock(tile))
+				continue;
+			const float top = std::min(WallHeights[static_cast<size_t>(y) * MAXDUNX + x], ceiling);
+			const Displacement cut = ChamferAt(tile);
+			if (cut != Displacement { 0, 0 }) {
+				// The corner towards `cut` is cut off: the diagonal between the two corners beside it.
+				const float qx = static_cast<float>(x + (cut.deltaX > 0 ? 1 : 0));
+				const float qy = static_cast<float>(y + (cut.deltaY > 0 ? 1 : 0));
+				const float nx = static_cast<float>(cut.deltaX) * DiagonalNormal;
+				const float ny = static_cast<float>(cut.deltaY) * DiagonalNormal;
+				Edge edge { qx, qy - static_cast<float>(cut.deltaY), qx - static_cast<float>(cut.deltaX), qy, nx, ny, top };
+				if ((edge.bx - edge.ax) * -ny + (edge.by - edge.ay) * nx < 0.0F) {
+					std::swap(edge.ax, edge.bx);
+					std::swap(edge.ay, edge.by);
+				}
+				edges.push_back(edge);
+			}
+			for (const Displacement d : Sides) {
+				const Point front = tile + d;
+				if (!InDungeonBounds(front) || rock(front))
+					continue;
+				if (cut != Displacement { 0, 0 } && (d == Displacement { cut.deltaX, 0 } || d == Displacement { 0, cut.deltaY }))
+					continue; // cut off
+				const float nx = static_cast<float>(d.deltaX);
+				const float ny = static_cast<float>(d.deltaY);
+				const float cx = static_cast<float>(x) + 0.5F + 0.5F * nx;
+				const float cy = static_cast<float>(y) + 0.5F + 0.5F * ny;
+				edges.push_back({ cx + 0.5F * ny, cy - 0.5F * nx, cx - 0.5F * ny, cy + 0.5F * nx, nx, ny, top });
+			}
+		}
+	}
+	// The edges meeting at each corner of the outline: the one leaving it and the one arriving.
+	auto cornerKey = [](float px, float py) { return static_cast<int>(std::lround(px)) * 1024 + static_cast<int>(std::lround(py)); };
+	std::unordered_map<int, size_t> leaving;
+	std::unordered_map<int, size_t> arriving;
+	for (size_t i = 0; i < edges.size(); i++) {
+		leaving.emplace(cornerKey(edges[i].ax, edges[i].ay), i);
+		arriving.emplace(cornerKey(edges[i].bx, edges[i].by), i);
+	}
+	// Where the rims of two edges meet at a corner: out along both normals, so that each is `out` from its own edge.
+	auto mitre = [](float n1x, float n1y, float n2x, float n2y, float &dx, float &dy) {
+		const float k = 1.0F + n1x * n2x + n1y * n2y;
+		if (k < 0.3F) {
+			dx = n1x;
+			dy = n1y;
+			return;
+		}
+		dx = (n1x + n2x) / k;
+		dy = (n1y + n2y) / k;
+	};
+	// The crest's section at a point of an edge: where its underside meets the face, its lip, its bulge and its top
+	// edge, pushed out along `dir` (the edge's normal, or at a corner the mitre of the two).
 	struct Section {
 		P3 under;
 		P3 lip;
@@ -1555,70 +1729,89 @@ void AddCaveGeometry(std::vector<CleanQuad> &quads, AddTri &addTri)
 		auto at = [&](float o, float z) { return P3 { px + dirX * o, py + dirY * o, z }; };
 		return Section { at(0.0F, top - drop + CrestUndercut * out), at(out, top - drop), at(out + bulge, top - drop * 0.35F), at(out * 0.5F, top + rise) };
 	};
-	constexpr std::array<Displacement, 4> Sides { { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } } };
-	int crestFaces = 0;
-	for (int y = 0; y < MAXDUNY; y++) {
-		for (int x = 0; x < MAXDUNX; x++) {
-			const Point tile { x, y };
-			if (!rock(tile))
+	// A root: a thin strand hanging `hang` from `from`, swaying `sway` out from the rock (along n) and back, wandering
+	// `wander` along it (e), tapering; two ribbons crossed, seen from both sides.
+	auto addRoot = [&](const P3 &from, float hang, float sway, float wander, float nx, float ny, float ex, float ey) {
+		std::array<P3, RootPoints> strand;
+		for (int j = 0; j < RootPoints; j++) {
+			const float f = static_cast<float>(j) / (RootPoints - 1);
+			const float o = sway * std::sin(f * 3.14159265F) + 0.03F * f;
+			const float w = wander * std::sin(f * 4.5F);
+			strand[j] = P3 { from[0] + nx * o + ex * w, from[1] + ny * o + ey * w, from[2] - hang * f };
+		}
+		for (const auto &[wx, wy] : { std::pair { ex, ey }, std::pair { nx, ny } }) {
+			for (int j = 0; j + 1 < RootPoints; j++) {
+				const float w0 = RootWidth * (1.0F - 0.7F * static_cast<float>(j) / (RootPoints - 1));
+				const float w1 = RootWidth * (1.0F - 0.7F * static_cast<float>(j + 1) / (RootPoints - 1));
+				const P3 &p = strand[j];
+				const P3 &q = strand[j + 1];
+				const P3 c0 { p[0] - wx * w0, p[1] - wy * w0, p[2] };
+				const P3 c1 { p[0] + wx * w0, p[1] + wy * w0, p[2] };
+				const P3 c2 { q[0] + wx * w1, q[1] + wy * w1, q[2] };
+				const P3 c3 { q[0] - wx * w1, q[1] - wy * w1, q[2] };
+				const size_t first = quads.size();
+				addQuad(c0, c1, c2, c3, UV { -w0, -p[2] }, UV { w0, -p[2] }, UV { w1, -q[2] }, UV { -w1, -q[2] }, P3 { -wy, wx, 0.0F }, CleanSurface::Wood, RootDarkness);
+				for (size_t i = first; i < quads.size(); i++)
+					quads[i].twoSided = true;
+			}
+		}
+	};
+	int roots = 0;
+	for (const Edge &edge : edges) {
+		const float length = std::hypot(edge.bx - edge.ax, edge.by - edge.ay);
+		const float ex = (edge.bx - edge.ax) / length;
+		const float ey = (edge.by - edge.ay) / length;
+		const int segments = std::max(1, static_cast<int>(std::lround(length * CrestSegments)));
+		float d0x = edge.nx;
+		float d0y = edge.ny;
+		float d1x = edge.nx;
+		float d1y = edge.ny;
+		if (const auto it = arriving.find(cornerKey(edge.ax, edge.ay)); it != arriving.end())
+			mitre(edges[it->second].nx, edges[it->second].ny, edge.nx, edge.ny, d0x, d0y);
+		if (const auto it = leaving.find(cornerKey(edge.bx, edge.by)); it != leaving.end())
+			mitre(edge.nx, edge.ny, edges[it->second].nx, edges[it->second].ny, d1x, d1y);
+		std::vector<Section> sections(static_cast<size_t>(segments) + 1);
+		for (int k = 0; k <= segments; k++) {
+			const float t = static_cast<float>(k) / static_cast<float>(segments);
+			const float dx = k == 0 ? d0x : (k == segments ? d1x : edge.nx);
+			const float dy = k == 0 ? d0y : (k == segments ? d1y : edge.ny);
+			sections[k] = section(edge.ax + (edge.bx - edge.ax) * t, edge.ay + (edge.by - edge.ay) * t, dx, dy, edge.top);
+		}
+		// Texture: along the edge, down from the top; the underside along and out from the face.
+		auto upright = [&](const P3 &p) { return UV { p[0] * ex + p[1] * ey, -p[2] }; };
+		auto flat = [&](const P3 &p) { return UV { p[0] * ex + p[1] * ey, (p[0] - edge.ax) * edge.nx + (p[1] - edge.ay) * edge.ny }; };
+		const P3 out { edge.nx, edge.ny, 0.0F };
+		const P3 down { edge.nx * 0.5F, edge.ny * 0.5F, -1.0F };
+		const P3 up { edge.nx, edge.ny, 0.3F };
+		for (int k = 0; k < segments; k++) {
+			const Section &a = sections[k];
+			const Section &b = sections[k + 1];
+			addQuad(a.under, b.under, b.lip, a.lip, flat(a.under), flat(b.under), flat(b.lip), flat(a.lip), down, CleanSurface::Crest, CrestUndersideDarkness);
+			addQuad(a.lip, b.lip, b.bulge, a.bulge, upright(a.lip), upright(b.lip), upright(b.bulge), upright(a.bulge), out, CleanSurface::Crest, CrestLowerDarkness);
+			addQuad(a.bulge, b.bulge, b.top, a.top, upright(a.bulge), upright(b.bulge), upright(b.top), upright(a.top), up, CleanSurface::Crest, 0.0F);
+			// Now and then roots hang from the lip.
+			const float mx = (a.lip[0] + b.lip[0]) / 2.0F;
+			const float my = (a.lip[1] + b.lip[1]) / 2.0F;
+			const int hx = static_cast<int>(std::lround(mx * 16.0F));
+			const int hy = static_cast<int>(std::lround(my * 16.0F));
+			if (Hash01(hx, hy, 31) >= RootChance)
 				continue;
-			const float top = std::min(WallHeights[static_cast<size_t>(y) * MAXDUNX + x], ceiling);
-			for (const Displacement d : Sides) {
-				const Point front = tile + d;
-				if (!InDungeonBounds(front) || rock(front))
-					continue;
-				crestFaces++;
-				// The face runs along e from `start`, n its outward normal.
-				const float nx = static_cast<float>(d.deltaX);
-				const float ny = static_cast<float>(d.deltaY);
-				const float ex = -ny;
-				const float ey = nx;
-				const float sx = static_cast<float>(x) + 0.5F + 0.5F * nx - 0.5F * ex;
-				const float sy = static_cast<float>(y) + 0.5F + 0.5F * ny - 0.5F * ey;
-				// At each end: the rock goes straight on (the rim too), turns in across the floor in front (the rims meet
-				// on the inner diagonal) or ends at the tile's edge (the rim turns round its corner).
-				auto turn = [&](int sign, float &mx, float &my) {
-					const Displacement along { sign * static_cast<int>(ex), sign * static_cast<int>(ey) };
-					mx = 0.0F;
-					my = 0.0F;
-					if (rock(front + along)) {
-						mx = -static_cast<float>(along.deltaX);
-						my = -static_cast<float>(along.deltaY);
-					} else if (!rock(tile + along)) {
-						mx = static_cast<float>(along.deltaX);
-						my = static_cast<float>(along.deltaY);
-					}
-				};
-				float m0x;
-				float m0y;
-				float m1x;
-				float m1y;
-				turn(-1, m0x, m0y);
-				turn(1, m1x, m1y);
-				std::array<Section, CrestSegments + 1> sections;
-				for (int k = 0; k <= CrestSegments; k++) {
-					const float t = static_cast<float>(k) / CrestSegments;
-					const float mx = k == 0 ? m0x : (k == CrestSegments ? m1x : 0.0F);
-					const float my = k == 0 ? m0y : (k == CrestSegments ? m1y : 0.0F);
-					sections[k] = section(sx + ex * t, sy + ey * t, nx + mx, ny + my, top);
-				}
-				// Texture: along the face's axis, down from the top; the underside along and out from the face.
-				const bool xFace = d.deltaX != 0;
-				auto upright = [&](const P3 &p) { return UV { xFace ? p[1] : p[0], -p[2] }; };
-				auto flat = [&](const P3 &p) { return UV { xFace ? p[1] : p[0], (p[0] - sx) * nx + (p[1] - sy) * ny }; };
-				const P3 out { nx, ny, 0.0F };
-				const P3 down { nx * 0.5F, ny * 0.5F, -1.0F };
-				const P3 up { nx, ny, 0.3F };
-				for (int k = 0; k < CrestSegments; k++) {
-					const Section &a = sections[k];
-					const Section &b = sections[k + 1];
-					addQuad(a.under, b.under, b.lip, a.lip, flat(a.under), flat(b.under), flat(b.lip), flat(a.lip), down, CleanSurface::Crest, CrestUndersideDarkness);
-					addQuad(a.lip, b.lip, b.bulge, a.bulge, upright(a.lip), upright(b.lip), upright(b.bulge), upright(a.bulge), out, CleanSurface::Crest, CrestLowerDarkness);
-					addQuad(a.bulge, b.bulge, b.top, a.top, upright(a.bulge), upright(b.bulge), upright(b.top), upright(a.top), up, CleanSurface::Crest, 0.0F);
-				}
+			roots++;
+			// One to three strands, side by side, of different lengths.
+			const int strands = 1 + static_cast<int>(Hash01(hx, hy, 35) * 2.99F);
+			for (int strand = 0; strand < strands; strand++) {
+				const float t = std::clamp(0.25F + 0.5F * Hash01(hx, hy, 32) + (static_cast<float>(strand) - static_cast<float>(strands - 1) / 2.0F) * RootSpacing, 0.0F, 1.0F);
+				const P3 from { a.lip[0] + (b.lip[0] - a.lip[0]) * t - edge.nx * 0.02F, a.lip[1] + (b.lip[1] - a.lip[1]) * t - edge.ny * 0.02F, a.lip[2] + (b.lip[2] - a.lip[2]) * t + 0.05F };
+				const float hang = (RootMin + (RootMax - RootMin) * Hash01(hx, hy, 33)) * (strand == 0 ? 1.0F : 0.5F + 0.4F * Hash01(hx + strand, hy, 36));
+				const float sway = (Hash01(hx, hy + strand, 34) - 0.3F) * 0.16F;
+				const float wander = (Hash01(hx + strand, hy, 37) - 0.5F) * 0.12F;
+				addRoot(from, hang, sway, wander, edge.nx, edge.ny, ex, ey);
 			}
 		}
 	}
+	int cuts = 0;
+	for (const Edge &edge : edges)
+		cuts += edge.nx != 0.0F && edge.ny != 0.0F ? 1 : 0;
 
 	// --- Stalagmites -------------------------------------------------------------------------------------------------
 	// A spike of rock: rings narrowing up to a leaning tip, each point pushed in or out a little.
@@ -1802,7 +1995,32 @@ void AddCaveGeometry(std::vector<CleanQuad> &quads, AddTri &addTri)
 			}
 		}
 	}
-	LogInfo("fp: caves: crest on {} rock faces, {} stalagmites, {} fence and gate tiles, shoring on {} faces", crestFaces, stalagmites, fences, shored);
+	// The stairwells' timber frames: a post inside each side of the opening and a lintel under its top, standing a
+	// little out of the face.
+	const CleanOpening stairsOpening = StairsOpening();
+	for (const CleanStairs &stairs : Stairs) {
+		const int fx = stairs.trigger.x - stairs.tile.x;
+		const int fy = stairs.trigger.y - stairs.tile.y;
+		const bool xFace = fx != 0; // the face looks towards x (and runs along y)
+		const int sign = xFace ? fx : fy;
+		const float face = static_cast<float>(xFace ? stairs.tile.x : stairs.tile.y) + (sign > 0 ? 1.0F : 0.0F);
+		const float in0 = sign > 0 ? face - 0.02F : face - StairsFrameOut;
+		const float in1 = sign > 0 ? face + StairsFrameOut : face + 0.02F;
+		const float middle = static_cast<float>(xFace ? stairs.tile.y : stairs.tile.x) + 0.5F;
+		const float a0 = middle - stairsOpening.halfWidth;
+		const float a1 = middle + stairsOpening.halfWidth;
+		const float top = stairsOpening.spring;
+		auto box = [&](float along0, float along1, float z0, float z1, bool upright, bool under) {
+			if (xFace)
+				addBeam(in0, along0, z0, in1, along1, z1, upright, under);
+			else
+				addBeam(along0, in0, z0, along1, in1, z1, upright, under);
+		};
+		box(a0, a0 + StairsFramePost, 0.0F, top, true, false);
+		box(a1 - StairsFramePost, a1, 0.0F, top, true, false);
+		box(a0 - 0.05F, a1 + 0.05F, top - StairsFrameLintel, top + 0.03F, false, true);
+	}
+	LogInfo("fp: caves: crest on {} edges ({} cut corners), {} roots, {} stalagmites, {} fence and gate tiles, shoring on {} faces", edges.size(), cuts, roots, stalagmites, fences, shored);
 }
 
 } // namespace
@@ -2067,6 +2285,7 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 			if (Kinds[static_cast<size_t>(y) * MAXDUNX + x] == CleanKind::Pillar && leveltype != DTYPE_CAVES)
 				addPillar(static_cast<float>(x) + 0.5F, static_cast<float>(y) + 0.5F, carrying[static_cast<size_t>(y) * MAXDUNX + x]);
 	// Stairwells: steps inside the opening beside each stairs trigger, down into a pit or up into the dark.
+	const bool woodenSteps = leveltype == DTYPE_CAVES;
 	for (const CleanStairs &stairs : Stairs) {
 		const Vec2 forward { static_cast<float>(stairs.tile.x - stairs.trigger.x), static_cast<float>(stairs.tile.y - stairs.trigger.y) };
 		const Vec2 side { -forward.y, forward.x };
@@ -2084,13 +2303,13 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 			const P3 r1 = at(in0, half, riserBottom);
 			const P3 r2 = at(in0, half, tread);
 			const P3 r3 = at(in0, -half, tread);
-			// Risers a shade darker than the treads, so the flight reads as steps.
-			quads.push_back({ { r0, r1, r2, r3 }, facing, { { { -half, -riserBottom }, { half, -riserBottom }, { half, -tread }, { -half, -tread } } }, CleanSurface::Arch, darkness + 1.5F });
+			// Risers a shade darker than the treads, so the flight reads as steps (the caves': wooden).
+			quads.push_back({ { r0, r1, r2, r3 }, facing, { { { -half, -riserBottom }, { half, -riserBottom }, { half, -tread }, { -half, -tread } } }, woodenSteps ? CleanSurface::Wood : CleanSurface::Arch, darkness + 1.5F });
 			const P3 t0 = at(in0, -half, tread);
 			const P3 t1 = at(in0, half, tread);
 			const P3 t2 = at(in1, half, tread);
 			const P3 t3 = at(in1, -half, tread);
-			quads.push_back({ { t0, t1, t2, t3 }, P3 { 0, 0, 1 }, { { { t0[0], t0[1] }, { t1[0], t1[1] }, { t2[0], t2[1] }, { t3[0], t3[1] } } }, CleanSurface::Stone, darkness });
+			quads.push_back({ { t0, t1, t2, t3 }, P3 { 0, 0, 1 }, { { { t0[0], t0[1] }, { t1[0], t1[1] }, { t2[0], t2[1] }, { t3[0], t3[1] } } }, woodenSteps ? CleanSurface::Wood : CleanSurface::Stone, darkness });
 		};
 		for (int k = 0; k < n; k++) {
 			const float in0 = static_cast<float>(k) / static_cast<float>(n);
@@ -2136,8 +2355,8 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 std::string CleanTileMap(int x0, int y0, int x1, int y1)
 {
 	PrepareCleanDungeon();
-	// '#' wall, 'l' low wall, 'o' pillar, 't' torch stand, 'D' doorway, 'S' stairs, '~' lava or water, 'f' fence,
-	// '^' an arch over the tile, '.' floor.
+	// '#' wall, 'l' low wall, 'c' a wall with a corner cut (the caves'), 'o' pillar, 't' torch stand, 'D' doorway, 'S'
+	// stairs, '~' lava or water, 'f' fence, '^' an arch over the tile, '.' floor.
 	std::string map = StrCat("x ", x0, "..", x1, ", y ", y0, "..", y1, "\n");
 	for (int y = y0; y <= y1; y++) {
 		map += StrCat(y < 10 ? " " : "", y, " ");
@@ -2149,7 +2368,7 @@ std::string CleanTileMap(int x0, int y0, int x1, int y1)
 			const CleanKind kind = KindAt({ x, y });
 			char c = '.';
 			switch (kind) {
-			case CleanKind::Wall: c = WallHeights[static_cast<size_t>(y) * MAXDUNX + x] < CleanCeiling() - 0.01F ? 'l' : '#'; break;
+			case CleanKind::Wall: c = WallHeights[static_cast<size_t>(y) * MAXDUNX + x] < CleanCeiling() - 0.01F ? 'l' : (ChamferAt({ x, y }) != Displacement { 0, 0 } ? 'c' : '#'); break;
 			case CleanKind::Pillar: c = 'o'; break;
 			case CleanKind::Stand: c = 't'; break;
 			case CleanKind::Doorway: c = 'D'; break;
