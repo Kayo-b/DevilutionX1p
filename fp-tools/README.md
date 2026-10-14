@@ -342,8 +342,9 @@ The caves (levels 9-12, and the Poisoned Water Supply) are the clean dungeon's f
   brightness and a little of its own colour (`OwnChroma`), so a green cave is green. The palette cycles colours 1-31
   (lava): no texture uses them (`IsCycledColor`).
 - **Textures** (`caves()` in the export script): the Tiny Texture Pack's craggy `Stone_13` on the walls (512 x 512 for
-  two tiles), the stairwells' insides and the stalagmites, its `Stone_14` darker on the crest, `Dirt_05` underfoot
-  (512 for two tiles) and `Dirt_06` on steps; the kit's weathered beams (`grinda_02`) on the fences, gate frames and
+  two tiles, sharpened: `sharpen`, the pack's textures are soft up close), the stairwells' insides and the
+  stalagmites, its `Stone_14` darker on the crest, `Dirt_05` underfoot (512 for two tiles, sharpened) and `Dirt_06`
+  on steps; the kit's weathered beams (`grinda_02`) on the fences, gate frames and
   shoring, its plank door on the gates. Graded to the art of level 9 (seed 900): walls (39, 29, 26), floor
   (55, 42, 38).
 - **Speed:** level 9 ran at about 410 ms a frame, the lava's colour cycling rebuilding all the art structures every
@@ -558,8 +559,8 @@ commit.
 - **Dungeon:**
   - Hell in the clean style (`fp-hell-overhaul`; fp_dungeon.cpp is written to take more tilesets: a texture set in the
     export script, a `SetName`, a `PillarStyleFor`, and the tileset in `IsCleanDungeon`); its stairs have no model either.
-  - The caves: their rock (the Tiny Texture Pack's) is soft up close; a cut corner's diagonal face and the axis faces
-    beside it do not carry the rock's texture on from one to the other.
+  - The caves: a cut corner's diagonal face and the axis faces beside it do not carry the rock's texture on from one to
+    the other.
   - The clean dungeon's floors are one texture: the art's floor markings (blood, the pentagram of Lazarus' lair) are
     gone; wall decorations painted in the art too (banners and torches that are objects stay, as sprites).
   - The black capital top on plain fallback pillars (caves, hell).

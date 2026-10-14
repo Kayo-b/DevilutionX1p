@@ -77,6 +77,12 @@ def blur(rgb, radius):
     return np.asarray(im, dtype=np.float32)[pad:pad + h, pad:pad + w]
 
 
+def sharpen(rgb, radius, amount):
+    """Unsharp mask (wrapping round the edges, so the texture still tiles): the detail finer than `radius` raised by
+    `amount`, for textures that look soft up close."""
+    return np.clip(rgb + amount * (rgb - blur(rgb, radius)), 0, 255)
+
+
 def seamless(rgb, border):
     """Makes a crop tile: each edge cross-fades into the opposite one over `border` pixels."""
     h, w = rgb.shape[:2]
@@ -451,16 +457,16 @@ def crypt():
 def caves():
     out = {}
     # The caves (levels 9-12): red-brown rock, flat faces of the Tiny Texture Pack's craggy stone (Stone_13), two
-    # tiles a repeat; a darker crust of its twin (Stone_14) on the ragged crest along the walls' tops; a pebbly
+    # tiles a repeat, sharpened (the pack is soft up close); a darker crust of its twin (Stone_14) on the ragged crest along the walls' tops; a pebbly
     # brown floor (Dirt_05); the fences and the gates' frames of the kit's weathered beams (grinda_02), the gates of
     # its plank door. No ceiling: the dark above, as the original shows nothing over its cliffs. (Its palette cycles
     # colours 1-31, the lava: they are left out.)
-    rock = sbs('Stone/Stone_13-512x512.png')
-    out['wall'] = (blur(match(rock, (48, 37, 33), 16, 0.15), 0.5), 2.0, 2.0)
+    rock = sharpen(sbs('Stone/Stone_13-512x512.png'), 1.5, 0.8)
+    out['wall'] = (match(rock, (48, 37, 33), 16, 0.15), 2.0, 2.0)
     out['arch'] = (blur(match(sized(rock, 128), (40, 31, 28), 14, 0.15), 0.4), 1.0, 1.0)
     out['pillar'] = (blur(match(sized(rock, 128), (50, 39, 34), 16, 0.15), 0.4), 1.0, 1.0)
     out['crest'] = (blur(match(sized(sbs('Stone/Stone_14-512x512.png'), 128), (30, 23, 20), 13, 0.15), 0.4), 1.0, 1.0)
-    out['floor'] = (blur(match(sbs('Dirt/Dirt_05-512x512.png'), (55, 42, 38), 13, 0.15), 0.5), 2.0, 2.0)
+    out['floor'] = (match(sharpen(sbs('Dirt/Dirt_05-512x512.png'), 1.5, 0.6), (55, 42, 38), 13, 0.15), 2.0, 2.0)
     out['stone'] = (blur(match(sized(sbs('Dirt/Dirt_06-512x512.png'), 128), (50, 39, 35), 12, 0.15), 0.4), 1.0, 1.0)
     out['wood'] = (blur(match(sized(load('grinda_02.jpg'), 128), (58, 46, 36), 14, 0.2), 0.4), 1.0, 1.0)
     out['door'] = (blur(door((60, 47, 37), 15), 0.3), 1.0, 1.0)
