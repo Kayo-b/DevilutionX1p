@@ -24,6 +24,7 @@
 #include "missiles.h"
 #include "monster.h"
 #include "fp/fp_buildings.hpp"
+#include "fp/fp_catacombs.hpp"
 #include "fp/fp_dungeon.hpp"
 #include "fp/fp_hell.hpp"
 #include "fp/fp_textures.hpp"
@@ -33,6 +34,49 @@
 #include "utils/is_of.hpp"
 
 namespace devilution::fp {
+
+/**
+ * @brief Where a wall torch hangs in the clean dungeon, and which way the face of its wall looks (`normal`): against
+ * that face, not in the middle of a tile (the iso art drew it over the face). Its type tells the face (AddL2Torches):
+ * OBJ_TORCHL2 and OBJ_TORCHR2 stand on the wall tile itself, on its face towards +x or +y (the faces the iso camera
+ * saw); OBJ_TORCHL and OBJ_TORCHR on the floor north-west or north-east of a wall, on its face towards -x or -y.
+ * Elsewhere (a torch not where its type puts it), the first face it has beside it.
+ */
+Vec2 WallTorchPlacement(const Object &object, Vec2 &normal)
+{
+	const Point tile = object.position;
+	const Vec2 centre { static_cast<float>(tile.x) + 0.5F, static_cast<float>(tile.y) + 0.5F };
+	Displacement face { 0, 0 };
+	bool onWall = false;
+	switch (object._otype) {
+	case OBJ_TORCHL2: face = { 1, 0 }, onWall = true; break;
+	case OBJ_TORCHR2: face = { 0, 1 }, onWall = true; break;
+	case OBJ_TORCHL: face = { -1, 0 }; break;
+	case OBJ_TORCHR: face = { 0, -1 }; break;
+	default: break;
+	}
+	// The wall must be where the type says: the tile itself, or the one behind the face.
+	const Point wall = onWall ? tile : tile - face;
+	const Point front = onWall ? tile + face : tile;
+	if (face == Displacement { 0, 0 } || !InDungeonBounds(wall) || !InDungeonBounds(front) || !IsTileSolid(wall) || IsTileSolid(front)) {
+		face = { 0, 0 };
+		onWall = IsTileSolid(tile);
+		for (const Displacement d : onWall ? std::array { Displacement { 1, 0 }, Displacement { 0, 1 }, Displacement { -1, 0 }, Displacement { 0, -1 } }
+		                                   : std::array { Displacement { -1, 0 }, Displacement { 0, -1 }, Displacement { 1, 0 }, Displacement { 0, 1 } }) {
+			const Point next = tile + d;
+			if (InDungeonBounds(next) && IsTileSolid(next) != onWall) {
+				face = onWall ? d : Displacement { -d.deltaX, -d.deltaY };
+				break;
+			}
+		}
+	}
+	normal = { static_cast<float>(face.deltaX), static_cast<float>(face.deltaY) };
+	if (face == Displacement { 0, 0 })
+		return centre;
+	// A little in front of the face: 0.56 out from the wall tile's middle, or 0.44 back from the floor tile's.
+	const float shift = onWall ? 0.56F : -0.44F;
+	return { centre.x + normal.x * shift, centre.y + normal.y * shift };
+}
 
 namespace {
 
@@ -195,23 +239,38 @@ void CollectTowners(std::vector<Entity> &entities)
 }
 
 /**
- * @brief Where a wall torch hangs in the clean dungeon: against the face of its wall, not in the middle of a tile (the
- * iso art drew it over the wall face it belongs to). A torch on a wall tile comes out in front of the face it was seen
- * on (towards +x or +y, the faces the iso camera saw); one on a floor tile goes back against the wall behind it.
+ * @brief A wall torch's frame as it hangs on its wall: the iso art draws it on the face, sheared as the face is (a
+ * face along y rises a row every two to the right, one along x falls), so its columns are shifted back to level. The
+ * result is wider than tall by half its width; cached per frame.
  */
-Vec2 WallTorchPosition(Point tile)
+const std::vector<int16_t> &UnshearedTorch(ClxSprite sprite, bool alongY, int &width, int &height)
 {
-	const Vec2 centre = TileCenter(tile);
-	const bool onWall = IsTileSolid(tile);
-	for (const Displacement d : onWall ? std::array { Displacement { 1, 0 }, Displacement { 0, 1 }, Displacement { -1, 0 }, Displacement { 0, -1 } }
-	                                   : std::array { Displacement { -1, 0 }, Displacement { 0, -1 }, Displacement { 1, 0 }, Displacement { 0, 1 } }) {
-		const Point next = tile + d;
-		if (!InDungeonBounds(next) || IsTileSolid(next) == onWall)
-			continue;
-		const float shift = onWall ? 0.56F : 0.44F;
-		return { centre.x + static_cast<float>(d.deltaX) * shift, centre.y + static_cast<float>(d.deltaY) * shift };
+	static std::unordered_map<const uint8_t *, std::vector<int16_t>> cache[2];
+	// Keyed by where the frame lies, which another level's sprites may reuse: forgotten with the level.
+	static const std::byte *cacheCels = nullptr;
+	static int cacheLevel = -1;
+	if (cacheCels != pDungeonCels.get() || cacheLevel != currlevel) {
+		cacheCels = pDungeonCels.get();
+		cacheLevel = currlevel;
+		cache[0].clear();
+		cache[1].clear();
 	}
-	return centre;
+	width = sprite.width();
+	height = sprite.height() + sprite.width() / 2;
+	auto [it, added] = cache[alongY ? 1 : 0].try_emplace(sprite.pixelData());
+	if (!added)
+		return it->second;
+	std::vector<int16_t> pixels;
+	DecodeClx(sprite, pixels);
+	std::vector<int16_t> &out = it->second;
+	out.assign(static_cast<size_t>(width) * height, NoPixel);
+	for (int sy = 0; sy < sprite.height(); sy++) {
+		for (int sx = 0; sx < width; sx++) {
+			const int v = sy + (alongY ? sx : width - 1 - sx) / 2;
+			out[static_cast<size_t>(v) * width + sx] = pixels[static_cast<size_t>(sy) * width + sx];
+		}
+	}
+	return out;
 }
 
 void CollectObjects(std::vector<Entity> &entities)
@@ -247,8 +306,31 @@ void CollectObjects(std::vector<Entity> &entities)
 		}
 		entity.lit = object.applyLighting;
 		entity.hidden = IsObjectDrawnAsMesh(id);
-		if (IsCleanDungeon() && IsAnyOf(object._otype, OBJ_TORCHL, OBJ_TORCHR, OBJ_TORCHL2, OBJ_TORCHR2))
-			entity.pos = WallTorchPosition(object.position);
+		if (IsCatacombs() && IsAnyOf(object._otype, OBJ_TORCHL, OBJ_TORCHR, OBJ_TORCHL2, OBJ_TORCHR2)) {
+			// The catacombs' wall torches are meshes (fp_catacombs.cpp): only their flame is a sprite.
+			if (!CatacombsTorchFlame(object, sprite, entity))
+				continue;
+		} else if (IsCleanDungeon() && IsAnyOf(object._otype, OBJ_TORCHL, OBJ_TORCHR, OBJ_TORCHL2, OBJ_TORCHR2)) {
+			// A wall torch hangs flat on its wall (not turned to the camera, which half of it went into the wall), its
+			// art unsheared, as wide as the face's art is (FaceTextureWidth a tile), its middle as high as before.
+			Vec2 normal;
+			entity.pos = WallTorchPlacement(object, normal);
+			if (normal.x != 0.0F || normal.y != 0.0F) {
+				int width;
+				int height;
+				const std::vector<int16_t> &pixels = UnshearedTorch(sprite, normal.x != 0.0F, width, height);
+				const float perRow = entity.height / static_cast<float>(sprite.height());
+				entity.pixels = &pixels;
+				entity.pixelsWidth = width;
+				entity.pixelsHeight = height;
+				entity.width = static_cast<float>(width) / FaceTextureWidth;
+				entity.bottom -= static_cast<float>(width) / 4.0F * perRow;
+				entity.height = static_cast<float>(height) * perRow;
+				entity.facing = true;
+				entity.fixedAlong = true;
+				entity.along = { normal.y, -normal.x }; // to the right of one looking at the face
+			}
+		}
 		entities.push_back(entity);
 	}
 }
@@ -489,11 +571,12 @@ BillboardRect ProjectBillboard(const Projection &projection, const Entity &entit
 	const float depth = rel.x * projection.dir.x + rel.y * projection.dir.y;
 	if (entity.facing) {
 		// The quad's two ends, across the line from the camera to the foot.
-		// Standing on its foot, the quad would be all there is to see.
+		// Standing on its foot, the quad would be all there is to see (a tree's; a torch's small flame overhead stays).
 		const float distance = std::hypot(rel.x, rel.y);
-		if (distance < 0.4F)
+		if (distance < std::min(0.4F, entity.width * 0.25F))
 			return { false, depth, 0, 0, 0, 0 };
-		const Vec2 across { -rel.y / distance * entity.width / 2.0F, rel.x / distance * entity.width / 2.0F };
+		const Vec2 across = entity.fixedAlong ? Vec2 { entity.along.x * entity.width / 2.0F, entity.along.y * entity.width / 2.0F }
+		                                      : Vec2 { -rel.y / distance * entity.width / 2.0F, rel.x / distance * entity.width / 2.0F };
 		BillboardRect rect { false, depth, projection.width, 0, projection.height, 0 };
 		float nearest = std::numeric_limits<float>::max();
 		for (const float side : { -1.0F, 1.0F }) {

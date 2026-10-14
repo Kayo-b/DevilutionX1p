@@ -16,6 +16,10 @@
 #include "fp/fp_math.hpp"
 #include "fp/fp_raycast.hpp"
 
+namespace devilution {
+struct Object;
+} // namespace devilution
+
 namespace devilution::fp {
 
 enum class EntityKind : uint8_t {
@@ -53,6 +57,9 @@ struct Entity {
 	 * art (a tree) beside the camera then recedes as it should instead of filling the view.
 	 */
 	bool facing = false;
+	/** With `facing`: the quad runs this way (a unit vector along it) instead of across the view: a wall torch hangs flat on its wall. */
+	bool fixedAlong = false;
+	Vec2 along {};
 };
 
 /**
@@ -64,6 +71,12 @@ void DecodeClx(ClxSprite sprite, std::vector<int16_t> &pixels);
 
 /** @brief Number of empty (or shadow-only, colour 0) pixel rows under the lowest visible pixel of a sprite. */
 [[nodiscard]] int SpriteBottomPadding(ClxSprite sprite);
+
+/**
+ * @brief Where a wall torch (OBJ_TORCHL, R, L2, R2) hangs in the clean dungeon: a little in front of the face of its
+ * wall, which looks towards `normal` (zero if the torch has no wall beside it).
+ */
+[[nodiscard]] Vec2 WallTorchPlacement(const Object &object, Vec2 &normal);
 
 /** @brief Light table index of a tile (LightsMax outside the dungeon). */
 [[nodiscard]] uint8_t LightAt(Point tile);

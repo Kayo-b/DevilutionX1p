@@ -615,8 +615,8 @@ struct SpriteCoverage {
 };
 
 /**
- * @brief Draws a sprite standing as an upright quad on its foot, turned to face the camera (Entity::facing): column by
- * column, each where the view ray meets the quad, at that depth. Blown up, it is sampled sharp bilinearly as the
+ * @brief Draws a sprite standing as an upright quad on its foot, turned to face the camera (Entity::facing) or running
+ * its own way (Entity::along): column by column, each where the view ray meets the quad, at that depth. Blown up, it is sampled sharp bilinearly as the
  * billboards are.
  */
 void DrawFacingSprite(const Surface &out, const Projection &proj, const std::vector<float> &depthBuffer, const Entity &entity, const BillboardRect &rect)
@@ -626,7 +626,8 @@ void DrawFacingSprite(const Surface &out, const Projection &proj, const std::vec
 	const int spriteHeight = entity.pixelsHeight;
 	const Vec2 toFoot { entity.pos.x - proj.pos.x, entity.pos.y - proj.pos.y };
 	const float distance = std::hypot(toFoot.x, toFoot.y);
-	const Vec2 across { -toFoot.y / distance, toFoot.x / distance }; // along the quad, to the camera's right
+	// Along the quad: to the camera's right, or its own way (Entity::along).
+	const Vec2 across = entity.fixedAlong ? entity.along : Vec2 { -toFoot.y / distance, toFoot.x / distance };
 	const uint8_t *light = entity.lit ? FpLightTable(LightAt(entity.tile)).data() : nullptr;
 	std::array<uint8_t, 256> lit;
 	for (int i = 0; i < 256; i++)

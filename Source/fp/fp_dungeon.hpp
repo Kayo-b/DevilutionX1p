@@ -2,8 +2,8 @@
  * @file fp/fp_dungeon.hpp
  *
  * The clean dungeon: how the cathedral (levels 1-4), the catacombs (5-8), the caves (9-12) and Hellfire's crypt (21-24)
- * look in first person. Hell (13-16) is drawn within it with a kit of its own (fp_hell.hpp): its kinds, texture set and
- * geometry come from there.
+ * look in first person. Hell (13-16) is drawn within it with a kit of its own (fp_hell.hpp), and the catacombs are
+ * rebuilt from their own art (fp_catacombs.hpp): their kinds, textures and geometry come from there.
  *
  * These levels are not drawn from their iso art. A solid tile is a plain block of stone as tall as the ceiling (or a
  * low block where the art shows a low wall), a lone solid tile a plain pillar, a door tile a block with a round-arched
@@ -11,8 +11,8 @@
  * supports. Every surface wears its tileset's texture set (dungeontex.bin, made by fp-tools/export/
  * export_dungeon_textures.py from CC0 textures: see assets/fp/CREDITS.md), converted to the level's palette once per
  * light level so it darkens smoothly, and lit by the tile light interpolated between tile centres. The art is still
- * read to tell what a tile is (a pillar, a torch stand, a low wall), never to draw it. Stairs without a 3D model (the
- * catacombs' and the crypt's, the quest levels' entrances and exits) are an arched opening in the wall beside their
+ * read to tell what a tile is (a pillar, a torch stand, a low wall), never to draw it (but in the catacombs). Stairs
+ * without a 3D model (the crypt's, the quest levels' entrances and exits) are an arched opening in the wall beside their
  * trigger with plain steps inside, going down or up.
  *
  * Kept as they were: the cathedral's stairs, the torch stands and the sarcophagus (3D models, fp_buildings.cpp),
@@ -104,6 +104,7 @@ enum class CleanSurface : uint8_t {
 	Band,      // the cathedral's blind arches' ring: four bricks stood on end across, one brick long down (falls back to Wall)
 	Crest,     // the caves' ragged rim along the tops of their walls (falls back to Wall)
 	Wood,      // the caves' fences and gate frames (falls back to Door)
+	Torch,     // the catacombs' wall torches' wood: their handles (v 0..0.5 round them) and poles (0.5..1) (falls back to Wood)
 	Count
 };
 
@@ -165,7 +166,16 @@ struct CleanSourceTexture {
 	float tilesAcross = 1; // the world size one repeat covers
 	float tilesDown = 1;
 	std::vector<uint8_t> rgb;
+	/**
+	 * Palette art (the catacombs' textures cut from their art): its colours, as `rgb` shows them. Kept as they are and
+	 * lit through the game's light tables, as the original lights its art (detail levels: the nearest colour of `rgb`'s
+	 * averages); empty for the others, converted to the palette per light level.
+	 */
+	std::vector<uint8_t> indices;
 };
+
+/** @brief The nearest colour of an RGB colour that the clean dungeon's textures may use (as their conversion to the palette picks it). */
+[[nodiscard]] uint8_t CleanNearestColor(int r, int g, int b);
 
 /** @brief The tile kinds of the level (MAXDUNX * MAXDUNY, index y * MAXDUNX + x), as of the last PrepareCleanDungeon. */
 [[nodiscard]] const CleanKind *CleanKindMap();

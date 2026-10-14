@@ -19,6 +19,7 @@
 #include "engine/light_tables.hpp"
 #include "engine/palette.h"
 #include "fp/fp_buildings.hpp"
+#include "fp/fp_catacombs.hpp"
 #include "fp/fp_doors.hpp"
 #include "fp/fp_hell.hpp"
 #include "fp/fp_textures.hpp"
@@ -308,7 +309,7 @@ const char *SetName(dungeon_type type)
 	}
 }
 
-constexpr std::array<const char *, static_cast<size_t>(CleanSurface::Count)> SlotNames { "wall", "base", "top", "floor", "ceiling", "pillar", "stone", "arch", "door", "marble", "lid", "iron", "ivory", "marble2", "ivory2", "band", "crest", "wood" };
+constexpr std::array<const char *, static_cast<size_t>(CleanSurface::Count)> SlotNames { "wall", "base", "top", "floor", "ceiling", "pillar", "stone", "arch", "door", "marble", "lid", "iron", "ivory", "marble2", "ivory2", "band", "crest", "wood", "torch" };
 
 /** The palette colours textures may use: the level's ramps (not the near-blacks 112-127, nor colours the level cycles) and the shared ramps 160-254. */
 bool IsAllowedColor(int index)
@@ -385,6 +386,22 @@ private:
 	std::vector<uint16_t> cache_;
 	std::vector<uint8_t> allowed_;
 };
+
+/** The Quantizer for the current palette, for CleanNearestColor. */
+Quantizer &NearestColors()
+{
+	static Quantizer quantize;
+	static uint32_t preparedFor = 0;
+	static dungeon_type preparedType = DTYPE_NONE;
+	static bool prepared = false;
+	if (!prepared || preparedFor != StablePaletteVersion() || preparedType != leveltype) {
+		prepared = true;
+		preparedFor = StablePaletteVersion();
+		preparedType = leveltype;
+		quantize.Prepare();
+	}
+	return quantize;
+}
 
 float Luma(const SDL_Color &c)
 {
@@ -502,15 +519,31 @@ void BuildTexture(CleanTexture &out, const SourceTexture &source, Quantizer &qua
 				}
 		out.mips.push_back(std::move(mip));
 	}
-	for (CleanTexture::Mip &mip : out.mips) {
+	const bool art = !source.indices.empty() && source.indices.size() == static_cast<size_t>(source.width) * source.height;
+	for (size_t m = 0; m < out.mips.size(); m++) {
+		CleanTexture::Mip &mip = out.mips[m];
 		const size_t count = static_cast<size_t>(mip.width) * mip.height;
-		for (size_t level = 0; level < NumLightingLevels; level++) {
-			std::vector<uint8_t> &lit = mip.lit[level];
-			lit.resize(count);
-			const float f = factors[level];
-			for (size_t i = 0; i < count; i++) {
-				lit[i] = f <= 0.0F ? uint8_t { 0 }
-				                   : quantize(static_cast<int>(mip.rgb[i * 3] * f + 0.5F), static_cast<int>(mip.rgb[i * 3 + 1] * f + 0.5F), static_cast<int>(mip.rgb[i * 3 + 2] * f + 0.5F));
+		if (art) {
+			// Palette art keeps its colours (its detail levels the nearest colour of their averages), lit through the
+			// game's light tables as the original's art is.
+			std::vector<uint8_t> indices(count);
+			for (size_t i = 0; i < count; i++)
+				indices[i] = m == 0 ? source.indices[i] : quantize(mip.rgb[i * 3], mip.rgb[i * 3 + 1], mip.rgb[i * 3 + 2]);
+			for (size_t level = 0; level < NumLightingLevels; level++) {
+				std::vector<uint8_t> &lit = mip.lit[level];
+				lit.resize(count);
+				for (size_t i = 0; i < count; i++)
+					lit[i] = level >= static_cast<size_t>(LightsMax) ? uint8_t { 0 } : LightTables[level][indices[i]];
+			}
+		} else {
+			for (size_t level = 0; level < NumLightingLevels; level++) {
+				std::vector<uint8_t> &lit = mip.lit[level];
+				lit.resize(count);
+				const float f = factors[level];
+				for (size_t i = 0; i < count; i++) {
+					lit[i] = f <= 0.0F ? uint8_t { 0 }
+					                   : quantize(static_cast<int>(mip.rgb[i * 3] * f + 0.5F), static_cast<int>(mip.rgb[i * 3 + 1] * f + 0.5F), static_cast<int>(mip.rgb[i * 3 + 2] * f + 0.5F));
+				}
 			}
 		}
 		mip.rgb.clear();
@@ -545,9 +578,10 @@ void EnsureTextures()
 			const auto it = SourceTextures.find(StrCat(set, "/", name));
 			return it != SourceTextures.end() ? &it->second : nullptr;
 		};
-		// Hell's flesh is cut out of its own art (fp_hell.cpp) when the level loads.
+		// Hell's flesh (fp_hell.cpp) and the catacombs' surfaces (fp_catacombs.cpp) are cut out of their own art when
+		// the level loads.
 		SourceTexture art;
-		const SourceTexture *source = HellArtTexture(surface, art) ? &art : find(SlotNames[slot]);
+		const SourceTexture *source = HellArtTexture(surface, art) || CatacombsArtTexture(surface, art) ? &art : find(SlotNames[slot]);
 		if (surface == CleanSurface::Base)
 			Textures.baseBand = source != nullptr ? source->tilesDown : 0.0F;
 		if (surface == CleanSurface::Top)
@@ -560,7 +594,9 @@ void EnsureTextures()
 			source = find("marble");
 		if (source == nullptr && surface == CleanSurface::IvoryAlt)
 			source = find("ivory");
-		if (source == nullptr && surface == CleanSurface::Wood)
+		if (source == nullptr && surface == CleanSurface::Torch)
+			source = find("wood");
+		if (source == nullptr && (surface == CleanSurface::Wood || surface == CleanSurface::Torch))
 			source = find("door");
 		if (source == nullptr && (surface == CleanSurface::Stone || surface == CleanSurface::Marble || surface == CleanSurface::Lid || surface == CleanSurface::Ivory || surface == CleanSurface::MarbleAlt || surface == CleanSurface::IvoryAlt))
 			source = find("pillar");
@@ -1061,6 +1097,16 @@ void ClassifyTiles()
 		Chamfers.clear();
 		return;
 	}
+	if (IsCatacombs()) {
+		// The catacombs' tiles are told apart by the tiles of their map (fp_catacombs.cpp).
+		ClassifyCatacombsTiles(Kinds, WallHeights);
+		Stairs.clear(); // their stairs wind round towers (fp_catacombs.cpp), not into the walls
+		StairsIndex.assign(Kinds.size(), -1);
+		FindBlindArches();
+		FindChamfers();
+		FindCleanPools();
+		return;
+	}
 	const float ceiling = CleanCeiling();
 	const int levelRows = LevelWallRows();
 	auto solid = [](Point p) { return !InDungeonBounds(p) || IsTileSolid(p); };
@@ -1257,6 +1303,11 @@ struct ColumnSamplers {
 
 // --- Public --------------------------------------------------------------------------------------------------------
 
+uint8_t CleanNearestColor(int r, int g, int b)
+{
+	return NearestColors()(r, g, b);
+}
+
 bool IsCleanDungeon()
 {
 	return IsAnyOf(leveltype, DTYPE_CATHEDRAL, DTYPE_CATACOMBS, DTYPE_CAVES, DTYPE_CRYPT, DTYPE_HELL);
@@ -1341,6 +1392,8 @@ CleanOpening CleanDoorOpening()
 {
 	if (CleanDoorwaysAreGates())
 		return { DoorHalfWidth, GateHeight, true };
+	if (IsCatacombs())
+		return CatacombsDoorOpening();
 	const float crown = std::min(DoorCrown, CleanCeiling() - 0.45F);
 	return { DoorHalfWidth, crown - DoorHalfWidth };
 }
@@ -1395,6 +1448,10 @@ uint8_t CleanColor(CleanSurface surface, float u, float v, float worldPerPixel, 
 
 void DrawCleanFloorAndCeiling(const Surface &out, const Projection &proj, std::vector<float> &depthBuffer)
 {
+	if (IsCatacombs()) {
+		DrawCatacombsFloorAndCeiling(out, proj, depthBuffer); // each tile its own floor art
+		return;
+	}
 	const Vec2 rayLeft { proj.dir.x - proj.plane.x, proj.dir.y - proj.plane.y };
 	const Vec2 rayRight { proj.dir.x + proj.plane.x, proj.dir.y + proj.plane.y };
 	const float ceiling = CleanCeiling();
@@ -1585,13 +1642,17 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 	static std::vector<uint8_t> filled;
 	filled.resize(static_cast<size_t>(proj.height));
 	ColumnSamplers samplers;
+	TowerColumn towers; // the catacombs' towers, drawn as the ray meets them (fp_catacombs.cpp)
 	for (int x = 0; x < proj.width; x++) {
 		const Vec2 ray = proj.columnRay(x);
 		std::fill(filled.begin(), filled.end(), uint8_t { 0 });
 		zBuffer[x] = MaxRayDistance;
 		bool hitSomething = false;
+		towers.Begin(proj, x);
+		float towerDepth = MaxRayDistance;
 		for (int layer = 0; layer < MaxWallLayers; layer++) {
 			RayHit hit = CastRay(proj.pos, ray, layer);
+			towers.DrawUntil(hit.hit ? hit.distance : MaxRayDistance, out, filled, depthBuffer, towerDepth);
 			if (!hit.hit)
 				break;
 			// A cut corner (the caves'): the ray meets the diagonal face inside the tile, or passes through the corner
@@ -1619,7 +1680,7 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 				diagonalAlong = c.x * -ny + c.y * nx;
 			}
 			if (!hitSomething)
-				zBuffer[x] = hit.distance;
+				zBuffer[x] = std::min(hit.distance, towerDepth);
 			hitSomething = true;
 			const CleanKind kind = KindAt(hit.tile);
 			const float d = std::max(hit.distance, 0.01F);
@@ -1636,6 +1697,12 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 			const float light = InDungeonBounds(hit.tile) ? FaceLight(hit, ray) : static_cast<float>(LightsMax);
 			const float worldPerPixel = d / proj.focal;
 			samplers.Prepare(worldPerPixel, { CleanSurface::Wall, CleanSurface::Base, CleanSurface::Top });
+			// The catacombs' walls wear their own art (fp_catacombs.cpp), from the floor (its last row) to the ceiling.
+			const int artFacing = hit.xSide ? (hit.previous.x > hit.tile.x ? 0 : 1) : (hit.previous.y > hit.tile.y ? 2 : 3);
+			const ArtTexture *faceArt = kind == CleanKind::Wall || kind == CleanKind::Doorway ? CatacombsFaceArt(hit.tile, artFacing) : nullptr;
+			ArtSampler artSampler;
+			if (faceArt != nullptr)
+				PrepareArtSampler(artSampler, *faceArt, worldPerPixel);
 			// An opening through this face: a doorway (through both broad faces of a door tile), or the stairwell
 			// beside a stairs trigger (through the face towards it, closed at the back).
 			const CleanOpening *opening = nullptr;
@@ -1826,7 +1893,10 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 				float v;
 				const CleanSurface band = WallBand(h, wallTop, ceiling, v);
 				const float shade = topShadow ? CaveTopShadow * std::clamp(1.0F - (wallTop - h) / CaveTopShadowDrop, 0.0F, 1.0F) : 0.0F;
-				*out.at(x, y) = samplers[band].At(textureAlong, v, LightLevel(light + shade, x, y), x, y);
+				if (faceArt != nullptr)
+					*out.at(x, y) = light >= static_cast<float>(LightsMax) ? 0 : artSampler.At(textureAlong, ceiling - h, LightLevel(light, x, y), x, y);
+				else
+					*out.at(x, y) = samplers[band].At(textureAlong, v, LightLevel(light + shade, x, y), x, y);
 				filled[y] = 1;
 				depthBuffer[static_cast<size_t>(y) * proj.width + x] = d;
 			}
@@ -2472,7 +2542,9 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 			const auto isPost = [](CleanKind k) { return k == CleanKind::Pillar || k == CleanKind::Stand; };
 			// A pillar's flared block, if it has one, carries the arch.
 			const auto isBlock = [&](CleanKind k) { return k == CleanKind::Pillar && style.top > 0; };
-			const auto postHalf = [&](CleanKind k) { return isBlock(k) ? style.blockHalf : style.shaft; };
+			const bool catacombs = IsCatacombs();
+			// (The catacombs' arches rest on their towers' drums, as thick as their art's beams.)
+			const auto postHalf = [&](CleanKind k) { return isBlock(k) ? style.blockHalf : (catacombs ? CatacombsTowerRadius() : style.shaft); };
 			const bool onBlock = isBlock(supportBefore) || isBlock(supportAfter);
 			// Along the axis: the opening runs between the supports' faces (a pillar's shaft or block, or a wall's face).
 			const float start = static_cast<float>(alongX ? first.x : first.y);
@@ -2481,7 +2553,7 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 			const float b = isPost(supportAfter) ? end + 0.5F - postHalf(supportAfter) : end;
 			// Across: as thick as the walls between two walls, else as the pillars (their blocks).
 			const float acrossMid = static_cast<float>(alongX ? y : x) + 0.5F;
-			const float half = onBlock ? style.blockHalf : (isPost(supportBefore) || isPost(supportAfter) ? style.shaft : 0.5F);
+			const float half = catacombs ? CatacombsArchHalfThickness() : (onBlock ? style.blockHalf : (isPost(supportBefore) || isPost(supportAfter) ? style.shaft : 0.5F));
 			for (const auto &[support, side] : { std::pair { first - step, alongX ? 1 : 4 }, std::pair { last + step, alongX ? 2 : 8 } }) {
 				if (!isBlock(KindAt(support)))
 					continue;
@@ -2497,11 +2569,13 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 			const float rise = std::min(radius, ceiling - ArchLintel - (onBlock ? style.top : MinArchSpring));
 			const float spring = onBlock ? style.top : ceiling - ArchLintel - rise;
 			auto archTop = [&](float s) {
+				if (catacombs)
+					return CatacombsArchUnderside(s, a, b); // a flat beam with curved ends (fp_catacombs.cpp)
 				const float q = std::clamp((s - middle) / radius, -1.0F, 1.0F);
 				return spring + rise * std::sqrt(1.0F - q * q);
 			};
 			auto point = [&](float along, float across, float z) { return alongX ? P3 { along, across, z } : P3 { across, along, z }; };
-			constexpr int Segments = 12;
+			const int Segments = catacombs ? 24 : 12;
 			for (int i = 0; i < Segments; i++) {
 				const float s0 = a + (b - a) * static_cast<float>(i) / Segments;
 				const float s1 = a + (b - a) * static_cast<float>(i + 1) / Segments;
@@ -2534,7 +2608,7 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 	// The pillars, now that the arches resting on them are known (the caves' are stalagmites, below).
 	for (int y = 0; y < MAXDUNY; y++)
 		for (int x = 0; x < MAXDUNX; x++)
-			if (Kinds[static_cast<size_t>(y) * MAXDUNX + x] == CleanKind::Pillar && leveltype != DTYPE_CAVES)
+			if (Kinds[static_cast<size_t>(y) * MAXDUNX + x] == CleanKind::Pillar && leveltype != DTYPE_CAVES && !IsCatacombs())
 				addPillar(static_cast<float>(x) + 0.5F, static_cast<float>(y) + 0.5F, carrying[static_cast<size_t>(y) * MAXDUNX + x]);
 	// Stairwells: steps inside the opening beside each stairs trigger, down into a pit or up into the dark.
 	const bool woodenSteps = leveltype == DTYPE_CAVES;
@@ -2600,6 +2674,8 @@ void BuildCleanGeometry(std::vector<CleanQuad> &quads, std::vector<Point> &stand
 	}
 	if (leveltype == DTYPE_CAVES)
 		AddCaveGeometry(quads, addTri);
+	if (IsCatacombs())
+		AddCatacombsGeometry(quads, holes); // their towers and stairs
 	LogInfo("fp: clean dungeon geometry: {} quads, {} arches ({} pillars carrying them), {} torch stands, {} stairs", quads.size(), arches, carriers, stands.size(), Stairs.size());
 }
 
