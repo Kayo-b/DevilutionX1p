@@ -553,9 +553,17 @@ python3 fp-tools/export/export_houses.py && python3 fp-tools/export/export_meshe
 **Trees** (`BuildTrees`, `CollectTreeSprites`): each group of tree tiles is cut out of the iso art into one sprite per
 trunk (every art pixel goes to the nearest trunk whose foot is below it). A tree's tiles that a house's art claimed
 still count as the tree's (`IsTreePiece`), so trees beside houses are whole. The feet of the trunks are drawn in the
-floor diamonds in the ground's own colours: they are grown down from the bark above, row by row, through the art
-with its ground, never wider than the trunk above (nor than 9 pixels). The rest of the diamonds (ground, shadows,
-fallen leaves, twigs) is left out, and a trunk is a piece of bark that reaches the ground. A tree stands on its trunk's foot as an
+floor diamonds, over a pale patch of earth and fallen leaves whose colours are close to the bark's lit side: each
+trunk is followed down through it row by row by its dark core (`DarkBark`: the bark's darkest shades, near black or
+blue, which that ground has next to none of; the shadows on the ground are green or yellow-grey), and goes on as wide
+as it is above, moved a pixel to keep its core in it where it leans, specks of ground in it filled with the bark
+above. Its foot is where the core ends, near the diamond's middle. A trunk the art draws lit for a few rows where it
+goes into the ground (its core lost) is drawn on down to the middle of the diamond under it: its widest lowest rows
+(the bark over its foot only, not branches beside it), leaning a little as they lean, darker towards the ground
+(`GroundShade`). The rest of the diamonds (ground, shadows, fallen leaves, twigs) is left out, a trunk is a piece of
+bark that reaches the ground, and nothing below a tree's foot is kept: leaves the iso view shows lower than the foot
+because they hang out towards it would be sunk into the ground on the upright card, poking out of it. A group of two
+trees gets a foot for each. A tree stands on its trunk's foot as an
 upright quad turned to face the camera, each screen column at its own depth (`Entity::facing`,
 `DrawFacingSprite`), so a wide tree beside you recedes instead of filling the view. Boulders, low walls, graves and
 tufts stay meshes (`BuildTownProps`).
@@ -806,6 +814,9 @@ commit.
 - **Town:**
   - The other buildings drawn by hand in the art (Wirt's corner, the ruined houses) as landmarks: a model from the
     Nexus archives where there is one, else built from the original art (`fp-tools/d1cli` exports the town's tiles).
+  - The big leaning tree (17 in town, the one Adria's corner tree copies): the left stem of its fork ends flat in
+    mid-air, a little above where it joins the trunk; the art draws the rest of it in tiles of the drawing outside
+    its group. It could be drawn on into the trunk, as the trunks' feet are.
   - Forge and anvil props under the smithy porch.
   - Remaining dark slabs on the ground north of the church (possibly original art).
 - **Dungeon:**

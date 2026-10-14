@@ -6850,9 +6850,11 @@ void BuildTrees(const std::vector<Point> &tiles, int &treeCount)
 	const int h = b.canvasHeight;
 	auto at = [&](int x, int y) { return static_cast<size_t>(y) * w + x; };
 	std::vector<uint8_t> inDiamond(b.canvas.size(), 0);
+	std::vector<std::pair<float, float>> diamondMiddles;
 	for (const Point t : tiles) {
 		const float cx = static_cast<float>((t.x - t.y) * 32 - b.originX);
 		const float cy = static_cast<float>((t.x + t.y + 2) * 16 - 16 - b.originY);
+		diamondMiddles.emplace_back(cx, cy);
 		for (int y = static_cast<int>(cy) - 16; y <= static_cast<int>(cy) + 16; y++)
 			for (int x = static_cast<int>(cx) - 32; x <= static_cast<int>(cx) + 32; x++)
 				if (x >= 0 && y >= 0 && x < w && y < h && std::abs(static_cast<float>(x) + 0.5F - cx) / 32.0F + std::abs(static_cast<float>(y) + 0.5F - cy) / 16.0F <= 1.0F)
@@ -6866,65 +6868,79 @@ void BuildTrees(const std::vector<Point> &tiles, int &treeCount)
 		float sx; // iso screen position of its foot
 		float sy;
 	};
-	// The bark above the floor diamonds is the trees' own (trunks and branches); in the diamonds the trunks' feet are
-	// drawn over the ground, in colours the ground uses too. They are grown down from the bark above, row by row,
-	// through the art's pixels in the bark's colours, each run no wider than the one above it.
-	std::array<bool, 256> barkColors {};
-	for (size_t i = 0; i < b.canvas.size(); i++)
-		if (inDiamond[i] == 0 && b.canvas[i] > 0 && !leafy(b.canvas[i]))
-			barkColors[static_cast<uint8_t>(b.canvas[i])] = true;
-	std::array<bool, 256> like {};
-	for (int j = 1; j < 256; j++)
-		for (int i = 1; i < 256 && !like[j]; i++) {
-			if (!barkColors[i])
-				continue;
-			const SDL_Color p = logical_palette[i];
-			const SDL_Color q = logical_palette[j];
-			like[j] = std::abs(p.r - q.r) + std::abs(p.g - q.g) + std::abs(p.b - q.b) <= 6;
-		}
+	// The bark above the floor diamonds is the trees' own (trunks and branches). In the diamonds each trunk goes on
+	// down over the pale ground under its tree (earth and fallen leaves) to its foot, near the diamond's middle. It is
+	// followed there row by row by its dark core, the bark's darkest shades, which that ground has next to none of,
+	// and goes on as wide as it is above (moved a pixel to keep its core in it, where it leans): its lit side there is
+	// as bright as the ground, and the art draws it thin and broken, so where the ground shows through, it is the bark
+	// above.
+	auto luminance = [](int16_t pixel) {
+		const SDL_Color c = logical_palette[pixel];
+		return (c.r * 3 + c.g * 6 + c.b) / 10;
+	};
+	constexpr int DarkBark = 10;   // the trunk's core, in the diamonds
+	constexpr int ShadedBark = 22; // the trunk's lit side there (and some of the ground)
+	constexpr int WidestTrunk = 12;
+	struct TrunkRow {
+		int from;
+		int to;
+		int shift; // from the trunk above
+	};
 	std::vector<uint8_t> trunkPixel(b.canvas.size(), 0);
 	for (size_t i = 0; i < b.canvas.size(); i++)
 		trunkPixel[i] = inDiamond[i] == 0 && b.canvas[i] > 0 && !leafy(b.canvas[i]) ? 1 : 0;
-	std::vector<int> runWidth(b.canvas.size(), 0); // the width of the run each traced pixel is in
+	// Bark is near black or blue; the shadows on the ground (a trunk's own among them) are mostly green or yellow-grey.
+	auto bark = [&](int x, int y, int brightest) {
+		const int16_t p = raw.canvas[at(x, y)];
+		return p > 0 && !leafy(p) && luminance(p) <= brightest && logical_palette[p].b >= logical_palette[p].g;
+	};
 	for (int y = 1; y < h; y++) {
-		int x = 0;
-		while (x < w) {
-			auto candidate = [&](int cx) {
-				if (inDiamond[at(cx, y)] == 0 || trunkPixel[at(cx, y)] != 0)
-					return false;
-				const int16_t p = raw.canvas[at(cx, y)];
-				if (p <= 0 || !like[static_cast<uint8_t>(p)])
-					return false;
-				for (int dx = -1; dx <= 1; dx++)
-					if (cx + dx >= 0 && cx + dx < w && trunkPixel[at(cx + dx, y - 1)] != 0)
-						return true;
-				return false;
-			};
-			if (!candidate(x)) {
-				x++;
+		std::vector<TrunkRow> runs; // this row's trunk, from each run of trunk in the row above
+		for (int x = 0; x < w; x++) {
+			if (trunkPixel[at(x, y - 1)] == 0)
 				continue;
+			int aboveFrom = x;
+			while (x + 1 < w && trunkPixel[at(x + 1, y - 1)] != 0)
+				x++;
+			int aboveTo = x;
+			// Its dark core here, in a diamond, a pixel either side of it at most.
+			int from = w;
+			int to = -1;
+			for (int cx = std::max(0, aboveFrom - 1); cx <= std::min(w - 1, aboveTo + 1); cx++)
+				if (inDiamond[at(cx, y)] != 0 && bark(cx, y, DarkBark)) {
+					from = std::min(from, cx);
+					to = std::max(to, cx);
+				}
+			if (to < 0)
+				continue; // the trunk ends above (or is not over a diamond)
+			if (aboveTo - aboveFrom + 1 > WidestTrunk) {
+				// A trunk with a branch beside it above: the trunk round its core.
+				aboveFrom = std::max(0, (from + to) / 2 - WidestTrunk / 2);
+				aboveTo = std::min(w - 1, aboveFrom + WidestTrunk - 1);
 			}
-			int end = x;
-			while (end + 1 < w && candidate(end + 1))
-				end++;
-			// The run above it: its bark's width there.
-			int above = 0;
-			for (int ax = std::max(0, x - 1); ax <= std::min(w - 1, end + 1); ax++)
-				if (trunkPixel[at(ax, y - 1)] != 0)
-					above++;
-			int from = x;
-			int to = end;
-			const int widest = std::min(above, 9);
-			if (to - from + 1 > widest) {
-				const int middle = (from + to) / 2;
-				from = middle - widest / 2;
-				to = from + widest - 1;
-			}
-			for (int cx = from; cx <= to; cx++) {
+			const int shift = from < aboveFrom && to <= aboveTo ? -1 : (to > aboveTo && from >= aboveFrom ? 1 : 0);
+			runs.push_back({ std::max(0, aboveFrom + shift), std::min(w - 1, aboveTo + shift), shift });
+		}
+		for (const TrunkRow &run : runs) {
+			for (int cx = run.from; cx <= run.to; cx++) {
+				if (inDiamond[at(cx, y)] == 0 || trunkPixel[at(cx, y)] != 0)
+					continue;
+				int16_t pixel = raw.canvas[at(cx, y)];
+				if (!bark(cx, y, ShadedBark)) {
+					// The ground showing through: the bark above (where the trunk was, before it leant a pixel).
+					const int ax = std::clamp(cx - run.shift, 0, w - 1);
+					pixel = trunkPixel[at(ax, y - 1)] != 0 ? b.canvas[at(ax, y - 1)] : -1;
+					for (int d = 1; pixel <= 0 && d <= WidestTrunk; d++) {
+						for (const int nx : { ax - d, ax + d })
+							if (pixel <= 0 && nx >= 0 && nx < w && trunkPixel[at(nx, y - 1)] != 0)
+								pixel = b.canvas[at(nx, y - 1)];
+					}
+				}
+				if (pixel <= 0)
+					continue;
 				trunkPixel[at(cx, y)] = 1;
-				b.canvas[at(cx, y)] = raw.canvas[at(cx, y)];
+				b.canvas[at(cx, y)] = pixel;
 			}
-			x = end + 1;
 		}
 	}
 	// In the floor diamonds only the trunks and the leaves of the canopy stay: not the shadows on the ground, nor the
@@ -6979,6 +6995,85 @@ void BuildTrees(const std::vector<Point> &tiles, int &treeCount)
 						}
 				if (!grounded)
 					continue; // a branch, cut off from its trunk by the leaves in front of it
+				// A trunk the art draws lit where it goes into the ground (its dark core gone a few rows) is lost
+				// there: it goes on down to the middle of the diamond under it, its bark the widest of its lowest rows
+				// (the runs of bark over its foot, not branches beside it) drawn on down, with those just as wide in
+				// turn, leaning a little as they lean where it is one stem (not two), and darker as it nears the
+				// ground (a lit tip drawn on would be a pale pipe).
+				{
+					// The runs of bark in a row, those that reach to within a few pixels of the foot's.
+					auto runsAt = [&](int row, int bandFrom, int bandTo) {
+						std::vector<int> xs;
+						for (const auto &[x, y] : pixels)
+							if (y == row)
+								xs.push_back(x);
+						std::sort(xs.begin(), xs.end());
+						std::vector<std::pair<int, int>> runs;
+						for (size_t i = 0; i < xs.size(); i++) {
+							if (runs.empty() || xs[i] > runs.back().second + 1)
+								runs.emplace_back(xs[i], xs[i]);
+							else
+								runs.back().second = xs[i];
+						}
+						std::erase_if(runs, [&](const std::pair<int, int> &r) { return r.second < bandFrom || r.first > bandTo; });
+						return runs;
+					};
+					auto width = [](const std::vector<std::pair<int, int>> &runs) {
+						int n = 0;
+						for (const auto &[from, to] : runs)
+							n += to - from + 1;
+						return n;
+					};
+					constexpr int Band = 3;
+					const std::vector<std::pair<int, int>> foot = runsAt(footY, 0, w);
+					const int footFrom = foot.front().first;
+					const int footTo = foot.back().second;
+					float middleY = -1;
+					const float px = static_cast<float>(footFrom + footTo) / 2.0F + 0.5F;
+					for (int dy = 0; dy <= 8 && middleY < 0; dy++)
+						for (const auto &[cx, cy] : diamondMiddles)
+							if (std::abs(px - cx) / 32.0F + std::abs(static_cast<float>(footY + dy) + 0.5F - cy) / 16.0F <= 1.0F)
+								middleY = cy;
+					const int target = static_cast<int>(middleY) - 1;
+					if (middleY >= 0 && footY < target - 3 && target < h) {
+						constexpr int Lowest = 6;        // the rows looked at
+						constexpr float Lean = 0.5F;     // pixels a row at most
+						constexpr float GroundShade = 0.6F; // how much darker it is at the ground
+						std::vector<std::vector<std::pair<int, int>>> rows;
+						int widest = 0;
+						for (int row = footY; row > footY - Lowest && row >= 0; row--) {
+							rows.push_back(runsAt(row, footFrom - Band, footTo + Band));
+							widest = std::max(widest, width(rows.back()));
+						}
+						std::vector<size_t> sources; // its widest lowest rows: those the same as the lowest of them
+						for (size_t i = 0; i < rows.size(); i++)
+							if (width(rows[i]) == widest && (sources.empty() || rows[i] == rows[sources.front()]))
+								sources.push_back(i);
+						const std::vector<std::pair<int, int>> &top = rows.back();
+						const bool oneStem = foot.size() == 1 && top.size() == 1 && rows.size() == static_cast<size_t>(Lowest);
+						const float lean = oneStem ? std::clamp(static_cast<float>(footFrom + footTo - top[0].first - top[0].second) / (2.0F * (Lowest - 1)), -Lean, Lean)
+						                           : 0.0F;
+						const std::vector<std::pair<int, int>> &runs = rows[sources.front()];
+						for (int y = footY + 1; y <= target; y++) {
+							const int from = footY - static_cast<int>(sources[static_cast<size_t>(y - footY - 1) % sources.size()]);
+							// That row under the foot's middle, leaning on from there.
+							const int offset = (footFrom + footTo - runs.front().first - runs.back().second) / 2 + static_cast<int>(std::lround(lean * static_cast<float>(y - footY)));
+							const float shade = 1.0F - GroundShade * static_cast<float>(y - footY) / static_cast<float>(target - footY);
+							for (const auto &[runFrom, runTo] : runs)
+								for (int x = runFrom; x <= runTo; x++) {
+									const int nx = x + offset;
+									if (nx < 0 || nx >= w || trunkPixel[at(nx, y)] != 0)
+										continue;
+									const SDL_Color c = logical_palette[b.canvas[at(x, from)]];
+									b.canvas[at(nx, y)] = NearestColor(c.r * shade, c.g * shade, c.b * shade);
+									trunkPixel[at(nx, y)] = 1;
+									seen[at(nx, y)] = 1;
+									pixels.emplace_back(nx, y);
+								}
+						}
+						footY = target;
+					}
+				}
 				int sum = 0;
 				int n = 0;
 				for (const auto &[x, y] : pixels)
@@ -7076,7 +7171,9 @@ void BuildTrees(const std::vector<Point> &tiles, int &treeCount)
 	}
 #endif
 	// Each art pixel to its trunk: the nearest across the screen (a canopy spreads sideways more than it hangs), of
-	// the trunks whose foot is below it.
+	// the trunks whose foot is below it. Nothing below its tree's foot stays: what is there is the ground's (a twig,
+	// fallen leaves, the edge of a diamond's art) or leaves the iso view shows lower than the foot because they hang
+	// out towards it, which on the tree's upright card would be sunk into the ground, poking out of it.
 	std::vector<std::vector<std::pair<int, int>>> owned(trunks.size());
 	for (int y = 0; y < b.canvasHeight; y++) {
 		for (int x = 0; x < b.canvasWidth; x++) {
@@ -7097,6 +7194,8 @@ void BuildTrees(const std::vector<Point> &tiles, int &treeCount)
 					}
 				}
 			}
+			if (sy > trunks[best].sy + 1.0F)
+				continue;
 			owned[best].emplace_back(x, y);
 		}
 	}
@@ -7965,7 +8064,7 @@ struct PaintedTree {
 	Vec2 like;
 };
 constexpr std::array<PaintedTree, 1> PaintedTrees { {
-	{ "adria", { 77.15F, 21.45F }, { 80.0F, 5.0F } },
+	{ "adria", { 77.15F, 21.45F }, { 79.6F, 4.35F } },
 } };
 
 void AddPaintedTrees()
@@ -7974,10 +8073,11 @@ void AddPaintedTrees()
 		const bool placed = std::any_of(Buildings.begin(), Buildings.end(), [&](const Building &b) {
 			return b.landmark >= 0 && std::string_view(Landmarks[b.landmark].name) == painted.landmark;
 		});
-		const auto like = std::find_if(TreeSprites.begin(), TreeSprites.end(), [&](const TreeSprite &tree) {
-			return std::hypot(tree.foot.x - painted.like.x, tree.foot.y - painted.like.y) < 0.5F;
+		// The nearest tree to where it is expected (within a tile and a half: its foot moves as its cutting changes).
+		const auto like = std::min_element(TreeSprites.begin(), TreeSprites.end(), [&](const TreeSprite &a, const TreeSprite &c) {
+			return std::hypot(a.foot.x - painted.like.x, a.foot.y - painted.like.y) < std::hypot(c.foot.x - painted.like.x, c.foot.y - painted.like.y);
 		});
-		if (!placed || like == TreeSprites.end())
+		if (!placed || like == TreeSprites.end() || std::hypot(like->foot.x - painted.like.x, like->foot.y - painted.like.y) > 1.5F)
 			continue;
 		TreeSprite tree = *like;
 		tree.foot = painted.foot;
