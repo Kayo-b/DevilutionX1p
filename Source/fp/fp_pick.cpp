@@ -88,7 +88,8 @@ Pick PickAt(Point screenPosition, bool ignoreMonsters)
 	const RayHit wall = CastRayThroughHoles(proj.pos, ray, slope);
 	const float wallDepth = wall.hit ? wall.distance : std::numeric_limits<float>::infinity();
 	const float floorDepth = slope < 0 ? EyeHeight / -slope : std::numeric_limits<float>::infinity();
-	const float ceilingDepth = slope > 0 ? (WallHeight() * VerticalScale() - EyeHeight) / slope : std::numeric_limits<float>::infinity();
+	const bool ceiling = !IsCleanDungeon() || CleanHasCeiling(); // the caves and hell are open above
+	const float ceilingDepth = slope > 0 && ceiling ? (WallHeight() * VerticalScale() - EyeHeight) / slope : std::numeric_limits<float>::infinity();
 	const float surfaceDepth = std::min({ wallDepth, floorDepth, ceilingDepth, MaxPickDistance });
 
 	Pick pick {};

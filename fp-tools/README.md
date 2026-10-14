@@ -20,6 +20,7 @@ Repository: `/home/kxyx/projects/DevilutionX1p`, the fork `Kayo-b/DevilutionX1p`
 | **`fp-buildings`** | **the working branch**: first person plus everything 3D (houses, church, dungeon structures, arcades, doors...) |
 | `fp-dungeon-overhaul` | the clean dungeon for the cathedral, catacombs and crypt (fp_dungeon.cpp), on top of `fp-wall-depth` |
 | `fp-cave-overhaul` | the caves (levels 9-12) in the clean dungeon too, on top of `fp-dungeon-overhaul` (hell, 13-16: `fp-hell-overhaul`) |
+| `fp-hell-overhaul` | hell (levels 13-16) rebuilt from its own art (fp_hell.cpp, 5.1.2), from `master` |
 | `fp` | the earlier first-person base (`fp-buildings` is built on it, not merged back) |
 | `fp-voxel` | paused experiment (voxel monsters) |
 | `master` | tracks upstream DevilutionX |
@@ -31,6 +32,7 @@ Repository: `/home/kxyx/projects/DevilutionX1p`, the fork `Kayo-b/DevilutionX1p`
 | `fp-tools/run.sh` | build changed files and launch |
 | `fp-tools/selftest/` | headless test scripts; output goes to `fp-tools/selftest/out/` (git-ignored) |
 | `fp-tools/export/` | Python scripts that turn the 3D models into `assets/fp/*.bin` |
+| `fp-tools/d1cli/` | a headless driver for `d1-graphics-tool`'s format code: exports a level's tileset as PNGs (5.1.2) |
 
 Outside the repo (not committed: big source files):
 
@@ -40,14 +42,18 @@ Outside the repo (not committed: big source files):
 | `~/.wine/drive_c/GOG Games/Daggerfall/arena2/` | Daggerfall's first-person weapon art (`WEAPON*.CIF`, `ART_PAL.COL`), read at run time from your own copy and **never committed or shipped** (override with `FP_DAGGERFALL_DIR`; empty: no weapon drawn) |
 | `~/projects/diablo-hellfire-fp/*.7z, *.rar` | fan-made 3D models (plaza, church, dungeon pieces, Adria's shack, hell stairs) from Nexus Mods 67266; **free, non-commercial use only**: see `assets/fp/CREDITS.md` |
 | `~/projects/diablo-hellfire-fp/research/{tristram_plaza,church,dungeon_pieces}/` | the extracted models and textures the export scripts read (override with `FP_PLAZA_DIR`, `FP_CHURCH_DIR`, `FP_DUNGEON_PIECES_DIR`; `export_dungeon_textures.py` extracts the kit textures it misses from `FP_DUNGEON_PIECES_ARCHIVE`, the `.7z`, with `7z`) |
+| `~/projects/diablo-hellfire-fp/research/hell_stairs/` | "Diablo's Hell stairs" (Nexus 67266) unpacked: `hell_stairs.obj`, `bone_bump.jpg` (`FP_HELL_STAIRS_DIR`; extracted from the `.rar` beside it if missing) |
+| `~/projects/diablo-hellfire-fp/research/hell/` | hell's palettes `l4_1.pal` .. `l4_4.pal`, dumped from the game data (`FP_HELL_PAL` for the sky's exporter) |
+| `~/projects/d1-graphics-tool/` | the Diablo 1 Graphics Tool (Qt), whose format code `fp-tools/d1cli` builds against (`D1GT_DIR`) |
 | `~/projects/diablo-hellfire-fp/` | the old working copy (`devilutionx/`, `devilutionx-buildings/`), kept as a backup; `PLAN.md` holds the original design decisions |
 
 All first-person code lives in `Source/fp/` of each checkout:
 
 | File | Responsibility |
 |---|---|
-| `fp_view.cpp` | the frame: floor/ceiling pass, wall raycaster for town, caves and hell (art faces, recesses, doors), sprite pass, phase timers; outlines (as the iso view: the item under the crosshair in its quality's colour; enemies in melee range, next to the player, in red: `OutlineColor`) and the items' name labels (the game's item highlighting key and option, `AddItemToLabelQueueAt`) |
-| `fp_dungeon.cpp/.hpp` | **the clean dungeon** (cathedral, catacombs, caves, crypt): tile kinds, texture sets, its floor/ceiling and wall passes, the geometry of its pillars, arches and stairwells, the caves' crest, stalagmites, fences, gates and shoring |
+| `fp_view.cpp` | the frame: floor/ceiling pass, wall raycaster for town and the levels drawn from their art (Hellfire's nest: art faces, recesses, doors), sprite pass, phase timers; outlines (as the iso view: the item under the crosshair in its quality's colour; enemies in melee range, next to the player, in red: `OutlineColor`) and the items' name labels (the game's item highlighting key and option, `AddItemToLabelQueueAt`) |
+| `fp_dungeon.cpp/.hpp` | **the clean dungeon** (cathedral, catacombs, caves, crypt, and hell's kinds and texture set): tile kinds, texture sets, its floor/ceiling and wall passes, the geometry of its pillars, arches and stairwells, the caves' crest, stalagmites, fences, gates and shoring |
+| `fp_hell.cpp/.hpp` | **hell** (5.1.2): its tiles by the map's tiles, the textures cut out of its art (flesh, blood, floors, column crowns), its floor pass and low-wall pass, its bone geometry (beams, spine posts, columns, horns) |
 | `fp_raycast.cpp/.hpp` | camera projection, `CastRay`, what counts as a wall (`IsOpaque`), `WallHeight()`, `VerticalScale()` |
 | `fp_textures.cpp/.hpp` | turns each tile piece's iso art into wall-face, floor and column textures; detects pillars, lava and recesses; supplies the filler wall pair (the clean dungeon reads it only to classify tiles) |
 | `fp_doors.cpp/.hpp` | doorways (the door tile stays a wall with an opening through it: a clean arched one, or read off the caves' art) and the door leaf's swing |
@@ -66,8 +72,9 @@ Assets the game loads come from `assets/fp/` and are listed in `CMake/Assets.cma
 | `houses.bin` | voxel cottages | `fp-tools/export/export_houses.py` |
 | `housemesh.bin` | cottage triangle meshes | `fp-tools/export/export_meshes.py` |
 | `landmarks.bin` | every town building: the plaza's houses, smithy, tavern, fountain, and the church | `fp-tools/export/export_landmarks.py` |
-| `dungeonkit.bin` | dungeon kit pieces (the entrance stairs, the sarcophagus, the caves' door wood) | `fp-tools/export/export_kit.py` |
-| `dungeontex.bin` | the clean dungeon's texture sets (cathedral, catacombs, caves, crypt), made from the dungeon kit's textures and the Tiny Texture Pack's | `fp-tools/export/export_dungeon_textures.py` |
+| `dungeonkit.bin` | dungeon kit pieces (the entrance stairs, the sarcophagus, the caves' door wood, hell's rib-cage stairs) | `fp-tools/export/export_kit.py` |
+| `dungeontex.bin` | the clean dungeon's texture sets (cathedral, catacombs, caves, crypt, hell's bone), made from the dungeon kit's textures and the Tiny Texture Pack's | `fp-tools/export/export_dungeon_textures.py` |
+| `hellsky.bin` | hell's dark red haze (a cube map, as `sky.bin`) | `fp-tools/export/export_hell_sky.py` |
 
 ---
 
@@ -138,6 +145,7 @@ Open the console with the backtick key, then run `dev = require('devilutionx.dev
 | `dev.fp.cleanmap(x0,y0,x1,y1)` | ASCII map of the clean dungeon's tile kinds: `#` wall, `l` low wall, `c` wall with a corner cut (the caves'), `o` pillar (the caves': a stalagmite), `t` torch stand, `D` doorway (the caves': a gate), `S` stairwell, `~` lava or water, `f` fence, `^` arch over the tile |
 | `dev.level.warp.quest(n)` | go to a quest level (4: the Poisoned Water Supply, on the caves' tiles) |
 | `dev.fp.dumpfile(gamePath, outPath)` | copy a file out of the game data (a palette: `levels/l1data/l1_1.pal`), for offline tools |
+| `dev.fp.dumpgrid(path)` | write the level's grid, a line per tile: `x y piece solid megatile special object` (the map tile, `dungeon`, is what hell is classified by) |
 | `dev.quests.activateAll()` | activate every quest: a level and seed then always give the same layout (a new game picks its quests at random, and they change the levels' set pieces) |
 | `dev.fp.walkto(x,y)`, `dev.fp.where()` | test click-walks; print the camera position |
 | `dev.fp.pick()` | what the crosshair aims at (a monster, a door, an object, an item), as a click there takes it |
@@ -227,7 +235,9 @@ Known test spots:
 | Level 9, seed 900, all quests | caves: stairs up (37,60), seen from (37,61) yaw 270; lava and stalagmites from (53,30); a gate in a fence (45,30): from (46,30) yaw 180; shoring (62,66) yaw 270 |
 | Level 10, seed 1000, all quests | caves on a green palette; lava pools from (62,27) yaw 150 |
 | Quest level 4 (`dev.level.warp.quest(4)`) | the Poisoned Water Supply: the caves' tiles, water, its own palette |
-| Level 13 | hell: still drawn from its art |
+| Level 13, seed 1300, all quests | hell: start by the stairs up's rib cage (53,64); troughs of blood (50,58) yaw 0 and 270; a room of flesh walls (62,64); stairs down (trigger 32,41) seen from (34,41) yaw 180; spikes (42,24) |
+| Level 16, seed 1600, all quests | Diablo's lair: the ring of spine columns from (36,70) yaw 200-340; the bone pentagram and Diablo (73,77) yaw 290 |
+| Level 15, seed 1500, all quests | the red pentagram (36,28) yaw 270 |
 
 ---
 
@@ -235,7 +245,7 @@ Known test spots:
 
 ### 5.1 The clean dungeon: the cathedral, the catacombs and the crypt
 `fp_dungeon.cpp` draws levels 1-12 and Hellfire's 21-24 without their iso art: plain stone with new textures, simple
-geometry. The art is only read to tell what a tile is. (The caves differ in places: 5.1.1.)
+geometry. The art is only read to tell what a tile is. (The caves differ in places: 5.1.1; hell has a kit of its own: 5.1.2.)
 
 - **Tile kinds** (`ClassifyTiles`, per level and whenever the map changes: doors, levers; `dev.fp.cleanmap` shows them):
   a solid tile is a `Wall` (a block up to the ceiling, or a low wall as tall as its art), a solid tile with no solid
@@ -380,16 +390,93 @@ The caves (levels 9-12, and the Poisoned Water Supply) are the clean dungeon's f
   frame (the palette fix: 5.7); drawn clean, the caves take 17-26 ms (1280 x 720, headless), about 26 ms looking down
   at a pool and 32 ms right in front of a stairwell (the wall and its frame fill the view).
 
-### 5.1.2 Art walls: hell (the caves before `fp-cave-overhaul`)
+### 5.1.2 Hell (levels 13-16)
+`fp_hell.cpp` draws hell as part of the clean dungeon (`IsCleanDungeon` takes it in; `IsHell`). Its art is sculpture,
+not masonry, so its kit is built from that art and drawn low, under the eye, open to a dark red sky.
+
+- **Tiles** (`ClassifyHellTiles`, called by `ClassifyTiles`): by the tile of the level's map each tile belongs to
+  (`dungeon`, `MegatileAt`; ids from 1 as in `l4.til`, `ClassOf`), not by its art: 18-30, 116-128 and 137 are troughs
+  of blood (30 also the lake round the rooms and past the map's edge), 31-46 and 129-136 the stairs' rib cages,
+  95-97 bone spikes, 47-48 floor with a wall's shadow painted on. A solid tile of any other is a flesh wall, or a
+  spine column if it is lone. Walls are `CleanKind::Wall` at `HellWallTop` (0.92; the art's are about 1.8 tiles of
+  art, which stretched like the other levels would hide the blood); blood on top of the troughs, the lake, and the
+  flesh walls along them (`IsHellBlood`). Spikes and rib cages are `CleanKind::Prop`. `dev.fp.cleanmap` shows `~`
+  for walls with blood on top, `p` for props.
+- **What is cut out of the art** when a level loads (nothing of it is shipped): the flesh of the walls' sides
+  (`CutFlesh`: two panels, under the beams of the left faces of map tiles 1 and 63's top pieces, each with braided
+  bone veins, 20 x 35 texels; laid as the first, it mirrored, the second, it mirrored, cross-faded where they meet,
+  they repeat every five tiles without a seam; slot `wall` of the `hell` set, in the level's palette); the blood (`CutBlood`: the top of the lake's map tile put together from its four pieces,
+  `ComposeMegatile`, unrotated to 64 x 64 over 2 x 2 tiles; kept in the art's colours 1-31, which hell cycles through
+  its light tables, so it shimmers as in the original, and `BloodGlow` light levels brighter); the floors (each
+  tile its own floor art, the painted shadows and the floor under rib cages and columns the plain floor's,
+  `FloorPieces`); the spikes' billboards without their ground (`HellPropArt`); and the columns' crowns (`CrownFor`:
+  the crossed bones and horns above the narrow neck of the column's spine, in its map tile's art, drawn as a
+  billboard on the column's mesh spine, `CollectHellCrowns`, at `ColumnArtScale`); the wall posts' crowns
+  (`CutPostCrown`: the lyre of horns and the knob where the beams cross on map tile 9's corner post, without the art's
+  beams, drawn on a card facing out of the wall, `HellSprite`, `MeshSprite`); and the spikes' horns (`TraceSpikes`:
+  each horn followed up its art row by row, its middle and width, as a tapering tube).
+- **Rows of hell's art:** the game draws only 12 of hell's 16 micros a piece (`MicroTileLen`), so its columns are
+  192 rows, not the files' 256: count fixed rows of the art up from its bottom (`PostCrownTop` and the rest), never
+  from the top as the Graphics Tool's PNGs show them.
+- **Each hell level has one of four palettes** (`l4_1` .. `l4_4`: the bone tan, pink, grey-blue or olive). What is
+  cut from the art follows it; the bone texture from `dungeontex.bin` is scaled from `l4_1`'s bone to the level's
+  (`HellTintTexture`).
+- **Floor** (`DrawHellFloor`): the art per tile, lit smoothly like the clean dungeon (the game's light tables, so
+  the colours stay the art's), drawn from its upscaled copy up close; nothing above the horizon (the sky's). It is
+  drawn after the walls, only where they leave it to be seen.
+- **Walls** (`DrawHellWalls`): every wall is lower than the eye, so each column is walked through the grid once,
+  front to back: a wall entered from the floor draws its side (flesh, `FaceYShade` darker along y), then its top up
+  to where the ray leaves it (blood, or flesh a light level darker), each only above what is drawn already. The
+  lake past the rooms is the same blood, in the dark.
+- **Bone** (`BuildHellGeometry`, quads handed to the mesh pass as the clean dungeon's): beams (round, `BeamRadius`)
+  along every run of wall edge facing anything but wall, running on past a wall's end like crossed logs; spine
+  posts (vertebrae under the art's crown, on a card facing out of the faces they stand on, a corner's between its
+  two) at both ends of each run and about every `PostSpacing` along it, each corner once; lone columns (a taller
+  spine on a spread foot, crowned by the art's crown); the spikes' horns, standing across the view as the art draws
+  them, leaning towards it and away by turns. `addTube` makes every round part (a ring of quads along a path, its
+  frame carried along it). A card is made only of the rectangles of its cut-out that have art (`HellSprite::rects`,
+  bands six texels wide), so its clear texels cost nothing; up close its outline is smoothed (bilinear coverage).
+- **Stairs** (`BuildHellStairs`, fp_buildings.cpp): the stairs to hell model (`hell_stairs` in `dungeonkit.bin`: the
+  rib cage, the rims round its pit, the spine going down into it, the ribs under the floor) over each stairs down,
+  the floor cut open over its pit; the cage and rims alone (`hell_ribs`) over the stairs up and to town. Laid on the
+  middle of the flight's tiles (all the stairs tiles touching those by the trigger), its entrance towards the
+  trigger, `Scale` 0.6 tiles a model unit, in the bone of the set. The pit under a stairs down has flesh sides
+  going down in bands, darker the deeper, and a floor at the bottom, all but black.
+- **Sky:** `hellsky.bin` (fp_sky.cpp: `FP_HELL_SKY`), remapped to the level's palette without the cycled blood
+  colours. **Picking** looks over the low walls (`IsHoleAt`), and there is no ceiling to stop it.
+- **Distance:** the bone is drawn only within `HellMeshReach` (26 tiles; beyond, it stands in the dark) and nearest
+  first (`DrawStructures` sorts every level's structures so: the depth test then turns hidden pixels away first).
+- **Performance** (Ryzen 5 5600H, 1280 x 720): 15-25 ms a frame in hell (the cathedral about 17, the catacombs
+  14): floor 2-4, walls 2-5, meshes 6-14 (a post's crown or the rib cage right in front of the camera cover much of
+  the screen), sprites 1-9 (Diablo's lair is crowded). What paid: walls before the floor; posts' crowns as cards made
+  of their art's rectangles (not horn meshes); `FloorToInt` instead of `std::floor` in per-pixel loops (the build
+  targets plain x86-64, where `std::floor` is a call into libm; this sped up the cathedral too); small clean
+  triangles lit once a frame at their middle (`SmallForLight`, `CleanTriangleLight`); big structures drawn front to
+  back within themselves.
+
+**Getting at the art.** `fp-tools/d1cli` builds the Diablo 1 Graphics Tool's format code (`~/projects/d1-graphics-tool`,
+Qt 6) into a command line exporter: every subtile, map tile (2.5D) and CEL frame of a level tileset as PNG, with
+`subtiles.csv` (each subtile's SOL flags and frames) and `tiles.csv` (each map tile's automap type and subtiles):
+```bash
+mise exec cmake@4.4.3 ninja@1.13.2 -- cmake -S fp-tools/d1cli -B /tmp/d1cli -G Ninja && mise exec cmake@4.4.3 ninja@1.13.2 -- ninja -C /tmp/d1cli
+fp-tools/selftest/headless.sh "lua:dev=require('devilutionx.dev');lua:dev.fp.dumpfile('levels\\l4data\\l4.cel','/tmp/l4/l4.cel');..."  # also .min .til .sol .amp _1.pal
+QT_QPA_PLATFORM=offscreen /tmp/d1cli/d1cli /tmp/l4/l4.cel /tmp/l4/l4_1.pal /tmp/l4x
+```
+Subtile n of the tool is piece n - 1 of the game (`dPiece`, `GetPieceTextures`); a map tile's pieces are its top,
+right, left and bottom (`DRLG_LPass3`). The cuts above were found that way: compare the PNGs, then cut the same
+pieces at run time from `GetPieceTextures(piece).column`.
+
+### 5.1.3 Art walls: Hellfire's nest (levels 17-20)
+The one tileset still drawn from its art (the caves and hell were, before `fp-cave-overhaul` and `fp-hell-overhaul`).
+
 - Every solid tile is a cube. Each face uses its tile's own iso art, unsheared into a texture (`ExtractFace` in
   `fp_textures.cpp`).
 - Faces the iso camera never drew use the **filler pair**: two neighbouring faces from the level's most common
-  straight wall, alternated so their arches stay whole (`GetFallbackFace(parity)`). Hell has no plain wall, so it
-  uses each tile's own sparse art with the gaps left open.
+  straight wall, alternated so their arches stay whole (`GetFallbackFace(parity)`).
 - **Wall foot and cap:** a Diablo wall stands on the middle of its tile, half a tile in front of the tile's edge: in iso its
   face reaches 16 rows below the edge line (`FaceBaseRows`), where the plinths and column bases are, and the top of its
-  thickness shows as a lit band above it (the cap; `WallCapRows` measures it on the plain wall pair: none in caves and
-  hell; the cathedral's 16 rows and the catacombs' 21 still set those levels' wall height). Faces are read down to that foot and drawn without the cap,
+  thickness shows as a lit band above it (the cap; `WallCapRows` measures it on the plain wall pair: none in the
+  caves; the cathedral's 16 rows and the catacombs' 21 still set those levels' wall height). Faces are read down to that foot and drawn without the cap,
   at the art's own proportions (`WallArtScale` is 1). The far end of a face's foot lies outside the piece's diamond and
   is drawn by the next tile along the wall: each piece keeps that part of the previous tile's face (`spillX`/`spillY`,
   `cutX`/`cutY`), and the wall pass takes it from the neighbour. `WallArtRow`/`WallArtHeight` map a height to a face row;
@@ -407,7 +494,7 @@ The caves (levels 9-12, and the Poisoned Water Supply) are the clean dungeon's f
 - **Heights:** `VerticalScale()` (1.5 in the dungeon) stretches walls, ceiling, structures and tile-art sprites. Art
   heights stay in art units (`SpritePixelsPerTileY` = 39.2 px per unit), and the stretch is applied only when drawing.
 - Lava and water count as solid, but they are drawn as floor (`isFlatSolid`). The ceiling is the plain ground
-  texture. Hell has no ceiling.
+  texture.
 
 ### 5.2 Sprites (monsters, NPCs, objects)
 - Sizes are `MonsterScale` and `TownerScale` in `fp_world.cpp`.
@@ -613,8 +700,8 @@ All in `fp_buildings.cpp`, built per level in `BuildStructures`:
 | Structure | How it's made | Code |
 |---|---|---|
 | **Clean pillars, arches, stairwells** (cathedral, catacombs, crypt) | the quads of `BuildCleanGeometry` (fp_dungeon.cpp, 5.1), gathered per 4 x 4 tiles, textured with the set's surfaces by their texture coordinates | `BuildCleanStructures`, `MeshClean` shader |
-| **Torch stands** (the cathedral's) and **free-standing columns** (caves, hell) | shape read off the art row by row (the widest pixels give the size at each height; square or round) and turned into a lathe mesh with the art projected onto it, clamped at the ceiling. In the clean dungeon only the torch stands are built this way, and their base is a broad, flat square pyramid of the set's `ivory` instead of what the art reads as (the art's pale pyramid, read as round with the floor around it, came out a wide flared blob): `StandBaseHalf`, `StandBaseHeight`, its texture laid on from above, its sides turned from the art's light (from the left) a light level darker | `ColumnProfile`, `BuildColumn`, `AddCleanPyramid` |
-| **Arcade pillars** (caves, hell) | a shaft from the symmetric lower art; neighbouring pillars joined by **arch walls** wearing the filler wall pair, the painted arch stretched to spring from the capitals and span the gap (`FitArcade`), cut open and an underside added | `BuildArcadePillar`, `AddArcadeWall`, `MeshArcade` shader |
+| **Torch stands** (the cathedral's) and **free-standing columns** (caves) | shape read off the art row by row (the widest pixels give the size at each height; square or round) and turned into a lathe mesh with the art projected onto it, clamped at the ceiling. In the clean dungeon only the torch stands are built this way, and their base is a broad, flat square pyramid of the set's `ivory` instead of what the art reads as (the art's pale pyramid, read as round with the floor around it, came out a wide flared blob): `StandBaseHalf`, `StandBaseHeight`, its texture laid on from above, its sides turned from the art's light (from the left) a light level darker | `ColumnProfile`, `BuildColumn`, `AddCleanPyramid` |
+| **Arcade pillars** (caves) | a shaft from the symmetric lower art; neighbouring pillars joined by **arch walls** wearing the filler wall pair, the painted arch stretched to spring from the capitals and span the gap (`FitArcade`), cut open and an underside added | `BuildArcadePillar`, `AddArcadeWall`, `MeshArcade` shader |
 | **Stairs down (cathedral)** | built by hand from measurements of the art; the floor is cut open over the pit (the exported kit currently has no down-stair mesh); worn with the clean stone by facing (`RetextureClean`) | `BuildStairsDown`, `FloorHoles` |
 | **Stairs up / main entrance (cathedral)** | the kit's `stairs_01` mesh fitted over the stair tiles, worn with the clean stone | `BuildStairsUp` |
 | **Sarcophagus** | the kit's model over a box measured from its first (closed) frame; while it opens, the kit's body plus its lid slid off, turned and tipped over the edge, following the object's animation frame (`sarcophagus_body`, `sarcophagus_lid`, exported in the closed sarcophagus's frame). In the clean dungeon it wears the texture set's `marble` or `marble2` (mottled grey stone), `lid` (a bronze plate, the carving over its top, its edges plain: `LidPlainU`, `LidPlainV`) and `iron` handles, told apart by the triangle classes `export_kit.py` writes (`CLASSES`: 1 the lid, 2 iron; by shape, `sarcophagus_parts`: 3 its sunken panels, 4 its hollow), and shaded by a light from above and where less light gets in (`CleanSarcophagus`): its sunken panels and its hollow darker, a shadow under its rim and towards its foot (`RimShade`, `FootShade`: per-pixel ramps over height, `WorldTriangle::occlusion`); elsewhere its sprite's art. Every part of the model is closed and wound outward, so it is one-sided (`AddKitModelOriented` takes each face's normal from its winding), and it is drawn nearest first: close up, that halves the pixels it shades. `dev.fp.sarcophagus(false)` draws the plain box of its sprite instead | `BuildObjectBox` |
@@ -693,13 +780,15 @@ commit.
   - Forge and anvil props under the smithy porch.
   - Remaining dark slabs on the ground north of the church (possibly original art).
 - **Dungeon:**
-  - Hell in the clean style (`fp-hell-overhaul`; fp_dungeon.cpp is written to take more tilesets: a texture set in the
-    export script, a `SetName`, a `PillarStyleFor`, and the tileset in `IsCleanDungeon`); its stairs have no model either.
+  - Hellfire's nest in the clean style (fp_dungeon.cpp is written to take more tilesets: a texture set in the export
+    script, a `SetName`, a `PillarStyleFor`, and the tileset in `IsCleanDungeon`).
   - The caves: a cut corner's diagonal face and the axis faces beside it do not carry the rock's texture on from one to
     the other.
+  - Hell (5.1.2): the meshes' cost close up (the software rasterizer's per-pixel cost); the spikes' rocky mounds as
+    meshes (their art is on the floor); the stairs up's rib cage could show steps going up.
   - The clean dungeon's floors are one texture: the art's floor markings (blood, the pentagram of Lazarus' lair) are
     gone; wall decorations painted in the art too (banners and torches that are objects stay, as sprites).
-  - The black capital top on plain fallback pillars (caves, hell).
+  - The black capital top on plain fallback pillars (caves).
   - The mirrored "V" pattern very close to cave walls.
   - `dungeonkit.bin` still carries the kit pieces the clean dungeon no longer uses (column, torch stand, wall models,
     vault, surfaces): re-export it with only `stairs_01`, the sarcophagus and the door to shrink it.

@@ -1,7 +1,8 @@
 /**
  * @file fp/fp_sky.hpp
  *
- * The night sky over town in first person: a cube map (assets/fp/sky.bin, made by fp-tools/export/export_sky.py).
+ * The night sky over town in first person: a cube map (assets/fp/sky.bin, made by fp-tools/export/export_sky.py); and
+ * hell's dark red haze, which it has no ceiling to hide (assets/fp/hellsky.bin, fp-tools/export/export_hell_sky.py).
  */
 #pragma once
 
@@ -18,7 +19,7 @@ void SetSkyEnabled(bool enabled);
 
 /**
  * @brief Draws the sky into the pixels at or above the horizon that nothing has been drawn on yet (their depth is
- * still infinite). False if there is no sky to draw (outside town, switched off, or sky.bin missing).
+ * still infinite). False if there is no sky to draw (outside town and hell, switched off, or its file missing).
  */
 bool DrawSky(const Surface &out, const Projection &proj, const std::vector<float> &depthBuffer);
 

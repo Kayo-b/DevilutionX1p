@@ -27,6 +27,7 @@
 #include "fp/fp_buildings.hpp"
 #include "fp/fp_doors.hpp"
 #include "fp/fp_dungeon.hpp"
+#include "fp/fp_hell.hpp"
 #include "cursor.h"
 #include "items.h"
 #include "monster.h"
@@ -1126,18 +1127,27 @@ void DrawFirstPersonView(const Surface &out)
 	};
 	depthBuffer.assign(static_cast<size_t>(proj.width) * proj.height, std::numeric_limits<float>::infinity());
 	const bool clean = IsCleanDungeon();
+	const bool hell = IsHell();
 	if (clean)
 		PrepareCleanDungeon();
-	if (clean)
-		DrawCleanFloorAndCeiling(out, proj, depthBuffer);
-	else
-		DrawFloorAndCeiling(out, proj, depthBuffer);
-	lap(0);
-	if (clean)
-		DrawCleanWalls(out, proj, zBuffer, depthBuffer);
-	else
-		DrawWalls(out, proj, zBuffer, depthBuffer);
-	lap(1);
+	if (hell) {
+		// Hell's walls first: its floor is then only drawn where they leave it to be seen.
+		DrawHellWalls(out, proj, zBuffer, depthBuffer);
+		lap(1);
+		DrawHellFloor(out, proj, depthBuffer);
+		lap(0);
+	} else {
+		if (clean)
+			DrawCleanFloorAndCeiling(out, proj, depthBuffer);
+		else
+			DrawFloorAndCeiling(out, proj, depthBuffer);
+		lap(0);
+		if (clean)
+			DrawCleanWalls(out, proj, zBuffer, depthBuffer);
+		else
+			DrawWalls(out, proj, zBuffer, depthBuffer);
+		lap(1);
+	}
 	if (leveltype == DTYPE_TOWN && BuildingsEnabled())
 		DrawBuildings(out, proj, zBuffer, depthBuffer);
 	else

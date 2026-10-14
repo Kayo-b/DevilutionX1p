@@ -18,6 +18,8 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 # The extracted models live outside the repo; source and terms (free, non-commercial use): assets/fp/CREDITS.md.
 FP_DUNGEON_PIECES_DIR = os.environ.get('FP_DUNGEON_PIECES_DIR', '/home/kxyx/projects/diablo-hellfire-fp/research/dungeon_pieces')
+# "Diablo's Hell stairs" of the same rebuild (hell_stairs.obj): a rib cage over a pit, a spine going down into it.
+FP_HELL_STAIRS_DIR = os.environ.get('FP_HELL_STAIRS_DIR', '/home/kxyx/projects/diablo-hellfire-fp/research/hell_stairs')
 ASSETS = os.path.join(HERE, '..', '..', 'assets', 'fp')
 TEXTURE_SIZE = 256
 
@@ -48,6 +50,29 @@ TEXTURES = {
 CLASSES = {'capac': 1, 'Metal_rust': 2, 'hinge_bars': 2}
 SUNKEN_PANEL = 3
 HOLLOW = 4
+# Hell's stairs (classes by group): 5 the ribs below the floor, 6 the rims round the pit, 7 the spine going down; the
+# ribs above it 0. The floor plane is left out (the game draws its own floor, open over the pit). `hell_stairs` is the
+# whole of it (the stairs down), `hell_ribs` the cage and the rims alone (the stairs up), in the same frame.
+HELL_CLASSES = {'Fb': 5, 'hell_top': 6, 'hell_bottom': 6, 'stem': 7}
+
+
+def hell_stairs_models():
+    v, uvs, faces = read_obj(os.path.join(FP_HELL_STAIRS_DIR, 'hell_stairs.obj'))
+    def cls(g):
+        return HELL_CLASSES.get(g, HELL_CLASSES.get(g[:2], 0))
+    whole = []
+    ribs = []
+    for a, b, c, m, g in faces:
+        if g == 'floor':
+            continue
+        tri = (v[[a[0], b[0], c[0]]], np.zeros((3, 2)), -1, cls(g))
+        whole.append(tri)
+        if g.startswith('Fang') or g.startswith('hell_'):
+            ribs.append(tri)
+    groups = sorted({g for *_, g in faces if g != 'floor'})
+    return [('hell_stairs', whole, groups, None), ('hell_ribs', ribs, [g for g in groups if g.startswith('Fang') or g.startswith('hell_')], 'hell_stairs')]
+
+
 # Textures that come out too dark in the dim dungeon light (the door is meant to stand out in its arch).
 BRIGHTEN = {'door_diff.tga': 2.4}
 SURFACES = ['dungeon_wall', 'podea_biserica', 'dungeon_wall']  # walls, floors, ceilings
@@ -219,6 +244,7 @@ def main():
             tris = front_to_max_x(tris)
         models.append((name, tris, sorted(groups), frame))
     models.append(('vault', build_vault(faces, v), [], None))
+    models += hell_stairs_models()
     surfaces = [(np.zeros((3, 3)), np.zeros((3, 2)), texture_index(m), 0) for m in SURFACES]
     out = open(os.path.join(ASSETS, 'dungeonkit.bin'), 'wb')
     out.write(struct.pack('<4sI', b'FPL2', len(textures)))

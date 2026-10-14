@@ -539,6 +539,27 @@ std::string DebugCmdFpDumpFile(std::string gamePath, std::string outPath)
 	return StrCat("Dumped ", size, " bytes.");
 }
 
+std::string DebugCmdFpDumpGrid(std::string outPath)
+{
+	// The level's grid for offline tools: one line per tile, x y piece solid megatile special object (object type, -1).
+	FILE *f = std::fopen(outPath.c_str(), "w");
+	if (f == nullptr)
+		return "Could not write.";
+	std::fprintf(f, "x y piece solid megatile special object\n");
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			const int mx = (x - 16) / 2;
+			const int my = (y - 16) / 2;
+			const int mega = x >= 16 && y >= 16 && mx < DMAXX && my < DMAXY ? dungeon[mx][my] : 0;
+			const int id = dObject[x][y];
+			const int object = id > 0 ? static_cast<int>(Objects[id - 1]._otype) : -1;
+			std::fprintf(f, "%d %d %d %d %d %d %d\n", x, y, dPiece[x][y], IsTileSolid({ x, y }) ? 1 : 0, mega, static_cast<int>(dSpecial[x][y]), object);
+		}
+	}
+	std::fclose(f);
+	return StrCat("Dumped the grid to ", outPath);
+}
+
 std::string DebugCmdFpSarcophagus(bool enabled)
 {
 	fp::SetSarcophagusKitEnabled(enabled);
@@ -577,6 +598,7 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "pick", "()", "What the crosshair aims at (a monster, a door, an object, an item).", &DebugCmdFpPick);
 	LuaSetDocFn(table, "modeltextures", "(enabled: boolean)", "Texture town buildings with the 3D models' own textures (default) or their projected iso art.", &DebugCmdFpModelTextures);
 	LuaSetDocFn(table, "dumpfile", "(gamePath: string, outPath: string)", "Copy a file from the game data (a palette, a .dun) to disk.", &DebugCmdFpDumpFile);
+	LuaSetDocFn(table, "dumpgrid", "(path: string)", "Write the level's grid for offline tools: per tile its piece, solid, megatile, special and object type.", &DebugCmdFpDumpGrid);
 	LuaSetDocFn(table, "sarcophagus", "(enabled: boolean)", "Use the dungeon kit's 3D sarcophagus model (default), or a box of its sprite.", &DebugCmdFpSarcophagus);
 	LuaSetDocFn(table, "operate", "(x: number, y: number)", "Operate the object at a tile, as a click on it does (open a sarcophagus, a door...).", &DebugCmdFpOperate);
 	LuaSetDocFn(table, "weapon", "(file: number = nil, record: number = 0, frame: number = 0)", "Show a Daggerfall weapon frame instead of the held one; no file to go back.", &DebugCmdFpWeapon);

@@ -25,6 +25,7 @@
 #include "monster.h"
 #include "fp/fp_buildings.hpp"
 #include "fp/fp_dungeon.hpp"
+#include "fp/fp_hell.hpp"
 #include "fp/fp_textures.hpp"
 #include "utils/clx_decode.hpp"
 #include "objects.h"
@@ -314,6 +315,8 @@ bool IsPropTile(Point tile)
 	if (!InDungeonBounds(tile))
 		return false;
 	const bool town = leveltype == DTYPE_TOWN;
+	if (IsHell())
+		return CleanKindAt(tile) == CleanKind::Prop && !IsStructureTile(tile) && !IsHellModelledProp(tile); // models now: spikes, rib cages
 	const PieceTextures &textures = GetPieceTextures(dPiece[tile.x][tile.y]);
 	if (!textures.hasTallArt || (!town && !textures.isFreeStanding))
 		return false;
@@ -329,8 +332,8 @@ namespace {
 /** @brief Town buildings, trees and rocks: each tile with tall art becomes a billboard of its own iso column. */
 void CollectProps(Vec2 viewerPos, std::vector<Entity> &entities)
 {
-	if (IsCleanDungeon())
-		return; // its pillars and torch stands are meshes, and nothing else is drawn from the tile art
+	if (IsCleanDungeon() && !IsHell())
+		return; // its pillars and torch stands are meshes, and nothing else is drawn from the tile art (but hell's props)
 	const Point center { static_cast<int>(viewerPos.x), static_cast<int>(viewerPos.y) };
 	for (int y = center.y - PropSearchRadius; y <= center.y + PropSearchRadius; y++) {
 		for (int x = center.x - PropSearchRadius; x <= center.x + PropSearchRadius; x++) {
@@ -345,9 +348,11 @@ void CollectProps(Vec2 viewerPos, std::vector<Entity> &entities)
 			entity.pos = TileCenter(tile);
 			entity.width = static_cast<float>(ColumnWidth) / SpritePixelsPerTileX;
 			const int columnRows = static_cast<int>(textures.column.size() / ColumnWidth);
-			entity.height = static_cast<float>(columnRows) / SpritePixelsPerTileY * VerticalScale(); // tile art: stretched like the walls
-			entity.bottom = -FootOffsetPixels / SpritePixelsPerTileY;
-			entity.pixels = &textures.column;
+			// Tile art: stretched like the walls (hell's, as low as its walls).
+		entity.height = static_cast<float>(columnRows) / SpritePixelsPerTileY * (IsHell() ? HellArtScale() : VerticalScale());
+			// Hell's stand on the middle of their floor diamond, half its height above the column's foot.
+		entity.bottom = IsHell() ? -static_cast<float>(FloorTextureSize / 2) / SpritePixelsPerTileY * HellArtScale() : -FootOffsetPixels / SpritePixelsPerTileY;
+			entity.pixels = IsHell() ? &HellPropArt(dPiece[x][y]) : &textures.column;
 			entity.pixelsWidth = ColumnWidth;
 			entity.pixelsHeight = columnRows;
 			entity.lit = true;
@@ -466,6 +471,7 @@ void CollectEntities(Vec2 viewerPos, std::vector<Entity> &entities)
 	CollectMissiles(entities);
 	CollectCorpses(viewerPos, entities);
 	CollectProps(viewerPos, entities);
+	CollectHellCrowns(viewerPos, entities);
 	CollectTreeSprites(viewerPos, entities);
 }
 

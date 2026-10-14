@@ -38,6 +38,9 @@ ARCHIVE = os.environ.get('FP_DUNGEON_PIECES_ARCHIVE', os.path.expanduser('~/proj
 # Screaming Brain Studios' "Tiny Texture Pack 2" (CC0), its 512 x 512 folder: the sarcophagus's stone and the torch
 # stands' bases.
 SBS = os.environ.get('FP_SBS_TEXTURES_DIR', os.path.expanduser('~/Downloads/SBS - Tiny Texture Pack 2 - 512x512/512x512'))
+# "Diablo's Hell stairs" of the same fan rebuild (Nexus Mods 67266): its bone texture, for hell's beams, posts and horns.
+HELL_STAIRS = os.environ.get('FP_HELL_STAIRS_DIR', os.path.expanduser('~/projects/diablo-hellfire-fp/research/hell_stairs'))
+HELL_STAIRS_ARCHIVE = os.environ.get('FP_HELL_STAIRS_ARCHIVE', os.path.expanduser("~/projects/diablo-hellfire-fp/Diablo's Hell stairs-67266-.rar"))
 
 LUMA = np.array([0.30, 0.59, 0.11], dtype=np.float32)
 
@@ -53,6 +56,24 @@ def kit(name):
 
 def load(name):
     return np.asarray(Image.open(kit(name)).convert('RGB'), dtype=np.float32)
+
+
+def hell_stairs(name):
+    """One of the hell stairs' files, extracted from their archive first if it is not unpacked yet."""
+    path = os.path.join(HELL_STAIRS, name)
+    if not os.path.exists(path):
+        os.makedirs(HELL_STAIRS, exist_ok=True)
+        subprocess.run(['7z', 'e', '-y', f'-o{HELL_STAIRS}', HELL_STAIRS_ARCHIVE, name], check=True, stdout=subprocess.DEVNULL)
+    return np.asarray(Image.open(path).convert('RGB'), dtype=np.float32)
+
+
+def stains(size, radius, seed):
+    """Soft blotches that tile, 0..1 (1 the darkest): blurred noise, its upper part kept."""
+    rng = np.random.default_rng(seed)
+    noise = np.repeat(rng.random((size, size, 1), dtype=np.float32) * 255, 3, axis=2)
+    soft = blur(noise, radius)[..., 0]
+    soft = (soft - soft.mean()) / max(float(soft.std()), 1e-3)
+    return np.clip(soft * 0.6, 0, 1)
 
 
 def sbs(name):
@@ -388,6 +409,8 @@ def sized(rgb, texels_across, texels_down=None):
 #   catacombs: walls (58, 57, 58) +-29, floor (61, 68, 74) +-18
 #   crypt:     walls (64, 61, 73) +-20, floor (59, 32, 21) +-18
 #   caves:     walls (39, 29, 26) +-14 (their lit half (51, 40, 36)), floor (55, 42, 38) +-13
+#   hell:      the bone of its beams and posts (74, 63, 51) +-33 with their shading (the bone ramps 80-127 of l4.cel's
+#              wall pieces); lit evenly, a little brighter: BONE
 
 def cathedral():
     out = {}
@@ -473,7 +496,24 @@ def caves():
     return out
 
 
-SETS = {'cathedral': cathedral, 'catacombs': catacombs, 'crypt': crypt, 'caves': caves}
+BONE = (86, 74, 59)
+BONE_STAIN = np.array([0.78, 0.66, 0.55], dtype=np.float32)  # what a stain leaves of the bone's colour: browner
+
+
+def hell():
+    out = {}
+    # Hell's flesh, blood and floors are cut out of its own art when a level loads (fp_hell.cpp). Its bone (the beams
+    # round the troughs, the spine posts, the horns) is the hell stairs' bone, in the art's bone colours with its
+    # brown stains; the skulls and the cut ends of the beams older, darker bone.
+    bone = sized(hell_stairs('bone_bump.jpg'), 128)
+    spots = stains(128, 5, 13)[..., None]
+    stained = lambda rgb: rgb * (1 - spots * (1 - BONE_STAIN))
+    out['pillar'] = (blur(stained(match(bone, BONE, 13, 0.25)), 0.4), 0.5, 0.5)
+    out['stone'] = (blur(stained(match(bone, (70, 58, 46), 12, 0.25)), 0.4), 0.5, 0.5)
+    return out
+
+
+SETS = {'cathedral': cathedral, 'catacombs': catacombs, 'crypt': crypt, 'caves': caves, 'hell': hell}
 
 
 def build():

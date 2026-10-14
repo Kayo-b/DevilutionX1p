@@ -18,6 +18,16 @@ struct Vec2 {
 };
 
 /**
+ * @brief floor(x) as an int, inline. The build targets plain x86-64 (no SSE4.1 rounding), where std::floor is a call
+ * into libm: in per-pixel loops that adds up. Same results for any x within an int's range.
+ */
+inline int FloorToInt(float x)
+{
+	const int truncated = static_cast<int>(x);
+	return truncated - (x < static_cast<float>(truncated) ? 1 : 0);
+}
+
+/**
  * @brief Converts an iso screen-space pixel displacement (as used for walk offsets) into world (tile) units.
  *
  * The iso projection is screen x = (x - y) * 32, screen y = (x + y) * 16.
