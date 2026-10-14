@@ -167,6 +167,21 @@ constexpr float DiagonalNormal = 0.70710678F;
 constexpr float CaveTopShadow = 1.5F;
 constexpr float CaveTopShadowDrop = 1.0F;
 
+/**
+ * The caves' pools of lava (and water): how far the ground eats into them along their shores (a share of the pool
+ * among the tile centres around a point, the shore at a half: up to about 0.4 tile in), the dark crust of cooled rock
+ * along them (in the same share) and how dark it is (light levels), the shore's ragged grain (PoolNoise samples a
+ * tile), and how much of a piece's art must be lava or water (the cycled colours) for its art to be laid on every pool
+ * (so the original's dark crust islands go).
+ */
+constexpr float PoolShore = 0.42F;
+constexpr float PoolCrust = 0.07F;
+constexpr float PoolCrustDarkness = 3.0F;
+constexpr float PoolNoiseScale = 10.0F;
+constexpr float CleanPoolShare = 0.97F;
+/** How far (tiles) the pools' art is bent about by smooth noise as it is laid on, so its seams wave. */
+constexpr float PoolWarp = 0.6F;
+
 /** The caves' stalagmites (their lone rock tiles): the base radius, the height (a share of the walls' height, from Min to Max), sides, rings. */
 constexpr float StalagmiteRadius = 0.34F;
 constexpr float StalagmiteMin = 0.4F;
@@ -693,6 +708,51 @@ float CaveNoise(float x, float y, uint32_t salt)
 	return (a + (b - a) * ty) * 0.5F + fine * 0.5F;
 }
 
+/**
+ * @brief Smooth noise 0..1 over the floor plan, two octaves (0.8 and 0.4 of a tile across at PoolNoiseScale), tiling
+ * every 6.4 tiles: the caves' pools' ragged shores.
+ */
+float PoolNoise(float x, float y)
+{
+	constexpr int Size = 64;
+	static const std::array<float, Size * Size> Table = [] {
+		std::array<float, Size * Size> table {};
+		auto octave = [&](int cell, uint32_t salt, float weight) {
+			const int cells = Size / cell;
+			auto at = [&](int i, int j) { return Hash01(((i % cells) + cells) % cells, ((j % cells) + cells) % cells, salt); };
+			for (int j = 0; j < Size; j++) {
+				for (int i = 0; i < Size; i++) {
+					const int ci = i / cell;
+					const int cj = j / cell;
+					float fx = static_cast<float>(i % cell) / static_cast<float>(cell);
+					float fy = static_cast<float>(j % cell) / static_cast<float>(cell);
+					fx = fx * fx * (3.0F - 2.0F * fx);
+					fy = fy * fy * (3.0F - 2.0F * fy);
+					const float a = at(ci, cj) + (at(ci + 1, cj) - at(ci, cj)) * fx;
+					const float b = at(ci, cj + 1) + (at(ci + 1, cj + 1) - at(ci, cj + 1)) * fx;
+					table[static_cast<size_t>(j) * Size + i] += weight * (a + (b - a) * fy);
+				}
+			}
+		};
+		octave(8, 51, 0.65F);
+		octave(4, 52, 0.35F);
+		return table;
+	}();
+	const float sx = x * PoolNoiseScale;
+	const float sy = y * PoolNoiseScale;
+	const int ix = static_cast<int>(std::floor(sx));
+	const int iy = static_cast<int>(std::floor(sy));
+	const float tx = sx - static_cast<float>(ix);
+	const float ty = sy - static_cast<float>(iy);
+	auto at = [&](int i, int j) { return Table[static_cast<size_t>(j & (Size - 1)) * Size + (i & (Size - 1))]; };
+	const float a = at(ix, iy) + (at(ix + 1, iy) - at(ix, iy)) * tx;
+	const float b = at(ix, iy + 1) + (at(ix + 1, iy + 1) - at(ix, iy + 1)) * tx;
+	return a + (b - a) * ty;
+}
+
+/** The art of the level's commonest piece of lava or water with nothing else in it (FindCleanPools): the caves' pools wear it (empty: their own). */
+std::vector<std::vector<int16_t>> CleanPoolArt;
+
 /** @brief Whether a piece's floor art is lava or water: a good part of it in the colours the level cycles. */
 bool IsCycledFloor(const PieceTextures &textures)
 {
@@ -943,6 +1003,76 @@ Displacement ChamferAt(Point tile)
 	return { (code - 1) & 1 ? 1 : -1, (code - 1) & 2 ? 1 : -1 };
 }
 
+/**
+ * @brief The caves' pools wear the art of their commonest piece that is lava or water through and through
+ * (CleanPoolShare) instead of their own: the original paints dark crust islands in its pools, which come out as flat
+ * blotches, and its pieces do not run on into each other seamlessly. The texels its diamond leaves empty, and its few
+ * specks of crust, are filled from their neighbours (wrapping round). The floor pass lays it on bent by smooth noise
+ * (PoolWarp), so where it wraps round is a wavy line, not a straight seam.
+ */
+void FindCleanPools()
+{
+	CleanPoolArt.clear();
+	if (leveltype != DTYPE_CAVES)
+		return;
+	constexpr int Size = FloorTextureSize;
+	// The pieces by how many tiles of pool they make, the commonest first.
+	std::vector<std::pair<int, uint16_t>> counts;
+	for (int y = 0; y < MAXDUNY; y++) {
+		for (int x = 0; x < MAXDUNX; x++) {
+			if (Kinds[static_cast<size_t>(y) * MAXDUNX + x] != CleanKind::Flat)
+				continue;
+			const uint16_t piece = dPiece[x][y];
+			const auto it = std::find_if(counts.begin(), counts.end(), [&](const auto &c) { return c.second == piece; });
+			if (it != counts.end())
+				it->first++;
+			else
+				counts.emplace_back(1, piece);
+		}
+	}
+	std::sort(counts.begin(), counts.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+	for (const auto &[count, piece] : counts) {
+		const std::vector<int16_t> &floor = GetPieceTextures(piece).floor;
+		if (floor.size() != static_cast<size_t>(Size) * Size)
+			continue;
+		int drawn = 0;
+		int cycled = 0;
+		for (const int16_t texel : floor) {
+			if (texel <= 0)
+				continue;
+			drawn++;
+			cycled += IsCycledColor(texel) ? 1 : 0;
+		}
+		if (drawn < Size * Size * 3 / 4 || static_cast<float>(cycled) < CleanPoolShare * static_cast<float>(drawn))
+			continue;
+		std::vector<int16_t> art = floor;
+		for (int pass = 0; pass < 8; pass++) {
+			bool missing = false;
+			for (int v = 0; v < Size; v++) {
+				for (int u = 0; u < Size; u++) {
+					int16_t &texel = art[static_cast<size_t>(v) * Size + u];
+					if (texel > 0 && IsCycledColor(texel))
+						continue;
+					for (const auto &[du, dv] : { std::pair { 1, 0 }, std::pair { -1, 0 }, std::pair { 0, 1 }, std::pair { 0, -1 } }) {
+						const int16_t other = art[static_cast<size_t>((v + dv + Size) % Size) * Size + (u + du + Size) % Size];
+						if (other > 0 && IsCycledColor(other)) {
+							texel = other;
+							break;
+						}
+					}
+					missing = missing || texel <= 0 || !IsCycledColor(texel);
+				}
+			}
+			if (!missing)
+				break;
+		}
+		CleanPoolArt.push_back(std::move(art));
+		LogInfo("fp: caves: the pools wear piece {} (on {} of their tiles)", piece, count);
+		return;
+	}
+	LogInfo("fp: caves: none of the pools' {} pieces is clean lava or water: they keep their own art", counts.size());
+}
+
 void ClassifyTiles()
 {
 	Kinds.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY, CleanKind::Open);
@@ -993,6 +1123,7 @@ void ClassifyTiles()
 	FindStairs();
 	FindBlindArches();
 	FindChamfers();
+	FindCleanPools();
 	LogInfo("fp: clean dungeon tiles: {} walls, {} pillars, {} torch stands, {} doorways, {} stairs, {} lava or water, {} fences, {} blind arches", counts[1], counts[2], counts[3], counts[4], Stairs.size(), counts[6], counts[7], BlindArches.size());
 }
 
@@ -1030,6 +1161,15 @@ bool IsSupport(CleanKind kind)
 }
 
 // --- Lighting ------------------------------------------------------------------------------------------------------
+
+/** @brief 1 where a tile is pool (or rock, or off the map: a pool's shore is where it meets the ground), else 0. */
+inline float PoolAt(int x, int y)
+{
+	if (x < 0 || y < 0 || x >= MAXDUNX || y >= MAXDUNY)
+		return 1.0F;
+	const CleanKind kind = Kinds[static_cast<size_t>(y) * MAXDUNX + x];
+	return kind == CleanKind::Flat || kind == CleanKind::Wall || kind == CleanKind::Stairs ? 1.0F : 0.0F;
+}
 
 inline float TileLight(int x, int y)
 {
@@ -1219,6 +1359,7 @@ void DrawCleanFloorAndCeiling(const Surface &out, const Projection &proj, std::v
 	const CleanTexture &floorTex = Textures.surfaces[static_cast<size_t>(CleanSurface::Floor)];
 	const CleanTexture &ceilingTex = Textures.surfaces[static_cast<size_t>(CleanSurface::Ceiling)];
 	const bool hasCeiling = CleanHasCeiling();
+	const bool raggedPools = leveltype == DTYPE_CAVES;
 	for (int y = 0; y < proj.height; y++) {
 		const bool isFloor = y > proj.horizon;
 		uint8_t *dst = out.at(0, y);
@@ -1255,6 +1396,18 @@ void DrawCleanFloorAndCeiling(const Surface &out, const Projection &proj, std::v
 		Point cachedTile { -1, -1 };
 		bool flat = false;
 		const std::vector<int16_t> *flatArt = nullptr;
+		bool cleanArt = false;
+		// The caves' pools: how much of the tile centres around a point are pool (or rock), interpolated like the light.
+		float p00 = 1.0F;
+		float p10 = 1.0F;
+		float p01 = 1.0F;
+		float p11 = 1.0F;
+		// Up close, the pools' art is sampled at a dithered point, which blends its texels instead of showing squares.
+		const bool jitterPool = across * FloorTextureSize < 1.0F;
+		// The pools' warp (PoolWarp) changes slowly: worked out every WarpStep pixels along the row, interpolated between.
+		constexpr int WarpStep = 8;
+		int warpSegment = -1;
+		std::array<float, 4> warp {}; // u and v at the segment's start, and at its end
 		for (int x = 0; x < proj.width; x++, wx += stepX, wy += stepY) {
 			const int tx = static_cast<int>(std::floor(wx));
 			const int ty = static_cast<int>(std::floor(wy));
@@ -1277,6 +1430,12 @@ void DrawCleanFloorAndCeiling(const Surface &out, const Projection &proj, std::v
 				l10 = TileLight(cx + 1, cy);
 				l01 = TileLight(cx, cy + 1);
 				l11 = TileLight(cx + 1, cy + 1);
+				if (raggedPools && isFloor) {
+					p00 = PoolAt(cx, cy);
+					p10 = PoolAt(cx + 1, cy);
+					p01 = PoolAt(cx, cy + 1);
+					p11 = PoolAt(cx + 1, cy + 1);
+				}
 			}
 			const float ax = fx - static_cast<float>(cx);
 			const float ay = fy - static_cast<float>(cy);
@@ -1287,13 +1446,49 @@ void DrawCleanFloorAndCeiling(const Surface &out, const Projection &proj, std::v
 				if (tx != cachedTile.x || ty != cachedTile.y) {
 					cachedTile = { tx, ty };
 					flat = Kinds[static_cast<size_t>(ty) * MAXDUNX + tx] == CleanKind::Flat;
-					flatArt = flat ? &GetPieceTextures(dPiece[tx][ty]).floor : nullptr;
+					cleanArt = flat && !CleanPoolArt.empty();
+					flatArt = !flat ? nullptr : (cleanArt ? &CleanPoolArt.front() : &GetPieceTextures(dPiece[tx][ty]).floor);
 				}
 				depthRow[x] = depth;
 				if (flat && flatArt != nullptr && flatArt->size() == static_cast<size_t>(FloorTextureSize) * FloorTextureSize) {
-					// Lava and water keep their art (and its colour cycling).
-					const int u = std::min(static_cast<int>((wx - static_cast<float>(tx)) * FloorTextureSize), FloorTextureSize - 1);
-					const int v = std::min(static_cast<int>((wy - static_cast<float>(ty)) * FloorTextureSize), FloorTextureSize - 1);
+					// The caves' pools: the ground eats into them along their shores, raggedly, a dark crust of cooled rock
+					// between (PoolShore).
+					float inside = 1.0F;
+					if (raggedPools) {
+						const float near = p00 + (p10 - p00) * ax;
+						const float far = p01 + (p11 - p01) * ax;
+						const float pool = near + (far - near) * ay;
+						if (pool < 0.9999F)
+							inside = pool - 0.5F - PoolShore * PoolNoise(wx, wy);
+					}
+					if (inside <= 0.0F) {
+						dst[x] = sampler.At(wx, wy, LightLevel(light, x, y), x, y);
+						continue;
+					}
+					if (inside < PoolCrust) {
+						dst[x] = sampler.At(wx, wy, LightLevel(light + PoolCrustDarkness, x, y), x, y);
+						continue;
+					}
+					// Lava and water keep their art's colours (and its colour cycling).
+					float fu = (wx - static_cast<float>(tx)) * FloorTextureSize + (jitterPool ? DitherU(x, y) : 0.0F);
+					float fv = (wy - static_cast<float>(ty)) * FloorTextureSize + (jitterPool ? DitherV(x, y) : 0.0F);
+					if (cleanArt) {
+						if (x / WarpStep != warpSegment) {
+							warpSegment = x / WarpStep;
+							const int first = warpSegment * WarpStep;
+							const float sx = wx - stepX * static_cast<float>(x - first);
+							const float sy = wy - stepY * static_cast<float>(x - first);
+							const float ex = sx + stepX * WarpStep;
+							const float ey = sy + stepY * WarpStep;
+							constexpr float Reach = PoolWarp * FloorTextureSize;
+							warp = { Reach * (PoolNoise(sx + 17.3F, sy) - 0.5F), Reach * (PoolNoise(sx, sy + 29.1F) - 0.5F), Reach * (PoolNoise(ex + 17.3F, ey) - 0.5F), Reach * (PoolNoise(ex, ey + 29.1F) - 0.5F) };
+						}
+						const float t = static_cast<float>(x % WarpStep) / WarpStep;
+						fu += warp[0] + (warp[2] - warp[0]) * t;
+						fv += warp[1] + (warp[3] - warp[1]) * t;
+					}
+					const int u = cleanArt ? static_cast<int>(std::floor(fu)) & (FloorTextureSize - 1) : std::clamp(static_cast<int>(fu), 0, FloorTextureSize - 1);
+					const int v = cleanArt ? static_cast<int>(std::floor(fv)) & (FloorTextureSize - 1) : std::clamp(static_cast<int>(fv), 0, FloorTextureSize - 1);
 					int16_t texel = (*flatArt)[static_cast<size_t>(v) * FloorTextureSize + u];
 					// The art's diamond leaves a texel or two empty along the tile's edges: the nearest drawn one.
 					for (int r = 1; texel <= 0 && r <= 2; r++) {

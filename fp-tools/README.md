@@ -318,8 +318,14 @@ The caves (levels 9-12, and the Poisoned Water Supply) are the clean dungeon's f
 - **Roots** hang from the crest's lip on a few of its segments (`Root*`): one to three thin strands swaying out from
   the rock and wandering along it, each two ribbons crossed, seen from both sides (`CleanQuad::twoSided`).
 - **Lava and water** (`Flat`): solid pieces whose floor art is in good part the colours the level cycles
-  (`IsCycledFloor`), so whole pools are found, not just their edges; drawn from their own art (still animated), the
-  art's empty texels along the tile edges filled from their neighbours.
+  (`IsCycledFloor`), so whole pools are found, not just their edges. They wear the art of the level's commonest piece
+  that is lava or water through and through (`FindCleanPools`: the original paints dark crust islands in its pools,
+  flat blotches up close), its empty texels filled, still in the cycled colours (so still animated), bent by smooth
+  noise as it is laid on (`PoolWarp`, worked out every 8 pixels of a row) so it flows and has no straight seams, and
+  sampled at a dithered point up close. Their shores are ragged (`PoolShore`): how much of the tile centres around a
+  point are pool (or rock: `PoolAt`), interpolated like the light, against `PoolNoise`, so the ground eats into the
+  pool's tiles (never the other way: what looks like lava cannot be walked on) with no straight lines or right
+  angles, a thin dark crust of cooled rock between (`PoolCrust`).
 - **Stalagmites:** lone rock tiles (`Pillar`), a leaning spike of rings narrowing to a tip, most with one or two
   smaller ones beside it (`Stalagmite*`).
 - **Fences** (`Fence`, `f` in `cleanmap`): the solid pieces of the megatiles the generator lays fences with (130-140,
@@ -348,8 +354,8 @@ The caves (levels 9-12, and the Poisoned Water Supply) are the clean dungeon's f
   shoring, its plank door on the gates. Graded to the art of level 9 (seed 900): walls (39, 29, 26), floor
   (55, 42, 38).
 - **Speed:** level 9 ran at about 410 ms a frame, the lava's colour cycling rebuilding all the art structures every
-  frame (the palette fix: 5.7); drawn clean, the caves take 17-26 ms (1280 x 720, headless), about 32 ms right in
-  front of a stairwell (the wall and its frame fill the view).
+  frame (the palette fix: 5.7); drawn clean, the caves take 17-26 ms (1280 x 720, headless), about 26 ms looking down
+  at a pool and 32 ms right in front of a stairwell (the wall and its frame fill the view).
 
 ### 5.1.2 Art walls: hell (the caves before `fp-cave-overhaul`)
 - Every solid tile is a cube. Each face uses its tile's own iso art, unsheared into a texture (`ExtractFace` in
