@@ -42,6 +42,7 @@ Outside the repo (not committed: big source files):
 | `~/.wine/drive_c/GOG Games/Daggerfall/arena2/` | Daggerfall's first-person weapon art (`WEAPON*.CIF`, `ART_PAL.COL`), read at run time from your own copy and **never committed or shipped** (override with `FP_DAGGERFALL_DIR`; empty: no weapon drawn) |
 | `~/projects/diablo-hellfire-fp/*.7z, *.rar` | fan-made 3D models (plaza, church, dungeon pieces, Adria's shack, hell stairs) from Nexus Mods 67266; **free, non-commercial use only**: see `assets/fp/CREDITS.md` |
 | `~/projects/diablo-hellfire-fp/research/{tristram_plaza,church,dungeon_pieces}/` | the extracted models and textures the export scripts read (override with `FP_PLAZA_DIR`, `FP_CHURCH_DIR`, `FP_DUNGEON_PIECES_DIR`; `export_dungeon_textures.py` extracts the kit textures it misses from `FP_DUNGEON_PIECES_ARCHIVE`, the `.7z`, with `7z`) |
+| `~/projects/diablo-hellfire-fp/research/adria/` | "Adria's Shack" (Nexus 67266) unpacked: `Adria_shack_hinges.obj` and its textures (`FP_ADRIA_DIR`; `export_landmarks.py` extracts it from `FP_ADRIA_ARCHIVE`, the `.7z`, if missing) |
 | `~/projects/diablo-hellfire-fp/research/hell_stairs/` | "Diablo's Hell stairs" (Nexus 67266) unpacked: `hell_stairs.obj`, `bone_bump.jpg` (`FP_HELL_STAIRS_DIR`; extracted from the `.rar` beside it if missing) |
 | `~/projects/diablo-hellfire-fp/research/hell/` | hell's palettes `l4_1.pal` .. `l4_4.pal`, dumped from the game data (`FP_HELL_PAL` for the sky's exporter) |
 | `~/projects/d1-graphics-tool/` | the Diablo 1 Graphics Tool (Qt), whose format code `fp-tools/d1cli` builds against (`D1GT_DIR`) |
@@ -71,7 +72,7 @@ Assets the game loads come from `assets/fp/` and are listed in `CMake/Assets.cma
 |---|---|---|
 | `houses.bin` | voxel cottages | `fp-tools/export/export_houses.py` |
 | `housemesh.bin` | cottage triangle meshes | `fp-tools/export/export_meshes.py` |
-| `landmarks.bin` | every town building: the plaza's houses, smithy, tavern, fountain, and the church | `fp-tools/export/export_landmarks.py` |
+| `landmarks.bin` | every town building: the plaza's houses, smithy, tavern, fountain, the church, Adria's shack and her cauldron | `fp-tools/export/export_landmarks.py` |
 | `dungeonkit.bin` | dungeon kit pieces (the entrance stairs, the sarcophagus, the caves' door wood, hell's rib-cage stairs) | `fp-tools/export/export_kit.py` |
 | `dungeontex.bin` | the clean dungeon's texture sets (cathedral, catacombs, caves, crypt, hell's bone), made from the dungeon kit's textures and the Tiny Texture Pack's | `fp-tools/export/export_dungeon_textures.py` |
 | `hellsky.bin` | hell's dark red haze (a cube map, as `sky.bin`) | `fp-tools/export/export_hell_sky.py` |
@@ -227,6 +228,7 @@ Known test spots:
 | Town: around (26,34), (34,32) | church |
 | Town: (62,67) | smithy porch |
 | Town: (55,64) | tavern |
+| Town: (84,25) yaw 225, (81,19) yaw 180, (72,14) yaw 45 | Adria's shack: its shelves and doorway, its wares close up, the slits glowing in its back walls |
 | Level 1, seed 777 | stairs down at trigger (81,78); stairs up near (58,47); column (52,52); torch stand (86,44); sarcophagus (63,48); door (53,78) |
 | Level 1, seed 777, all quests | arcade and door (85,62): stand at (85,65), yaw 270; hall with pillars and torch stands (53,52) |
 | Level 2, seed 4242 | colonnade: pillars x = 52/58, y = 38–44; view from (55,42) |
@@ -655,11 +657,10 @@ floor was sprinkled with red), and first person shades through `FpLightTable`: i
 (each colour darkened to the nearest palette colour, by the old tables' average darkening), the game's elsewhere.
 
 ### 5.5 Landmarks: adding or fixing a hand-placed building
-Landmarks (smithy, tavern, church) are full models placed by hand, listed in `Landmarks` in `fp_buildings.cpp`. To
-add one, for example Adria's hut:
+Landmarks (smithy, tavern, church, Adria's shack) are full models placed by hand, listed in `Landmarks` in
+`fp_buildings.cpp`. To add one:
 
-1. **Extract the model.**
-   `7z x ~/projects/diablo-hellfire-fp/"Adria's Shack-67266-.7z" -o ~/projects/diablo-hellfire-fp/research/adria`
+1. **Extract the model** (Adria's: `7z x ~/projects/diablo-hellfire-fp/"Adria's Shack-67266-.7z" -o ~/projects/diablo-hellfire-fp/research/adria`).
 2. **List its groups and materials** to find the exterior parts and leave out the interior and anything below ground.
    The church section of `fp-tools/export/export_landmarks.py` shows how. Check the parts by rendering them
    with a small PIL script (draw the triangles from a few angles).
@@ -679,6 +680,10 @@ add one, for example Adria's hut:
    ```
    For a model from another file, start with `--variants all --search 8` and a rough `--init`. Check the overlay
    image by eye; the printed `placement` is the `x0, x1, y0, y1, zScale` for the `Landmarks` entry (with `flipW`).
+   The upright dump leaves out a building's foot (the art in its tiles' floor diamonds), which can pull the fit up
+   and squash it: check it on the full art too (`dumpiso` without `true`), and where it drifts, fit by eye. Adria's
+   shack was placed so: the corners of its roof read off the art (a parallelogram in iso), its slope from the rise
+   of one eave, then the model scaled to them (0.94 of the plaza's scale).
 6. **Add a `LandmarkPlacement` entry:**
    - `claimMin/claimMax`: tiles whose auto-detected houses are dropped.
    - `x0..y1, zScale, flipW`: the fitted numbers.
@@ -693,6 +698,29 @@ to the level palette and darkened by `TextureDim` in `QuantizeMeshTextures`, sha
 `modelTextures = false` in a `Landmarks` entry keeps a building on its projected art (the fountain does).
 Projective landmarks also bake their art colours once at load (`BakeColors`), used when textures are off. They hide the billboards of tiles under
 them and of art tiles that are mostly the building (`ClaimProjectiveTiles`), and draw plain ground underneath.
+
+### 5.5.1 Adria's shack
+The witch's hut, where Adria stands (tile 80,20), is the "Adria's Shack" model of the Nexus rebuild (`adria_shack()` and
+`adria_cauldron()` in `export_landmarks.py`): planks on a frame, a roof sloping down to the back, shelves and the
+door on the side facing the path. The file is in the plaza's coordinates and also holds the hinges of every door in
+the plaza; the shack and the cauldron are each the groups inside a box (`ADRIA_SHACK`, `ADRIA_CAULDRON`), without
+the hinges and the chains' links (a few hundred triangles each: two thin rods stand in for the chains).
+- **Placement:** the shack fitted by eye (5.5); the cauldron on its frame is a landmark of its own (`cauldron`),
+  fitted where the art has it (`fit_landmark.py`, at the plaza's scale: a tile from where the shack's fit would put
+  it). The cauldron's pieces (556, 558) were on the boulder list (`IsTownRockPiece`) and are no longer.
+- **Colours:** the model's photographs are put on ramps of the art's colours (`ART_RAMPS`: each texel the ramp's
+  colour at its shade's rank): dark slate planks, a lighter blue-grey roof with patches of moss, blue-black iron.
+  The planks' texture is turned so its grain runs along them. These triangles carry the class's top bit
+  (`ART_COLOURS`, 128; `ArtColorsClass` in the game): their textures are kept as they are (`MeshTexture::artColors`),
+  not dimmed to dusk like the daylight photographs (`QuantizeMeshTextures`).
+- **Wares:** flasks, bottles and jugs turned on a lathe (`WARE_SHAPES`), standing on the model's shelves where the
+  art has them (`WARES`), in the art's colours (`WARE_COLOURS`, a base and a highlight on the side towards the path).
+- **Light:** its door stands open, swung in (`ADRIA_DOOR_HINGE`), onto its lit room (`LitLandmarks`: measured; its
+  lamp a warm yellow). It is `unglazed`: no glass in its openings (the gaps of its planks would otherwise be
+  glazed as windows). The gaps between the planks of its walls are strips (class 5, `plank_slits`) that glow with
+  its light as window glass does (`GlowSlits`): the art shows the lamplight between the planks.
+- **Its tree:** the art paints the autumn tree at the shack's corner into the shack's own tiles, which no tree tile
+  holds; the town's tree of the same drawing stands in for it at the art's trunk (`PaintedTrees`).
 
 ### 5.6 Dungeon structures
 All in `fp_buildings.cpp`, built per level in `BuildStructures`:
@@ -776,7 +804,8 @@ commit.
 
 ## 7. Open items / ideas
 - **Town:**
-  - Adria's hut, Gillian's and the other hand-modelled buildings from the `.7z` archives as landmarks.
+  - The other buildings drawn by hand in the art (Wirt's corner, the ruined houses) as landmarks: a model from the
+    Nexus archives where there is one, else built from the original art (`fp-tools/d1cli` exports the town's tiles).
   - Forge and anvil props under the smithy porch.
   - Remaining dark slabs on the ground north of the church (possibly original art).
 - **Dungeon:**

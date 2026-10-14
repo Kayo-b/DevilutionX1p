@@ -121,6 +121,7 @@ struct WorldTriangle {
 	bool cull = false;  // one-sided: skipped when turned away from the camera (closed shapes, slabs)
 	bool inside = false; // inside a lit landmark (the church's entrance hall, through its open door): lit by its lamps
 	bool rim = false;    // a side of the church's cross windows: lit by the lamp behind it (CrossLamps)
+	bool slit = false;   // a gap between the planks of a wall (Adria's): glows with the light inside (GlowSlits)
 	V3 normal { 0, 0, 0 }; // outward, for culling
 	// Baked colours (projective landmarks): an N x N grid over the triangle's (u, v) = weights of p1 and p2.
 	uint32_t bakeOffset = 0;
@@ -738,6 +739,7 @@ struct MeshTexture {
 	int height = 0;
 	std::vector<uint8_t> rgb;
 	std::vector<uint8_t> indexed;
+	bool artColors = false; // the original art's colours already (Adria's shack and wares): not dimmed for dusk
 	/** Smaller copies (mip levels 1, 2, ...: each half the size of the one before, averaged), for far surfaces. */
 	struct Level {
 		int width;
@@ -757,8 +759,9 @@ constexpr float TextureDim = 0.42F;
  */
 void QuantizeMeshTextures(float dim = 0.42F, bool dusk = true, std::array<float, 3> tint = { 1.0F, 1.0F, 1.0F })
 {
-	std::vector<int16_t> lut(32768, -1);
-	auto quantize = [&](const std::vector<uint8_t> &rgb, std::vector<uint8_t> &indexed) {
+	std::vector<int16_t> lut(32768, -1); // by the colour after darkening: shared by every texture
+	// asIs: the art's colours already (MeshTexture::artColors), only matched to the palette.
+	auto quantizeWith = [&](const std::vector<uint8_t> &rgb, std::vector<uint8_t> &indexed, bool asIs) {
 		indexed.resize(rgb.size() / 3);
 		for (size_t i = 0; i < indexed.size(); i++) {
 			// The textures are daylight photographs; Tristram is drawn at dusk, dim and cool. Darken and pull the
@@ -767,10 +770,13 @@ void QuantizeMeshTextures(float dim = 0.42F, bool dusk = true, std::array<float,
 			const float g0 = rgb[i * 3 + 1];
 			const float b0 = rgb[i * 3 + 2];
 			const float grey = (r0 + g0 + b0) / 3.0F;
-			const float sat = dusk ? 0.75F : 0.85F;
-			const int r = std::clamp(static_cast<int>((r0 * sat + grey * (1.0F - sat)) * dim * (dusk ? 0.92F : 1.0F) * tint[0]), 0, 255);
-			const int g = std::clamp(static_cast<int>((g0 * sat + grey * (1.0F - sat)) * dim * (dusk ? 0.95F : 1.0F) * tint[1]), 0, 255);
-			const int bl = std::clamp(static_cast<int>((b0 * sat + grey * (1.0F - sat)) * dim * (dusk ? 1.08F : 1.0F) * tint[2]), 0, 255);
+			const float sat = asIs ? 1.0F : (dusk ? 0.75F : 0.85F);
+			const float scale = asIs ? 1.0F : dim;
+			const std::array<float, 3> cast = asIs ? std::array<float, 3> { 1.0F, 1.0F, 1.0F }
+			                                       : std::array<float, 3> { (dusk ? 0.92F : 1.0F) * tint[0], (dusk ? 0.95F : 1.0F) * tint[1], (dusk ? 1.08F : 1.0F) * tint[2] };
+			const int r = std::clamp(static_cast<int>((r0 * sat + grey * (1.0F - sat)) * scale * cast[0]), 0, 255);
+			const int g = std::clamp(static_cast<int>((g0 * sat + grey * (1.0F - sat)) * scale * cast[1]), 0, 255);
+			const int bl = std::clamp(static_cast<int>((b0 * sat + grey * (1.0F - sat)) * scale * cast[2]), 0, 255);
 			const int key = (r >> 3) << 10 | (g >> 3) << 5 | (bl >> 3);
 			if (lut[key] < 0) {
 				const int qr = (r & ~7) + 4;
@@ -792,6 +798,7 @@ void QuantizeMeshTextures(float dim = 0.42F, bool dusk = true, std::array<float,
 		}
 	};
 	for (MeshTexture &tex : MeshTextures) {
+		auto quantize = [&](const std::vector<uint8_t> &rgb, std::vector<uint8_t> &indexed) { quantizeWith(rgb, indexed, tex.artColors); };
 		quantize(tex.rgb, tex.indexed);
 		// Mip levels: each texel the average of 2 x 2 of the level above, averaged before quantizing so far
 		// surfaces show the texture's mean colours instead of whichever texel a screen pixel happens to hit.
@@ -863,7 +870,7 @@ struct LandmarkPlacement {
 	bool modelTextures = true; // may wear the model's own textures (dev.fp.modeltextures); else always its art
 };
 
-const std::array<LandmarkPlacement, 10> Landmarks { {
+const std::array<LandmarkPlacement, 12> Landmarks { {
 	// The buildings of the Tristram plaza model (Nexus Mods 67266), each fitted to the town's iso art by silhouette
 	// overlap (fp-tools/export/fit_landmark.py; the plaza is laid out like the town, at its scale, y flipped) and
 	// textured by projecting that art back on. The comment gives each fit's overlap with the art.
@@ -882,10 +889,19 @@ const std::array<LandmarkPlacement, 10> Landmarks { {
 	{ "fountain", { 59, 69 }, { 61, 71 }, 59.65F, 61.46F, 69.75F, 71.53F, 0.643F, 100.0F, 0.643F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true, false }, // 0.52
 	// Tristram's church (research/church): tower, nave and round apse, fitted to the iso art by silhouette overlap.
 	{ "church", { 19, 14 }, { 31, 29 }, 19.78F, 32.22F, 14.31F, 30.19F, 0.85F, 100.0F, 0.85F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },
+	// Adria's shack (research/adria): planks, a roof sloping down to the back, her wares on shelves beside the door.
+	// Fitted to its art by eye (the roof's corners and its slope): the model at 0.94 of the plaza's scale. Her cauldron
+	// on its frame, from the same file, fits the art where it is (fit_landmark.py, at the plaza's scale), a tile from
+	// where the shack's placement would put it.
+	{ "adria", { 74, 16 }, { 79, 21 }, 74.519F, 79.041F, 16.571F, 20.951F, 0.875F, 100.0F, 0.875F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },
+	{ "cauldron", { 81, 18 }, { 83, 19 }, 81.537F, 83.367F, 18.464F, 19.434F, 0.956F, 100.0F, 0.956F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true }, // 0.51
 } };
 
 std::vector<LandmarkMesh> LandmarkMeshes;
 bool LandmarksLoaded = false;
+
+/** The top bit of a triangle's class in a mesh file: its texture is in the original art's colours already. */
+constexpr uint8_t ArtColorsClass = 0x80;
 
 /** @brief Reads a mesh file in the landmarks.bin format (see research/tristram_plaza/export_landmarks.py). */
 void LoadMeshFile(const char *envName, const char *fileName, std::vector<LandmarkMesh> &meshes)
@@ -946,6 +962,12 @@ void LoadMeshFile(const char *envName, const char *fileName, std::vector<Landmar
 				int16_t texture;
 				ok = readAll(mesh.uvs[t].data(), sizeof(float) * 6) && readAll(&mesh.classes[t], 1) && readAll(&texture, 2);
 				mesh.textures[t] = texture < 0 ? int16_t { -1 } : static_cast<int16_t>(texture + textureBase);
+				// The class's top bit: its texture is in the original art's colours already (ArtColorsClass).
+				if (ok && (mesh.classes[t] & ArtColorsClass) != 0) {
+					mesh.classes[t] &= ~ArtColorsClass;
+					if (mesh.textures[t] >= 0 && static_cast<size_t>(mesh.textures[t]) < MeshTextures.size())
+						MeshTextures[mesh.textures[t]].artColors = true;
+				}
 			} else if (ok) {
 				ok = readAll(&mesh.classes[t], 1);
 			}
@@ -1654,6 +1676,7 @@ void BuildLandmarkMesh(Building &b, const LandmarkPlacement &place, const Landma
 		if (b.mesh.size() > before) {
 			b.mesh.back().inside = mesh.classes[t] == 3;
 			b.mesh.back().rim = mesh.classes[t] == 4;
+			b.mesh.back().slit = mesh.classes[t] == 5;
 		}
 		if (mesh.classes[t] == 2) {
 			// A door: its bounds, grown by each of its triangles (the leaf and its parts are one door where they touch).
@@ -1726,8 +1749,9 @@ struct LitLandmark {
 	std::array<float, 3> color;               // of its light: fire and candles, the church's through red glass
 	bool glass = false;                       // also lit inside its stained glass box (the church's nave)
 	bool autoRoom = false;                    // its room fitted to its walls from inside (AddAutoRoom), not measured
+	bool unglazed = false;                    // its openings stay open, no glass in them (the gaps of Adria's planks)
 };
-constexpr std::array<LitLandmark, 9> LitLandmarks { {
+constexpr std::array<LitLandmark, 10> LitLandmarks { {
 	// The tavern's two wings (the plaza model's x 73.8 - 79.9, y 250.2 - 254.6 and x 73.8 - 77.1, y 248.2 - 250.3).
 	{ "ogden", 2, { { { 0.0803F, 0.8780F, 0.3438F, 0.9012F, 0.088F, 5.588F }, { 0.0803F, 0.5118F, 0.0904F, 0.3564F, 0.088F, 5.588F } } }, 1.0F, { 255.0F, 112.0F, 40.0F } },
 	// The smithy's hall (x 86.6 - 96.0, y 251.35 - 254.5), not the open porch.
@@ -1742,6 +1766,9 @@ constexpr std::array<LitLandmark, 9> LitLandmarks { {
 	{ "pepin", 0, {}, 0.75F, { 255.0F, 118.0F, 44.0F }, false, true },
 	{ "cottage_small", 0, {}, 0.75F, { 255.0F, 118.0F, 44.0F }, false, true },
 	{ "cottage_tall", 0, {}, 0.75F, { 255.0F, 118.0F, 44.0F }, false, true },
+	// Adria's shack, inside its planks (x 100.2 - 104.18, y 290.92 - 294.9 of the model): the art's light in its
+	// doorway and the gaps between its planks is a warm yellow. No glass: its openings are gaps and slits.
+	{ "adria", 1, { { { 0.0882F, 0.9156F, 0.0790F, 0.9330F, 0.02F, 2.7F }, {} } }, 0.8F, { 255.0F, 150.0F, 50.0F }, false, false, true },
 } };
 
 /** The lamps' light outside, falling from the windows, per unit of strength. */
@@ -2884,9 +2911,38 @@ void AddAutoRoom(Building &b, int lit, const LandmarkPlacement &place)
 	}
 }
 
+/**
+ * @brief The gaps between the planks of a lit landmark's walls (WorldTriangle::slit: Adria's shack) glow with its
+ * light, as a window's glass does: the art shows the lamplight inside between them.
+ */
+void GlowSlits(Building &b, int lit)
+{
+	for (WorldTriangle &tri : b.mesh) {
+		if (!tri.slit)
+			continue;
+		// Each strip is a quad: both its triangles span its bounds, the middle and half the size of its glow.
+		const float x0 = std::min({ tri.p[0].x, tri.p[1].x, tri.p[2].x });
+		const float x1 = std::max({ tri.p[0].x, tri.p[1].x, tri.p[2].x });
+		const float y0 = std::min({ tri.p[0].y, tri.p[1].y, tri.p[2].y });
+		const float y1 = std::max({ tri.p[0].y, tri.p[1].y, tri.p[2].y });
+		const float z0 = std::min({ tri.p[0].z, tri.p[1].z, tri.p[2].z });
+		const float z1 = std::max({ tri.p[0].z, tri.p[1].z, tri.p[2].z });
+		tri.mapping = MeshPane;
+		tri.texture = -1;
+		tri.cull = false;
+		tri.arch = static_cast<int16_t>(lit);
+		tri.mirrorX = (x0 + x1) / 2.0F;
+		tri.mirrorY = (y0 + y1) / 2.0F;
+		tri.downX = (z0 + z1) / 2.0F;
+		tri.slopeScale = std::max(x1 - x0, y1 - y0) / 2.0F;
+		tri.downY = (z1 - z0) / 2.0F;
+	}
+}
+
 /** @brief A lit landmark's rooms (or the church's glass box), their insides and their lamps. */
 void AddLitRooms(Building &b, int lit, const LandmarkPlacement &place)
 {
+	GlowSlits(b, lit);
 	auto height = [&](float z) {
 		return z <= place.eaveIn ? z * place.zScale : place.eaveIn * place.zScale + (z - place.eaveIn) * place.zScaleAbove;
 	};
@@ -2937,7 +2993,7 @@ void AddLitRooms(Building &b, int lit, const LandmarkPlacement &place)
 			AddRoomLamps(static_cast<int>(LitRooms.size() - 1));
 		}
 	}
-	if (!LitLandmarks[lit].glass) {
+	if (!LitLandmarks[lit].glass && !LitLandmarks[lit].unglazed) {
 		// The windows the model has; a house whose model has none gets a few set into its ground floor's walls.
 		std::vector<WindowOpening> glazed = GlazeWindows(b, lit, firstRoom);
 		if (LitLandmarks[lit].autoRoom && glazed.empty())
@@ -6497,7 +6553,8 @@ ArtStats UprightStats(const PieceTextures &t)
 /** @brief Whether a town piece is a boulder's (the known boulder pieces, or one its art shows is). */
 bool IsTownRockPiece(uint16_t piece)
 {
-	return (piece >= 220 && piece <= 232) || piece == 556 || piece == 558 || piece == 835 || piece == 836 || piece == 1166 || piece >= 1202;
+	// (556 and 558, once taken for boulders, are Adria's cauldron: a landmark of its own.)
+	return (piece >= 220 && piece <= 232) || piece == 835 || piece == 836 || piece == 1166 || piece >= 1202;
 }
 
 /** @brief Whether a town piece is one of the trees' (its art is the tree alone, even beside a house). */
@@ -7899,6 +7956,36 @@ void BuildGraves(const std::vector<Point> &tiles)
 }
 
 /**
+ * @brief A tree the original art paints into a landmark's own tiles, which no tree tile holds (the autumn tree at the
+ * corner of Adria's shack): the town's tree of the same drawing, the one whose foot is at `like`, stands in for it.
+ */
+struct PaintedTree {
+	const char *landmark;
+	Vec2 foot; // the foot of the art's trunk
+	Vec2 like;
+};
+constexpr std::array<PaintedTree, 1> PaintedTrees { {
+	{ "adria", { 77.15F, 21.45F }, { 80.0F, 5.0F } },
+} };
+
+void AddPaintedTrees()
+{
+	for (const PaintedTree &painted : PaintedTrees) {
+		const bool placed = std::any_of(Buildings.begin(), Buildings.end(), [&](const Building &b) {
+			return b.landmark >= 0 && std::string_view(Landmarks[b.landmark].name) == painted.landmark;
+		});
+		const auto like = std::find_if(TreeSprites.begin(), TreeSprites.end(), [&](const TreeSprite &tree) {
+			return std::hypot(tree.foot.x - painted.like.x, tree.foot.y - painted.like.y) < 0.5F;
+		});
+		if (!placed || like == TreeSprites.end())
+			continue;
+		TreeSprite tree = *like;
+		tree.foot = painted.foot;
+		TreeSprites.push_back(std::move(tree));
+	}
+}
+
+/**
  * @brief Replaces the town's remaining tall-art tiles (those no building draws) with meshes: trees, and the hulls of
  * the rest. Pieces of the church's art its model stands in for are hidden. Marks the tiles (BuildingTiles 3) so
  * they are no longer billboards and their floor is the ground under them.
@@ -7969,6 +8056,7 @@ void BuildTownProps()
 			BuildTrees(group, treeCount);
 		}
 	}
+	AddPaintedTrees();
 	// The low stone walls' heights, from their art.
 	WallHeights.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY, 0.0F);
 	for (int y = 0; y < MAXDUNY; y++)

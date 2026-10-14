@@ -8,7 +8,7 @@ textures (`dungeontex.bin`) are derived from a fan-made rebuild of Diablo 1's as
 - **Contents of the original release:** stairs to hell, all the houses of the town, the fountain, Adria's shack,
   the church, and a set of dungeon pieces.
 - **Used here:** the Tristram plaza houses (the cottages, Griswold's smithy, Ogden's tavern), the church exterior,
-  and the dungeon kit's entrance stairs (`stairs_01`), and on branch `fp-modkit` its column, sarcophagus (also split into body and lid, for the lid opening), candle stand
+  Adria's shack and her cauldron (`landmarks.bin`, `adria` and `cauldron`), and the dungeon kit's entrance stairs (`stairs_01`), and on branch `fp-modkit` its column, sarcophagus (also split into body and lid, for the lid opening), candle stand
   and door, with the kit's stone block, pavement, marble and iron textures (`dungeonkit.bin`); and the stairs to hell
   ("Diablo's Hell stairs", `hell_stairs.obj`: a rib cage over a pit, the spine going down into it), hell's stairs in
   `dungeonkit.bin` (`hell_stairs`, `hell_ribs`), with its bone texture (`bone_bump.jpg`) in `dungeontex.bin`. They were converted by the scripts in `fp-tools/export/`:
@@ -29,6 +29,9 @@ textures; anything built from it is under the same restriction.
 `landmarks.bin` also carries the release's diffuse textures for the town buildings, shrunk to 256 x 256 (converted
 to Diablo's palette and darkened in game): the plaza's stone wall, straw roof (outside and inside), timber, door
 and fountain stone, and the church's stone wall, slate roof, wooden ceiling, doors, pavement and stained glass.
+Adria's shack wears the release's weathered planks (`grinda_02`) and its cauldron the release's dirty steel
+(`Dirty_Steel_02_UV_H_CM_1`), both graded to the colours of the hut in the original art (measured, none copied) by
+`fp-tools/export/export_landmarks.py`.
 The original author credits the textures (some made seamless by the author, some made from reference photos) to
 their creators, who made them available free of charge:
 
