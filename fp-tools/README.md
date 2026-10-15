@@ -24,6 +24,7 @@ Repository: `/home/kxyx/projects/DevilutionX1p`, the fork `Kayo-b/DevilutionX1p`
 | `fp-catacombs-overhaul` | the catacombs (levels 5-8) rebuilt from their own art (fp_catacombs.cpp, 5.1.3), from `master` |
 | `fp-tristram-lighting` | Tristram at night: lamplight, windows, props and floor (5.4.1), Adria's shack (5.5.1), the fountain |
 | `fp-town-mausoleum` | the mausoleum by the cows (5.5), fewer and bigger boulders, the caves' entrance (5.4.1), from `master` |
+| `fp-town-prebuild` | the town's models built in the background as it loads, so F4 no longer freezes the game (5.4), from `master` |
 | `fp` | the earlier first-person base (`fp-buildings` is built on it, not merged back) |
 | `fp-voxel` | paused experiment (voxel monsters) |
 | **`master`** | **the up-to-date game**: upstream DevilutionX with every branch above from `fp-dungeon-overhaul` down merged in (the clean dungeon, the caves, hell, the catacombs, Tristram); new work branches off it and is merged back |
@@ -633,6 +634,14 @@ The one tileset still drawn from its art (the caves and hell were, before `fp-ca
 2. Each house gets the closest-proportioned cottage from the plaza model, stretched to its footprint.
 3. Textures are a stone patch and a thatch patch cut from that house's own iso art (`BuildTextures`), scattered over
    the mesh (`ScatteredTexel`).
+
+**When the town is built:** its models (houses, landmarks, props: about 2.5 s of work, the roof fits and the
+landmarks' baked colours spread over the processor's threads by `ParallelFor`) are built on a thread of their own as
+soon as the town has loaded (`PrepareTown`, at the end of `DoLoad`), while the iso view plays on; with first person
+already on, on the loading screen instead. F4 pressed before they are done switches first person on once they are
+(`UpdateFirstPersonActivation`; pressed again meanwhile, it stays off), and the first frame no longer stalls the game
+for seconds. Before a level goes the game waits for the build and stops the lamps' thread (`StopTownBuild`): both
+read the level.
 
 To re-export the cottage models after changing the scripts (they write straight into `assets/fp/`):
 ```bash
