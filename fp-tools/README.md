@@ -572,11 +572,17 @@ where a replaced house's art claimed their tiles (`ShowsInArt`, `Building::claim
 
 **Boulders, gravestones, low walls** (`BuildRocks`, `BuildGraves`, `BuildTownWallTile`): groups of neighbouring rock
 or grave tiles are cut out of the art together, without the ground in their floor diamonds (`BuildPropCanvas`: only
-the stones' blue there). A heap of boulders is its outline filled with round stones, biggest first (`PackStones`: each
-where the outline is widest and as wide as it is there; the iso view has the same scale across and down, so a
-circle of art is a stone of that size on the ray of its middle). Each is a lumpy low-poly stone (`AddStone`: a
-squashed sphere pushed in and out by a few waves, 80 triangles near, 20 far), half behind the heap's foot and half up
-on the stones in front where its circle is above the foot, never higher than the biggest. A gravestone is made as
+the stones' blue there). A heap of boulders is a few big stones (`PackStones`): the original draws a boulder
+about every `BoulderArtArea` (640) pixels of its heap, and there is a stone for every two of them (one for up to
+three, two for four or five, ...); the same for the field of boulders round the town's west side. Where they lie:
+the biggest circles inside the heap's outline, then a few rounds of k-means over its pixels so that between them
+they cover it; each as big as a disc of its pixels' area (`StoneFill`: a little more, so they overlap), its middle
+on the ray of the disc's (the iso view has the same scale across and down). Each is a lumpy low-poly stone
+(`AddStone`: a squashed sphere pushed in and out by a few waves, 80 triangles near, 20 far), its flattened underside
+on the ground, or up on the stones in front where its disc is above the heap's foot, never higher than the biggest,
+and only if a stone placed before it lies under it there (`supportAt`); else as high as one does, or on the ground,
+further back along the ray (stones used to hang in the air over the field where nothing was under them). (The town
+had 2822 stones, most of them small fillers; it has 826.) A gravestone is made as
 what its outline is (`ShapeGrave`): a headstone (round-topped where its top corners are cut), a cross, a post or a
 slab fallen flat, as wide as its body and standing on the ground under its foot (the ground's removal leaves a
 headstone's shaded foot a thin stem, and cuts some in two: pieces one above the other are put back together). Both
