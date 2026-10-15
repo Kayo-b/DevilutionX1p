@@ -35,7 +35,7 @@ Repository: `/home/kxyx/projects/DevilutionX1p`, the fork `Kayo-b/DevilutionX1p`
 | `assets/fp/` | the mod's generated mesh files |
 | `fp-tools/run.sh` | build changed files and launch (the developer build) |
 | `install.sh` | the players' Linux installer: builds a Release game and installs it with their data (2.1) |
-| `Packaging/fp/` | the Windows release: `package-windows.sh` (cross-builds the zip on Linux), `windows/` (`Install.bat`, `install.ps1`, the zip's `README.txt`), the release notes (2.1) |
+| `Packaging/fp/` | the releases: `package-windows.sh` (cross-builds the Windows zip on Linux), `windows/` (`Install.bat`, `install.ps1`, the zip's `README.txt`), `package-linux.sh` and `linux/README.txt` (the Linux tarball), the release notes (2.1) |
 | `fp-tools/selftest/` | headless test scripts; output goes to `fp-tools/selftest/out/` (git-ignored) |
 | `fp-tools/export/` | Python scripts that turn the 3D models into `assets/fp/*.bin` |
 | `fp-tools/d1cli/` | a headless driver for `d1-graphics-tool`'s format code: exports a level's tileset as PNGs (5.1.2) |
@@ -151,9 +151,13 @@ corner), set up with their data by an installer. **Code that uses the console or
   (`install.ps1`: Windows PowerShell 5.1, so no `??`, ternaries or `&&`, and plain ASCII), which copies their data in
   place and makes shortcuts. `assets/fp/` ships as loose files: first person opens them from the folder, never from
   `devilutionx.mpq`. Wine runs the `.exe` (and a `DEBUG=ON` cross-build runs the selftests' steps, `FP_TEST_STEPS`).
-- **Publishing:** push a tag (`git tag v1.1 && git push origin v1.1`): `.github/workflows/fp_windows_release.yml`
-  builds the zip and attaches it to that version's release, with `Packaging/fp/release-notes.md` as its text. Run the
-  workflow by hand (Actions tab) for a test build.
+- **Linux package: `Packaging/fp/package-linux.sh`** packs `build-linux/release/DevilutionX-FP-<FP_VERSION>-linux-x86_64.tar.gz`:
+  the Release game (every library built in but SDL2), its assets and mods, and `install.sh`, which, finding the game
+  built next to it and no `CMakeLists.txt`, skips the build and only checks that the system has SDL2 and a C library as
+  recent as the build machine's (Ubuntu 24.04: glibc 2.39).
+- **Publishing:** push a tag (`git tag v1.1 && git push origin v1.1`): `.github/workflows/fp_release.yml` makes that
+  version's release (its text: `Packaging/fp/release-notes.md`) and builds the Windows zip and the Linux tarball side
+  by side, each added to the release. Run the workflow by hand (Actions tab) for a test build.
 
 ---
 

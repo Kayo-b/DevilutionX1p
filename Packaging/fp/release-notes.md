@@ -16,14 +16,33 @@ to the original view at any time.
    whether to use Daggerfall's weapons, then makes desktop and Start menu shortcuts.
 3. Start **Diablo First-Person** (or **Hellfire First-Person**).
 
+### Android (handhelds such as the AYN Thor)
+
+1. Download `DevilutionX-FP-…-android.apk` below, open it on the device and allow installing it. It installs as an
+   app of its own, beside DevilutionX if you have that.
+2. Start it once, then put `DIABDAT.MPQ` (for Hellfire also `hellfire.mpq`, `hfmonk.mpq`, `hfmusic.mpq`,
+   `hfvoice.mpq`) in `Android/data/org.diasurgical.devilutionx.fp/files/`: from a PC over USB, or with the import
+   screen the app shows when it can't find the data.
+3. For the weapons, put Daggerfall's `WEAPON00.CIF` to `WEAPON11.CIF` and `ART_PAL.COL` (from its `ARENA2` folder) in a
+   `daggerfall` folder there.
+
+With a gamepad, the left stick walks and the right stick looks. Each release's APK is signed with a new key, so a newer
+one won't install over an older one: copy your saves (`*.sv`) out of that folder, uninstall (which deletes the folder),
+then install the new one and put the files back.
+
 ### Linux
+
+1. Download `DevilutionX-FP-…-linux-x86_64.tar.gz` below and unpack it (`tar -xzf DevilutionX-FP-*-linux-x86_64.tar.gz`).
+2. In its folder, run `./install.sh`. It asks the same questions and adds a `devilutionx-fp` command and
+   applications menu entries (one for Diablo, one for Hellfire).
+
+It needs SDL2 (`install.sh` offers to install it) and a recent Linux (glibc 2.39 or later: Ubuntu 24.04, Debian 13,
+Fedora 40, Arch). On an older system, or another processor, build it from source; `install.sh` does that too:
 
 ```bash
 git clone https://github.com/Kayo-b/DevilutionX1p.git
 cd DevilutionX1p
 ./install.sh
 ```
-
-It builds the game, asks the same questions, and adds `devilutionx-fp` and applications menu entries.
 
 The full guide, controls and credits are in the [README](https://github.com/Kayo-b/DevilutionX1p#readme).

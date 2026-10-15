@@ -81,6 +81,27 @@ Point TileAt(float x, float y)
 	return { static_cast<int>(std::floor(x)), static_cast<int>(std::floor(y)) };
 }
 
+// The keys polled each frame: by scancode, or in SDL 1.2 (which has none) by key symbol.
+#ifdef USE_SDL1
+using HeldKey = SDLKey;
+constexpr HeldKey KeyForward = SDLK_w, KeyBack = SDLK_s, KeyStrafeLeft = SDLK_a, KeyStrafeRight = SDLK_d, KeySpells = SDLK_t;
+constexpr HeldKey KeyTurnLeft = SDLK_LEFT, KeyTurnRight = SDLK_RIGHT, KeyLookUp = SDLK_UP, KeyLookDown = SDLK_DOWN;
+#else
+using HeldKey = SDL_Scancode;
+constexpr HeldKey KeyForward = SDL_SCANCODE_W, KeyBack = SDL_SCANCODE_S, KeyStrafeLeft = SDL_SCANCODE_A, KeyStrafeRight = SDL_SCANCODE_D,
+                  KeySpells = SDL_SCANCODE_T;
+constexpr HeldKey KeyTurnLeft = SDL_SCANCODE_LEFT, KeyTurnRight = SDL_SCANCODE_RIGHT, KeyLookUp = SDL_SCANCODE_UP, KeyLookDown = SDL_SCANCODE_DOWN;
+#endif
+
+bool KeyHeld(HeldKey key)
+{
+#ifdef USE_SDL1
+	return SDL_GetKeyState(nullptr)[key] != 0;
+#else
+	return SDL_GetKeyboardState(nullptr)[key] != 0;
+#endif
+}
+
 /** @brief The developer console (debug builds only) is open: it takes the keyboard and the cursor. */
 bool ConsoleOpen()
 {
@@ -116,6 +137,10 @@ void SetMouseCapture(bool capture)
 	PendingMouseY = 0;
 #ifdef USE_SDL3
 	SDL_SetWindowRelativeMouseMode(ghMainWnd, capture);
+#elif defined(USE_SDL1)
+	// Grabbed with the cursor hidden, SDL 1.2 reports relative motion past the window's edges.
+	SDL_WM_GrabInput(capture ? SDL_GRAB_ON : SDL_GRAB_OFF);
+	SDL_ShowCursor(capture ? SDL_DISABLE : SDL_ENABLE);
 #else
 	SDL_SetRelativeMouseMode(capture ? SDL_TRUE : SDL_FALSE);
 #endif
@@ -207,15 +232,10 @@ void ApplyLook(float dt)
 
 	// Arrow keys turn and look for keyboard-only play; the automap uses them for scrolling.
 	if (!NeedsCursor() && KeyboardMovementAllowed() && !AutomapActive) {
-#ifdef USE_SDL3
-		const bool *keys = SDL_GetKeyboardState(nullptr);
-#else
-		const Uint8 *keys = SDL_GetKeyboardState(nullptr);
-#endif
-		if (keys[SDL_SCANCODE_LEFT]) View.yaw -= KeyTurnSpeed * dt;
-		if (keys[SDL_SCANCODE_RIGHT]) View.yaw += KeyTurnSpeed * dt;
-		if (keys[SDL_SCANCODE_UP]) View.pitch += KeyPitchSpeed * dt;
-		if (keys[SDL_SCANCODE_DOWN]) View.pitch -= KeyPitchSpeed * dt;
+		if (KeyHeld(KeyTurnLeft)) View.yaw -= KeyTurnSpeed * dt;
+		if (KeyHeld(KeyTurnRight)) View.yaw += KeyTurnSpeed * dt;
+		if (KeyHeld(KeyLookUp)) View.pitch += KeyPitchSpeed * dt;
+		if (KeyHeld(KeyLookDown)) View.pitch -= KeyPitchSpeed * dt;
 	}
 
 	View.yaw = std::remainder(View.yaw, 2.0F * Pi);
@@ -228,15 +248,10 @@ Vec2 ReadMoveInput()
 	Vec2 move { 0, 0 };
 
 	if (KeyboardMovementAllowed()) {
-#ifdef USE_SDL3
-		const bool *keys = SDL_GetKeyboardState(nullptr);
-#else
-		const Uint8 *keys = SDL_GetKeyboardState(nullptr);
-#endif
-		if (keys[SDL_SCANCODE_W]) move.y += 1;
-		if (keys[SDL_SCANCODE_S]) move.y -= 1;
-		if (keys[SDL_SCANCODE_D]) move.x += 1;
-		if (keys[SDL_SCANCODE_A]) move.x -= 1;
+		if (KeyHeld(KeyForward)) move.y += 1;
+		if (KeyHeld(KeyBack)) move.y -= 1;
+		if (KeyHeld(KeyStrafeRight)) move.x += 1;
+		if (KeyHeld(KeyStrafeLeft)) move.x -= 1;
 	}
 
 	if (!IsMovementHandlerActive() && !InGameMenu() && !PadMenuNavigatorActive && !PadHotspellMenuActive) {
@@ -411,15 +426,18 @@ bool HandleEvent(const SDL_Event &event)
 		if (!KeyboardMovementAllowed())
 			return false;
 #ifdef USE_SDL3
-		const SDL_Scancode scancode = event.key.scancode;
+		const HeldKey key = event.key.scancode;
 		const bool repeat = event.key.repeat;
+#elif defined(USE_SDL1)
+		const HeldKey key = event.key.keysym.sym;
+		const bool repeat = false; // the game turns no key repeat on in SDL 1.2
 #else
-		const SDL_Scancode scancode = event.key.keysym.scancode;
+		const HeldKey key = event.key.keysym.scancode;
 		const bool repeat = event.key.repeat != 0;
 #endif
-		if (IsAnyOf(scancode, SDL_SCANCODE_W, SDL_SCANCODE_A, SDL_SCANCODE_S, SDL_SCANCODE_D))
+		if (IsAnyOf(key, KeyForward, KeyStrafeLeft, KeyBack, KeyStrafeRight))
 			return true; // polled in ProcessFrame
-		if (scancode == SDL_SCANCODE_T) {
+		if (key == KeySpells) {
 			// The Speedbook lives on S in iso; give it a first-person home.
 			if (event.type == SDL_EVENT_KEY_DOWN && !repeat) {
 				const uint32_t speedbookKey = GetOptions().Keymapper.KeyForAction("DisplaySpells");

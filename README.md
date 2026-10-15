@@ -50,6 +50,11 @@ Run `Install.bat` again to change your answers, for example to add Hellfire or t
 
 ### Linux
 
+Download `DevilutionX-FP-…-linux-x86_64.tar.gz` from the [releases](https://github.com/Kayo-b/DevilutionX1p/releases),
+unpack it and run `./install.sh` in its folder. The package needs SDL2 (the installer offers to install it) and glibc
+2.39 or later (Ubuntu 24.04, Debian 13, Fedora 40, Arch). On an older system or another processor, build it from
+source; the same installer does that:
+
 ```bash
 git clone https://github.com/Kayo-b/DevilutionX1p.git
 cd DevilutionX1p
@@ -63,12 +68,20 @@ The installer:
   takes GOG's offline installer (`setup_diablo_1.09_*.exe`) and unpacks the data from it, with `innoextract`;
 - asks **Diablo** or **Diablo + Hellfire**, and whether to use **Daggerfall's weapons** (finds Daggerfall under Wine or
   Steam, or asks for its folder);
-- builds a Release game and installs it in `~/.local/share/devilutionx-fp`, with a `devilutionx-fp` command and
-  applications menu entries (one for Diablo, one for Hellfire).
+- builds a Release game (from source; a release package has it built) and installs it in
+  `~/.local/share/devilutionx-fp`, with a `devilutionx-fp` command and applications menu entries (one for Diablo, one
+  for Hellfire).
 
 Run `./install.sh` again after pulling changes to update. `./install.sh --uninstall` removes it (your heroes and
 settings are kept), and `./install.sh --help` lists the options for an unattended install (`--yes`, `--diablo`,
 `--game diablo|hellfire`, `--daggerfall`, ...).
+
+### Android
+
+The releases also have an APK (`DevilutionX-FP-…-android.apk`), for Android handhelds such as the AYN Thor. It installs
+as its own app; put the game's data (`DIABDAT.MPQ`, and Hellfire's) in `Android/data/org.diasurgical.devilutionx.fp/files/`
+and, for the weapons, Daggerfall's 13 files in a `daggerfall` folder there. With a gamepad, the left stick walks and
+the right stick looks. Each release's APK has a new signature: to update, save your `*.sv` files, uninstall, install.
 
 ### By hand
 
@@ -101,8 +114,9 @@ the GOG install under Wine, `~/.wine/drive_c/GOG Games/Daggerfall/arena2`).
 **Windows releases** are cross-built on Linux: `Packaging/fp/package-windows.sh` downloads the
 [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) compiler and SDL2's MinGW build (once, into
 `~/.cache/devilutionx-fp`), builds `devilutionx.exe` and packs `DevilutionX-FP-<version>-windows-x64.zip` with
-`Install.bat` into `build-windows/release/`. Pushing a version tag (`git tag v1 && git push origin v1`) makes the GitHub workflow
-`fp_windows_release.yml` do the same and publish the zip as that version's release.
+`Install.bat` into `build-windows/release/`; `Packaging/fp/package-linux.sh` packs the Linux tarball (with
+`install.sh`, which then skips the build) into `build-linux/release/`. Pushing a version tag (`git tag v1 && git push
+origin v1`) makes the GitHub workflow `fp_release.yml` build both and publish them as that version's release.
 
 ## Controls (first person)
 

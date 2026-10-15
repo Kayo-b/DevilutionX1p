@@ -1,0 +1,147 @@
+# Diablo First-Person: builds the Windows zip (Packaging/fp/package-windows.sh), the Linux tarball
+# (Packaging/fp/package-linux.sh) and the Android APK and, for a version tag (v1, v1.1, ...), publishes them as that version's GitHub
+# release. Run it by hand from the Actions tab for a test build (the packages are then the run's artifacts).
+name: First-Person release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # The release made first, so the two builds only add their packages to it.
+  release:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+
+    - name: Create the release
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ github.ref_name }}
+      run: |
+        gh release view "$TAG" >/dev/null 2>&1 ||
+          gh release create "$TAG" --title "Diablo First-Person $TAG" --notes-file Packaging/fp/release-notes.md
+
+  windows-x64:
+    needs: release
+    if: ${{ !cancelled() && !failure() }}
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Install the build tools
+      run: sudo apt-get update && sudo apt-get install -y cmake ninja-build gettext zip
+
+    - name: Cache the cross-compiler and SDL2
+      uses: actions/cache@v6
+      with:
+        path: ~/.cache/devilutionx-fp
+        key: fp-windows-toolchain-${{ hashFiles('Packaging/fp/package-windows.sh') }}
+
+    - name: Build and pack
+      env:
+        FP_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+      run: Packaging/fp/package-windows.sh
+
+    - name: Upload the zip
+      uses: actions/upload-artifact@v7
+      with:
+        name: DevilutionX-FP-windows-x64
+        path: build-windows/release/*.zip
+
+    - name: Add it to the release
+      if: github.ref_type == 'tag'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ github.ref_name }}
+      run: gh release upload "$TAG" build-windows/release/*.zip --clobber
+
+  linux-x86_64:
+    needs: release
+    if: ${{ !cancelled() && !failure() }}
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Install the build tools
+      run: sudo apt-get update && sudo apt-get install -y cmake ninja-build gettext gcc-14 g++-14 libsdl2-dev
+
+    - name: Build and pack
+      env:
+        FP_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+        CC: gcc-14
+        CXX: g++-14
+      run: Packaging/fp/package-linux.sh
+
+    - name: Upload the tarball
+      uses: actions/upload-artifact@v7
+      with:
+        name: DevilutionX-FP-linux-x86_64
+        path: build-linux/release/*.tar.gz
+
+    - name: Add it to the release
+      if: github.ref_type == 'tag'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ github.ref_name }}
+      run: gh release upload "$TAG" build-linux/release/*.tar.gz --clobber
+
+  android:
+    needs: release
+    if: ${{ !cancelled() && !failure() }}
+    runs-on: ubuntu-latest
+    steps:
+    - name: Install gettext
+      run: sudo apt-get update && sudo apt-get install -y gettext
+
+    - name: Checkout
+      uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v5
+      with:
+        java-version: '17'
+        distribution: 'adopt'
+        cache: gradle
+
+    - name: Install CMake
+      run: $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "cmake;3.31.0"
+
+    # A release build (optimised: first person draws on the CPU), its own app (.fp), signed with the debug key.
+    - name: Build the APK
+      run: cd android-project && ./gradlew assembleRelease -PfpRelease
+
+    - name: Name it
+      env:
+        FP_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+      run: |
+        mkdir -p build-android
+        cp android-project/app/build/outputs/apk/release/app-release.apk "build-android/DevilutionX-FP-$FP_VERSION-android.apk"
+
+    - name: Upload the APK
+      uses: actions/upload-artifact@v7
+      with:
+        name: DevilutionX-FP-android
+        path: build-android/*.apk
+
+    - name: Add it to the release
+      if: github.ref_type == 'tag'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ github.ref_name }}
+      run: gh release upload "$TAG" build-android/*.apk --clobber
