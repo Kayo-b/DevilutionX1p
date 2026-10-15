@@ -359,6 +359,12 @@ std::string DebugCmdFpOperate(int x, int y)
 	return StrCat("Operated the object at ", x, ",", y, ".");
 }
 
+std::string DebugCmdFpTownWarps(int mask)
+{
+	MyPlayer->pTownWarps = static_cast<uint8_t>(mask);
+	return StrCat("Town warps set to ", mask, " (1 catacombs, 2 caves, 4 hell); enter town again to see them.");
+}
+
 std::string DebugCmdFpWeapon(std::optional<int> file, std::optional<int> record, std::optional<int> frame)
 {
 	fp::PreviewFirstPersonWeapon(file.value_or(-1), record.value_or(0), frame.value_or(0));
@@ -600,6 +606,7 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "dumpfile", "(gamePath: string, outPath: string)", "Copy a file from the game data (a palette, a .dun) to disk.", &DebugCmdFpDumpFile);
 	LuaSetDocFn(table, "dumpgrid", "(path: string)", "Write the level's grid for offline tools: per tile its piece, solid, megatile, special and object type.", &DebugCmdFpDumpGrid);
 	LuaSetDocFn(table, "sarcophagus", "(enabled: boolean)", "Use the dungeon kit's 3D sarcophagus model (default), or a box of its sprite.", &DebugCmdFpSarcophagus);
+	LuaSetDocFn(table, "townwarps", "(mask: number)", "Open the town's warps to the catacombs (1), the caves (2), hell (4): the town shows their entrances when entered again.", &DebugCmdFpTownWarps);
 	LuaSetDocFn(table, "operate", "(x: number, y: number)", "Operate the object at a tile, as a click on it does (open a sarcophagus, a door...).", &DebugCmdFpOperate);
 	LuaSetDocFn(table, "weapon", "(file: number = nil, record: number = 0, frame: number = 0)", "Show a Daggerfall weapon frame instead of the held one; no file to go back.", &DebugCmdFpWeapon);
 	LuaSetDocFn(table, "on","(enabled: boolean)", "Switch between first-person and the original view.", &DebugCmdFpOn);

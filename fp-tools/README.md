@@ -150,6 +150,7 @@ Open the console with the backtick key, then run `dev = require('devilutionx.dev
 | `dev.fp.walkto(x,y)`, `dev.fp.where()` | test click-walks; print the camera position |
 | `dev.fp.pick()` | what the crosshair aims at (a monster, a door, an object, an item), as a click there takes it |
 | `dev.fp.operate(x, y)` | operate the object at a tile as a click would (open a sarcophagus, a door, a chest) |
+| `dev.fp.townwarps(mask)` | open the town's warps (1 catacombs, 2 caves, 4 hell): the town shows their entrances once entered again |
 | `dev.fp.weapon(file, record, frame)` | show one Daggerfall weapon frame (`WEAPON<file>.CIF`; record 0 rest, 1-6 strikes); no arguments to follow the player again |
 | `dev.fp.modeltextures(bool)` | town buildings with the 3D models' own textures (default) or their projected iso art |
 | `dev.fp.sarcophagus(bool)` | use the 3D mod-kit sarcophagus model (default on), or a box of its sprite |
@@ -584,7 +585,8 @@ on the ray of the disc's (the iso view has the same scale across and down). Each
 on the ground, or up on the stones in front where its disc is above the heap's foot, never higher than the biggest,
 and only if a stone placed before it lies under it there (`supportAt`); else as high as one does, or on the ground,
 further back along the ray (stones used to hang in the air over the field where nothing was under them). (The town
-had 2822 stones, most of them small fillers; it has 826.) A gravestone is made as
+had 2822 stones, most of them small fillers; it has about 815.) Heaps of more than 600 triangles are drawn nearest
+first, as the buildings are. A gravestone is made as
 what its outline is (`ShapeGrave`): a headstone (round-topped where its top corners are cut), a cross, a post or a
 slab fallen flat, as wide as its body and standing on the ground under its foot (the ground's removal leaves a
 headstone's shaded foot a thin stem, and cuts some in two: pieces one above the other are put back together). Both
@@ -596,6 +598,17 @@ gravestones). Each straight run stands at one place across its tiles, the median
 (`WallAcross`, `WallArtAcross`: tiles of one run differ, and placed one by one they left offset pieces with gaps
 between), and at a corner a wall ends in the one it meets. Corners the art draws across two diagonal tiles (the
 walls ending either side of an empty tile) get that tile as their corner, so the walls meet.
+
+**The caves' entrance** (`BuildCaveMound`; the town's warp to level 9, its trigger at (17, 69)): a mound of 15 big
+boulders (`CaveStones`, laid out round a middle `CaveMoundBack` behind the trigger tile's corner, along the mouth's
+axis and across it) about 2.6 tiles high, as the art draws it: a heap of big angular boulders with a dark mouth low on
+its south-east side, onto the trigger's tile. The mouth is carved through the stones (`StoneCarve` in `AddStone`):
+a ragged half ellipse (`CaveMouthHalf`, `CaveMouthTop`, `CaveMouthRagged`) whose inside is dark rock, black deep in,
+the faces the stones turned out of it dropped, a black back and floor. While the warp is closed (the art then fills
+the mouth with boulders), one more boulder blocks it. Its tiles are the boulder tiles within `CaveMoundReach` and the
+mouth's own pieces (1199-1212, which `IsTreePiece` would otherwise take for trees); its stones take their colours
+from the art of those tiles (`BuildPropCanvas`), and the field round it is packed as before.
+`lua:dev.fp.townwarps(7)` and entering town again (`dev.level.warp.dungeon(1)` then `(0)`) opens the warps to test it.
 
 **Lamplight** (the `LitLandmarks` section of `fp_buildings.cpp`):
 1. Every house is lit. The tavern, smithy and church have rooms measured by hand; the cottages' are fitted to their
