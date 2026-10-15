@@ -22,9 +22,11 @@ Repository: `/home/kxyx/projects/DevilutionX1p`, the fork `Kayo-b/DevilutionX1p`
 | `fp-cave-overhaul` | the caves (levels 9-12) in the clean dungeon too, on top of `fp-dungeon-overhaul` (hell, 13-16: `fp-hell-overhaul`) |
 | `fp-hell-overhaul` | hell (levels 13-16) rebuilt from its own art (fp_hell.cpp, 5.1.2), from `master` |
 | `fp-catacombs-overhaul` | the catacombs (levels 5-8) rebuilt from their own art (fp_catacombs.cpp, 5.1.3), from `master` |
+| `fp-tristram-lighting` | Tristram at night: lamplight, windows, props and floor (5.4.1), Adria's shack (5.5.1), the fountain |
+| `fp-town-mausoleum` | the mausoleum by the cows (5.5), fewer and bigger boulders, the caves' entrance (5.4.1), from `master` |
 | `fp` | the earlier first-person base (`fp-buildings` is built on it, not merged back) |
 | `fp-voxel` | paused experiment (voxel monsters) |
-| `master` | tracks upstream DevilutionX |
+| **`master`** | **the up-to-date game**: upstream DevilutionX with every branch above from `fp-dungeon-overhaul` down merged in (the clean dungeon, the caves, hell, the catacombs, Tristram); new work branches off it and is merged back |
 
 | Path (in the repo) | What it is |
 |---|---|
@@ -83,7 +85,7 @@ Assets the game loads come from `assets/fp/` and are listed in `CMake/Assets.cma
 
 ## 2. Build and run
 
-Configure once (from the repo root, on branch `fp-buildings`):
+Configure once (from the repo root, on branch `master`):
 ```bash
 mise exec cmake@4.4.3 ninja@1.13.2 -- cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDEBUG=ON \
   -DBUILD_TESTING=OFF -DNONET=ON -DDEVILUTIONX_SYSTEM_LUA=OFF -DDEVILUTIONX_STATIC_LUA=ON \
@@ -116,16 +118,15 @@ The build copies it to `build/assets/fp/`.
 
 **Git workflow (fork + upstream):**
 - `origin` is the fork on GitHub; `upstream` is diasurgical/devilutionx.
-- Work and commit on `fp-buildings`.
+- Work on a branch from `master` (`fp-...`), merge it back into `master` when it is done.
 - Pull upstream fixes when you want them:
   ```bash
   git fetch upstream
-  git checkout master && git merge upstream/master            # keep master equal to upstream
-  git checkout fp-buildings && git merge master               # bring them into the mod
+  git checkout master && git merge upstream/master            # upstream's fixes into the mod
   ```
   Conflicts are most likely in the few upstream files the mod touches outside `Source/fp/` (cursor, diablo, engine
   render hooks, `CMake/Assets.cmake`, the Lua dev modules).
-- Publish with `git push origin fp-buildings` (and `fp`, `fp-voxel`).
+- Publish with `git push origin master` (and the feature branch).
 
 ---
 
