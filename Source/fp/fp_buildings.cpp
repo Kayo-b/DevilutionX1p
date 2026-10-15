@@ -664,6 +664,23 @@ bool HouseModelsOn = true;
 bool TexturedHouses = true;
 bool HouseMeshesOn = true;
 
+#if defined(__ANDROID__) && !defined(USE_SDL3)
+/** @brief An asset packed in the APK, which only SDL reads (the APK's assets aren't files), behind a read-only FILE. */
+FILE *OpenPackagedAsset(const std::string &path)
+{
+	SDL_RWops *rw = SDL_RWFromFile(path.c_str(), "rb");
+	if (rw == nullptr)
+		return nullptr;
+	return funopen(
+	    rw,
+	    [](void *cookie, char *buffer, int size) -> int {
+		    return static_cast<int>(SDL_RWread(static_cast<SDL_RWops *>(cookie), buffer, 1, static_cast<size_t>(size)));
+	    },
+	    nullptr, nullptr,
+	    [](void *cookie) -> int { return SDL_RWclose(static_cast<SDL_RWops *>(cookie)); });
+}
+#endif
+
 FILE *OpenHouseAsset(const char *envName, const char *fileName)
 {
 	std::vector<std::string> candidates;
@@ -674,7 +691,11 @@ FILE *OpenHouseAsset(const char *envName, const char *fileName)
 	for (const std::string &path : candidates)
 		if (FILE *f = std::fopen(path.c_str(), "rb"))
 			return f;
+#if defined(__ANDROID__) && !defined(USE_SDL3)
+	return OpenPackagedAsset(StrCat("fp/", fileName));
+#else
 	return nullptr;
+#endif
 }
 
 /** @brief Adds the triangle meshes of housemesh.bin to the loaded voxel models, matched by name. */

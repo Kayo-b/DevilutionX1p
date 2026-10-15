@@ -24,6 +24,7 @@
 #endif
 
 #include "engine/palette.h"
+#include "fp/fp_buildings.hpp"
 #include "fp/fp_textures.hpp"
 #include "levels/gendung.h"
 #include "utils/log.hpp"
@@ -61,15 +62,7 @@ bool SkyOn = true;
 
 FILE *OpenSkyAsset(const char *envName, const char *fileName)
 {
-	std::vector<std::string> candidates;
-	if (const char *env = std::getenv(envName))
-		candidates.emplace_back(env);
-	candidates.push_back(StrCat(paths::AssetsPath(), "fp/", fileName));
-	candidates.push_back(StrCat(paths::BasePath(), "assets/fp/", fileName));
-	for (const std::string &path : candidates)
-		if (FILE *f = std::fopen(path.c_str(), "rb"))
-			return f;
-	return nullptr;
+	return OpenFpAsset(envName, fileName); // the same places, and on Android the APK
 }
 
 void LoadSky(SkyBox &sky, const char *envName, const char *fileName)

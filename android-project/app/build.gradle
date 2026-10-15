@@ -31,6 +31,12 @@ android {
 		release {
 			minifyEnabled false
 			proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+			// The first-person mod's releases (-PfpRelease): an app of its own beside DevilutionX, signed with the
+			// build machine's debug key so it installs without a keystore of its own.
+			if (project.hasProperty('fpRelease')) {
+				applicationIdSuffix ".fp"
+				signingConfig signingConfigs.debug
+			}
 		}
 	}
 	namespace 'org.diasurgical.devilutionx'
