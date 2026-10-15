@@ -506,6 +506,7 @@ void FitBuilding(Building &b)
 }
 
 bool IsTownRockPiece(uint16_t piece);
+bool IsTreePiece(uint16_t piece);
 
 /**
  * @brief Stitches the iso columns of the tiles into pictures, nearest tiles last: `canvas` from the building's
@@ -728,6 +729,7 @@ struct LandmarkMesh {
 	std::string name;
 	std::vector<std::array<float, 9>> triangles; // u, w (0..1 over the plaza extent), z (plaza units) per vertex
 	std::vector<uint8_t> classes;                // 0 wall, 1 roof, 2 door, 3 inside, 4 a cross window's rim
+	std::vector<uint8_t> wound;                  // 1 where the winding gives the normal (the file's class bit WoundClass)
 	std::vector<std::array<float, 6>> uvs;       // texture coordinates per vertex (FPL2 files)
 	std::vector<int16_t> textures;               // index into MeshTextures, -1 for none
 };
@@ -863,7 +865,7 @@ struct LandmarkPlacement {
 	bool modelTextures = true; // may wear the model's own textures (dev.fp.modeltextures); else always its art
 };
 
-const std::array<LandmarkPlacement, 10> Landmarks { {
+const std::array<LandmarkPlacement, 11> Landmarks { {
 	// The buildings of the Tristram plaza model (Nexus Mods 67266), each fitted to the town's iso art by silhouette
 	// overlap (fp-tools/export/fit_landmark.py; the plaza is laid out like the town, at its scale, y flipped) and
 	// textured by projecting that art back on. The comment gives each fit's overlap with the art.
@@ -882,10 +884,16 @@ const std::array<LandmarkPlacement, 10> Landmarks { {
 	{ "fountain", { 59, 69 }, { 61, 71 }, 59.65F, 61.46F, 69.75F, 71.53F, 0.643F, 100.0F, 0.643F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true, false }, // 0.52
 	// Tristram's church (research/church): tower, nave and round apse, fitted to the iso art by silhouette overlap.
 	{ "church", { 19, 14 }, { 31, 29 }, 19.78F, 32.22F, 14.31F, 30.19F, 0.85F, 100.0F, 0.85F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },
+	// The mausoleum by the cows: not in Nexus 67266, built by export_landmarks.py after the art (mausoleum_triangles),
+	// in tiles of its platform (x 48-50, y 18-21) and art heights.
+	{ "mausoleum", { 48, 18 }, { 50, 21 }, 48.0F, 51.0F, 18.0F, 22.0F, 1.0F, 100.0F, 1.0F, false, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },
 } };
 
 std::vector<LandmarkMesh> LandmarkMeshes;
 bool LandmarksLoaded = false;
+
+/** A bit of a triangle's class in a mesh file: its winding is reliable, the game takes its normal from it. */
+constexpr uint8_t WoundClass = 0x40;
 
 /** @brief Reads a mesh file in the landmarks.bin format (see research/tristram_plaza/export_landmarks.py). */
 void LoadMeshFile(const char *envName, const char *fileName, std::vector<LandmarkMesh> &meshes)
@@ -935,6 +943,7 @@ void LoadMeshFile(const char *envName, const char *fileName, std::vector<Landmar
 			break;
 		mesh.triangles.resize(triangleCount);
 		mesh.classes.resize(triangleCount);
+		mesh.wound.resize(triangleCount);
 		if (textured) {
 			mesh.uvs.resize(triangleCount);
 			mesh.textures.resize(triangleCount);
@@ -949,6 +958,9 @@ void LoadMeshFile(const char *envName, const char *fileName, std::vector<Landmar
 			} else if (ok) {
 				ok = readAll(&mesh.classes[t], 1);
 			}
+			// Its winding is reliable (counter-clockwise seen from outside): the normal comes from it.
+			mesh.wound[t] = (mesh.classes[t] & WoundClass) != 0 ? 1 : 0;
+			mesh.classes[t] &= ~WoundClass;
 		}
 		if (!ok)
 			break;
@@ -1318,7 +1330,7 @@ void FilterPatch(SurfaceTexture &patch, int sizeX, int sizeY)
 	patch.pixels.swap(filtered);
 }
 
-void AddMeshTriangle(Building &b, const std::array<V3, 3> &p, bool roof, V3 middle);
+void AddMeshTriangle(Building &b, const std::array<V3, 3> &p, bool roof, V3 middle, bool wound = false);
 
 /** @brief Places the model's mesh over the footprint, the same way DrawHouseModel places its voxels. */
 void BuildMesh(Building &b)
@@ -1355,7 +1367,7 @@ void BuildMesh(Building &b)
 }
 
 /** @brief Adds a world triangle to the building's mesh, working out how it is textured and shaded. */
-void AddMeshTriangle(Building &b, const std::array<V3, 3> &p, bool roof, V3 middle)
+void AddMeshTriangle(Building &b, const std::array<V3, 3> &p, bool roof, V3 middle, bool wound)
 {
 	WorldTriangle tri;
 	tri.p = p;
@@ -1369,9 +1381,10 @@ void AddMeshTriangle(Building &b, const std::array<V3, 3> &p, bool roof, V3 midd
 		if (length < 1e-9F)
 			return;
 		n = { n.x / length, n.y / length, n.z / length };
-		// The mesh's winding is not reliable: orient the normal away from the middle of the house.
+		// The kit's winding is not reliable: orient the normal away from the middle of the house (unless it is: the
+		// models built for the mod, whose recesses and roof undersides face in towards the middle).
 		const V3 centroid { (tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F, (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F, (tri.p[0].z + tri.p[1].z + tri.p[2].z) / 3.0F };
-		if (n.x * (centroid.x - cx) + n.y * (centroid.y - cy) + n.z * (centroid.z - middle.z) < 0)
+		if (!wound && n.x * (centroid.x - cx) + n.y * (centroid.y - cy) + n.z * (centroid.z - middle.z) < 0)
 			n = { -n.x, -n.y, -n.z };
 		tri.roof = roof;
 		tri.slopeScale = 1.0F;
@@ -1650,7 +1663,7 @@ void BuildLandmarkMesh(Building &b, const LandmarkPlacement &place, const Landma
 		for (int k = 0; k < 3; k++)
 			p[k] = toWorld(&mesh.triangles[t][static_cast<size_t>(k) * 3]);
 		const size_t before = b.mesh.size();
-		AddMeshTriangle(b, p, mesh.classes[t] == 1, middle);
+		AddMeshTriangle(b, p, mesh.classes[t] == 1, middle, !mesh.wound.empty() && mesh.wound[t] != 0);
 		if (b.mesh.size() > before) {
 			b.mesh.back().inside = mesh.classes[t] == 3;
 			b.mesh.back().rim = mesh.classes[t] == 4;
@@ -3618,6 +3631,10 @@ void BuildAll()
 					}
 				}
 			}
+			// Only trees (a dense crown passes for wall art): no house, though solid ground beside it (the stream by
+			// the tree south-east of the town) would make it a footprint.
+			if (std::all_of(art.begin(), art.end(), [](Point p) { return IsTreePiece(dPiece[p.x][p.y]); }))
+				continue;
 			int artMinX = MAXDUNX;
 			int artMaxX = 0;
 			int artMinY = MAXDUNY;
@@ -4118,10 +4135,11 @@ void DrawHouseMesh(const Surface &out, const Projection &proj, std::vector<float
 	for (int y = lightMin.y; y <= lightMax.y; y++)
 		for (int x = lightMin.x; x <= lightMax.x; x++)
 			light[static_cast<size_t>(y - lightMin.y) * lightWidth + x - lightMin.x] = LightAt({ x, y });
-	// Big models: front to back, so the depth test turns hidden pixels away before their colour is looked up.
+	// Big models (most of the landmarks): front to back, so the depth test turns hidden pixels away before their
+	// colour is looked up. Sorting a few hundred triangles costs far less than shading what hides behind them.
 	static std::vector<uint32_t> sorted;
 	const std::vector<uint32_t> *order = nullptr;
-	if (b.mesh.size() > 2000) {
+	if (b.mesh.size() > 600) {
 		static std::vector<std::pair<float, uint32_t>> byDistance;
 		byDistance.clear();
 		for (uint32_t i = 0; i < b.mesh.size(); i++) {
@@ -7422,10 +7440,27 @@ const std::vector<std::array<V3, 3>> &UnitSphere(int level)
 }
 
 /**
- * @brief A lumpy stone: a squashed sphere (`radius` across, `height` up, turned by `turn`) with its surface pushed in
- * and out by a few waves, so no two are alike; what would be under the ground is flattened onto it.
+ * @brief A tunnel carved through stones (the caves' entrance): in the frame of a point `origin` on the ground and the
+ * way the tunnel runs out, `along`, whatever of a stone lies past `back` along it and inside its arch (half an
+ * ellipse `half` across each way at the floor, `top` high, its outline wobbling by up to `ragged` of it) is pushed out
+ * onto the arch, or back onto the tunnel's back if that is nearer, and drawn dark (`color`): darker the deeper.
  */
-void AddStone(std::vector<WorldTriangle> &out, V3 middle, float radius, float height, float turn, uint32_t seed, int level, uint8_t fallback)
+struct StoneCarve {
+	Vec2 origin;
+	Vec2 along;
+	float back;
+	float half;
+	float top;
+	float ragged;
+	uint8_t color;
+};
+
+/**
+ * @brief A lumpy stone: a squashed sphere (`radius` across, `height` up, turned by `turn`) with its surface pushed in
+ * and out by a few waves, so no two are alike; what would be under the ground is flattened onto it. With `carve`, a
+ * tunnel cut through it (StoneCarve).
+ */
+void AddStone(std::vector<WorldTriangle> &out, V3 middle, float radius, float height, float turn, uint32_t seed, int level, uint8_t fallback, const StoneCarve *carve = nullptr)
 {
 	auto random = [&](int k) { return static_cast<float>((seed * 2654435761U + static_cast<uint32_t>(k) * 40503U) >> 8 & 0xFFFF) / 65535.0F; };
 	std::array<V3, 4> waves;
@@ -7449,8 +7484,66 @@ void AddStone(std::vector<WorldTriangle> &out, V3 middle, float radius, float he
 		const float z = std::max(p.z * lump * height, -0.35F * height);
 		return V3 { middle.x + x * c - y * s, middle.y + x * s + y * c, std::max(middle.z + z, 0.0F) };
 	};
-	for (const auto &tri : UnitSphere(level))
-		AddSolidTriangle(out, place(tri[0]), place(tri[1]), place(tri[2]), { middle.x, middle.y, std::max(middle.z, height * 0.3F) }, fallback);
+	// Whatever of the stone is inside the tunnel, pushed out onto its nearest surface; whether it was.
+	auto cut = [&](V3 q, bool &carved) {
+		carved = false;
+		if (carve == nullptr)
+			return q;
+		const float dx = q.x - carve->origin.x;
+		const float dy = q.y - carve->origin.y;
+		const float u = dx * carve->along.x + dy * carve->along.y;
+		const float v = -dx * carve->along.y + dy * carve->along.x;
+		if (u <= carve->back)
+			return q;
+		// The arch's outline round its foot's middle, wobbling with the angle and along the tunnel.
+		const float angle = std::atan2(q.z / carve->top, v / carve->half);
+		const float wobble = 1.0F + carve->ragged * (0.6F * std::sin(angle * 5.0F + u * 3.1F) + 0.4F * std::sin(angle * 11.0F - u * 5.3F));
+		const float nv = v / (carve->half * wobble);
+		const float nz = q.z / (carve->top * wobble);
+		const float r = std::sqrt(nv * nv + nz * nz);
+		if (r >= 1.0F)
+			return q;
+		carved = true;
+		const float toBack = u - carve->back;
+		const float toArch = (1.0F - r) * std::min(carve->half, carve->top);
+		if (toBack <= toArch) {
+			q.x -= carve->along.x * toBack;
+			q.y -= carve->along.y * toBack;
+		} else if (r < 1e-4F) {
+			q.z = carve->top * wobble;
+		} else {
+			const float scale = 1.0F / r;
+			const float nvOut = v * scale - v;
+			q.x += -carve->along.y * nvOut;
+			q.y += carve->along.x * nvOut;
+			q.z *= scale;
+		}
+		return q;
+	};
+	for (const auto &tri : UnitSphere(level)) {
+		std::array<bool, 3> carved {};
+		const V3 a = cut(place(tri[0]), carved[0]);
+		const V3 b = cut(place(tri[1]), carved[1]);
+		const V3 d = cut(place(tri[2]), carved[2]);
+		const size_t before = out.size();
+		AddSolidTriangle(out, a, b, d, { middle.x, middle.y, std::max(middle.z, height * 0.3F) }, fallback);
+		if (out.size() > before && carved[0] && carved[1] && carved[2]) {
+			WorldTriangle &inside = out.back();
+			if (inside.normal.x * carve->along.x + inside.normal.y * carve->along.y > 0.5F) {
+				// A face the stone turned out of the tunnel, now stretched across its arch (or flat on its back, which
+				// the tunnel's own back closes): gone.
+				out.pop_back();
+				continue;
+			}
+			// The tunnel's inside: dark rock, black deep in.
+			const float mx = (a.x + b.x + d.x) / 3.0F - carve->origin.x;
+			const float my = (a.y + b.y + d.y) / 3.0F - carve->origin.y;
+			const float depth = mx * carve->along.x + my * carve->along.y - carve->back;
+			inside.mapping = MeshSolid;
+			inside.fallback = depth < 0.35F ? NearestColor(6.0F, 6.0F, 9.0F) : carve->color;
+			inside.darkness = static_cast<uint8_t>(SurfaceShade.size() - (depth < 0.7F ? 1 : 2));
+		}
+	}
 }
 
 /** @brief A component of a canvas as a mask (a pixel of empty border round it), with its small specks closed. */
@@ -7539,21 +7632,32 @@ constexpr float IsoPixelsPerTile = 45.254834F;
 constexpr float IsoPixelsPerTileDeep = 22.627417F;
 
 /**
- * @brief A heap of boulders from its art: its outline filled with round stones, the biggest first (each where the
- * outline is widest, as wide as it is there), each a lumpy low-poly stone. The iso view has the same scale across and
- * down, so a circle of the art is a stone of that size, and its middle is on the ray of the circle's middle. Where a
- * stone's circle is above the heap's foot, it is half further back, half up on the stones in front (never higher than
-the biggest of them). `stones` counts.
+ * @brief A heap of boulders from its art, as a few big stones: the original draws a boulder about every
+ * BoulderArtArea pixels of its heap, and there is a stone for every two of them (one for up to three, two for four or
+ * five, ...), each as big as its share of the heap. Where they lie: the biggest circles inside the outline (each where
+ * it is widest), then a few rounds of k-means over the heap's pixels, so between them they cover it; each stone as big
+ * as a disc of its pixels' area (StoneFill), a lumpy low-poly stone. The iso view has the same scale across and down,
+ * so a disc of the art is a stone of that size, its middle on the ray of the disc's. Where a stone is above the heap's
+ * foot it is half further back, half up on the stones in front (never higher than the biggest). `stones` counts.
  */
+constexpr float BoulderArtArea = 640.0F; // art pixels a boulder of the original covers in its heap (measured on two heaps)
+constexpr float StoneFill = 1.1F;        // a stone's radius over that of a disc of its pixels' area: they overlap a little
+constexpr int StoneRounds = 6;           // k-means rounds
+
 void PackStones(const Building &b, const std::vector<std::pair<int, int>> &pixels, uint8_t fallback, std::vector<WorldTriangle> &near, std::vector<WorldTriangle> &far, int &stones)
 {
 	ArtMask m(pixels, 2);
 	// The heap's foot: the lowest pixel of each column, evened out over the columns around it.
 	std::vector<int> bottom(static_cast<size_t>(m.w), -1);
+	std::vector<std::pair<int, int>> inside;
 	for (int y = 0; y < m.h; y++)
 		for (int x = 0; x < m.w; x++)
-			if (m.mask[static_cast<size_t>(y) * m.w + x] != 0)
+			if (m.mask[static_cast<size_t>(y) * m.w + x] != 0) {
 				bottom[static_cast<size_t>(x)] = y;
+				inside.emplace_back(x, y);
+			}
+	if (inside.empty())
+		return;
 	std::vector<float> foot(static_cast<size_t>(m.w), static_cast<float>(m.h - 2));
 	for (int c = 0; c < m.w; c++) {
 		std::vector<int> around;
@@ -7565,33 +7669,111 @@ void PackStones(const Building &b, const std::vector<std::pair<int, int>> &pixel
 			foot[static_cast<size_t>(c)] = static_cast<float>(around[around.size() / 2]) + 1.0F;
 		}
 	}
-	constexpr float Smallest = 2.5F; // pixels of radius
-	constexpr int Most = 16;
+	const int boulders = std::max(1, static_cast<int>(std::lround(static_cast<float>(inside.size()) / BoulderArtArea)));
+	const int count = std::max(1, boulders / 2);
+	// Seeds: the biggest circles inside the outline, each where it is widest.
+	std::vector<std::array<float, 2>> centres;
+	{
+		ArtMask left = m;
+		for (int k = 0; k < count; k++) {
+			const std::vector<float> distance = left.Distance();
+			const auto widest = std::max_element(distance.begin(), distance.end());
+			if (*widest < 1.0F)
+				break;
+			const int mx = static_cast<int>((widest - distance.begin()) % m.w);
+			const int my = static_cast<int>((widest - distance.begin()) / m.w);
+			centres.push_back({ static_cast<float>(mx), static_cast<float>(my) });
+			const float r = *widest + 0.5F;
+			for (int y = 0; y < m.h; y++)
+				for (int x = 0; x < m.w; x++)
+					if (static_cast<float>((x - mx) * (x - mx) + (y - my) * (y - my)) <= r * r)
+						left.mask[static_cast<size_t>(y) * m.w + x] = 0;
+		}
+	}
+	// k-means over the heap's pixels: each stone takes the pixels nearest it.
+	std::vector<int> owner(inside.size(), 0);
+	std::vector<int> share(centres.size(), 0);
+	for (int round = 0; round < StoneRounds; round++) {
+		std::vector<std::array<double, 2>> sum(centres.size(), { 0.0, 0.0 });
+		std::fill(share.begin(), share.end(), 0);
+		for (size_t i = 0; i < inside.size(); i++) {
+			const auto [x, y] = inside[i];
+			float best = std::numeric_limits<float>::max();
+			for (size_t c = 0; c < centres.size(); c++) {
+				const float dx = static_cast<float>(x) - centres[c][0];
+				const float dy = static_cast<float>(y) - centres[c][1];
+				const float d = dx * dx + dy * dy;
+				if (d < best) {
+					best = d;
+					owner[i] = static_cast<int>(c);
+				}
+			}
+			sum[owner[i]][0] += x;
+			sum[owner[i]][1] += y;
+			share[owner[i]]++;
+		}
+		for (size_t c = 0; c < centres.size(); c++)
+			if (share[c] > 0)
+				centres[c] = { static_cast<float>(sum[c][0] / share[c]), static_cast<float>(sum[c][1] / share[c]) };
+	}
+	// The stones placed so far (middle, radius, height): what a stone above the heap's foot may rest on.
+	struct Placed {
+		V3 middle;
+		float radius;
+		float height;
+	};
+	std::vector<Placed> placed;
+	auto supportAt = [&](float x, float y) {
+		float top = 0;
+		for (const Placed &p : placed) {
+			const float reach = 0.85F * p.radius; // its lumps aside, how far out its top surely reaches
+			const float d2 = (x - p.middle.x) * (x - p.middle.x) + (y - p.middle.y) * (y - p.middle.y);
+			if (d2 < reach * reach)
+				top = std::max(top, p.middle.z + p.height * std::sqrt(1.0F - d2 / (reach * reach)));
+		}
+		return top;
+	};
+	// Biggest first, so a smaller one can rest on it.
+	std::vector<size_t> order(centres.size());
+	for (size_t c = 0; c < order.size(); c++)
+		order[c] = c;
+	std::sort(order.begin(), order.end(), [&](size_t a, size_t c) { return share[a] > share[c]; });
 	float tallest = 0; // the biggest stone's height: none rests higher than on top of it
-	for (int k = 0; k < Most; k++) {
-		const std::vector<float> distance = m.Distance();
-		const auto widest = std::max_element(distance.begin(), distance.end());
-		if (*widest < Smallest)
-			break;
-		const int mx = static_cast<int>((widest - distance.begin()) % m.w);
-		const int my = static_cast<int>((widest - distance.begin()) / m.w);
-		const float r = *widest + 0.5F;
-		for (int y = 0; y < m.h; y++)
-			for (int x = 0; x < m.w; x++)
-				if (static_cast<float>((x - mx) * (x - mx) + (y - my) * (y - my)) <= r * r * 0.7F)
-					m.mask[static_cast<size_t>(y) * m.w + x] = 0;
-		// The stone: its middle on the ray of the circle's.
+	for (const size_t c : order) {
+		if (share[c] == 0)
+			continue;
+		const float mx = centres[c][0];
+		const float my = centres[c][1];
+		const float r = std::sqrt(static_cast<float>(share[c]) / 3.14159265F) * StoneFill;
+		// The stone: its middle on the ray of the disc's.
 		const float radius = r / IsoPixelsPerTile;
-		const float height = radius * 0.78F;
-		const float sx = static_cast<float>(mx + m.x0 - 1 + b.originX) + 0.5F;
-		const float sy = static_cast<float>(my + m.y0 - 1 + b.originY) + 0.5F;
-		const float gap = std::max(0.0F, foot[static_cast<size_t>(mx)] - static_cast<float>(my) - r);
+		const float height = radius * 0.72F;
+		const float sx = mx + static_cast<float>(m.x0 - 1 + b.originX) + 0.5F;
+		const float sy = my + static_cast<float>(m.y0 - 1 + b.originY) + 0.5F;
+		const int column = std::clamp(static_cast<int>(std::lround(mx)), 0, m.w - 1);
+		const float gap = std::max(0.0F, foot[static_cast<size_t>(column)] - my - r);
 		const float lift = std::min(0.5F * gap / HeightPixels, tallest * 0.8F);
 		tallest = std::max(tallest, 2.0F * height);
-		const float z = lift + height * 0.7F;
-		const float sum = (sy + z * HeightPixels) / 16.0F; // x + y
-		const float difference = sx / 32.0F;            // x - y
-		const V3 middle { (sum + difference) / 2.0F, (sum - difference) / 2.0F, z };
+		// On the ray of its disc's middle, its flattened underside (AddStone: 0.35 of its height below its middle) as
+		// high as it would be up on the stones in front, if one of them is under it there; else lower, the highest it
+		// can be with a stone under it, and at worst on the ground (further back along the ray).
+		auto at = [&](float bottom) {
+			const float z = bottom + height * 0.35F;
+			const float sum = (sy + z * HeightPixels) / 16.0F; // x + y
+			const float difference = sx / 32.0F;            // x - y
+			return V3 { (sum + difference) / 2.0F, (sum - difference) / 2.0F, z };
+		};
+		constexpr int Steps = 8;
+		V3 middle = at(0.0F);
+		for (int k = Steps; k > 0; k--) {
+			const float bottom = lift * static_cast<float>(k) / Steps;
+			const V3 candidate = at(bottom);
+			if (supportAt(candidate.x, candidate.y) >= bottom - 0.03F) {
+				middle = candidate;
+				break;
+			}
+		}
+		placed.push_back({ middle, radius, height });
 		const uint32_t seed = static_cast<uint32_t>(std::lround(middle.x * 97.0F)) * 73856093U ^ static_cast<uint32_t>(std::lround(middle.y * 97.0F)) * 19349663U;
 		const float turn = static_cast<float>(seed % 628U) / 100.0F;
 		AddStone(near, middle, radius, height, turn, seed, 1, fallback);
@@ -7855,6 +8037,115 @@ void BuildRocks(const std::vector<Point> &tiles)
 	TownProps.push_back(std::move(prop));
 }
 
+/**
+ * The caves' entrance (the town's warp to level 9, its trigger at CaveMouthCorner's tile): a mound of big boulders
+ * as the art draws it, about 2.6 tiles high, its mouth facing south-east (+x, +y) onto the trigger's tile, a tunnel
+ * carved through the stones there, dark inside (StoneCarve). The mound's middle lies CaveMoundBack behind the corner
+ * of the trigger's tile the mouth opens at; its stones are listed in that frame (CaveStones: along the mouth's axis,
+ * across it, the height of their underside, their radius, their height). While the warp is closed, a boulder blocks
+ * the mouth, as in the art. The mound's tiles are the boulder tiles within CaveMoundReach of its middle, and the
+ * mouth's own pieces; its stones take their colours from their art (BuildPropCanvas), the rest of the field round it
+ * is packed as before.
+ */
+constexpr Point CaveMouthCorner { 17, 69 };
+constexpr float CaveMoundBack = 1.7F;
+constexpr float CaveMoundReach = 2.6F;
+constexpr std::array<std::array<float, 5>, 15> CaveStones { {
+	{ -0.9F, 0.0F, 0.0F, 1.2F, 1.05F },    // the back, the biggest
+	{ -0.15F, -1.4F, 0.0F, 0.95F, 0.85F }, // its flanks
+	{ -0.15F, 1.4F, 0.0F, 0.95F, 0.85F },
+	{ 1.05F, -0.72F, 0.0F, 0.65F, 0.8F },  // the mouth's jambs (the carve cuts the arch out of them)
+	{ 1.05F, 0.72F, 0.0F, 0.65F, 0.8F },
+	{ 0.55F, -0.55F, 0.0F, 0.6F, 0.75F },  // the tunnel's sides, behind them
+	{ 0.55F, 0.55F, 0.0F, 0.6F, 0.75F },
+	{ -1.3F, -1.3F, 0.0F, 0.8F, 0.7F },    // behind
+	{ -1.3F, 1.3F, 0.0F, 0.8F, 0.7F },
+	{ 1.4F, -1.75F, 0.0F, 0.5F, 0.45F },   // in front, either side
+	{ 1.45F, 1.7F, 0.0F, 0.45F, 0.4F },
+	{ 0.9F, 0.0F, 0.85F, 0.78F, 0.6F },    // the lintel over the mouth, on the jambs
+	{ -0.45F, -0.65F, 0.95F, 0.9F, 0.75F }, // the second course
+	{ -0.35F, 0.7F, 0.9F, 0.85F, 0.7F },
+	{ -0.25F, 0.0F, 1.6F, 0.72F, 0.6F },   // the crown
+} };
+/** The mouth: from this far along its axis (the tunnel's dark back) out, this wide each side, this high. */
+constexpr float CaveMouthBack = 0.45F;
+constexpr float CaveMouthHalf = 0.5F;
+constexpr float CaveMouthTop = 1.2F;
+constexpr float CaveMouthRagged = 0.12F;
+
+/** @brief Whether the town has the caves' entrance (its mouth's pieces, open or closed), and its stones' frame. */
+bool FindCaveMound(Vec2 &middle, Vec2 &along)
+{
+	if (leveltype != DTYPE_TOWN || !InDungeonBounds({ 15, 70 }) || dPiece[14][70] != 1202 || dPiece[15][70] != 1199)
+		return false;
+	along = { 0.70710678F, 0.70710678F };
+	middle = { static_cast<float>(CaveMouthCorner.x) - along.x * CaveMoundBack, static_cast<float>(CaveMouthCorner.y) - along.y * CaveMoundBack };
+	return true;
+}
+
+void BuildCaveMound(const std::vector<Point> &tiles, Vec2 middle, Vec2 along)
+{
+	TownProp prop;
+	prop.kind = PropKind::Rock;
+	prop.ownCanvas = true;
+	Building &b = prop.art;
+	BuildPropCanvas(b, tiles);
+	if (b.canvas.empty())
+		return;
+	std::vector<std::pair<int, int>> pixels;
+	for (int y = 0; y < b.canvasHeight; y++)
+		for (int x = 0; x < b.canvasWidth; x++)
+			if (b.canvas[static_cast<size_t>(y) * b.canvasWidth + x] > 0)
+				pixels.emplace_back(x, y);
+	const uint8_t color = pixels.empty() ? uint8_t { 1 } : ComponentColor(b, pixels);
+	const bool open = IsWarpOpen(DTYPE_CAVES);
+	const StoneCarve carve { middle, along, CaveMouthBack, CaveMouthHalf, CaveMouthTop, CaveMouthRagged, color };
+	const Vec2 across { -along.y, along.x };
+	const float turn = std::atan2(along.y, along.x);
+	auto stone = [&](float u, float v, float bottom, float radius, float height, uint32_t k) {
+		const V3 at { middle.x + along.x * u + across.x * v, middle.y + along.y * u + across.y * v, bottom + height * 0.35F };
+		const uint32_t seed = 0x5EEDU * (k + 1) ^ 0x2545F491U;
+		AddStone(b.mesh, at, radius, height, turn + static_cast<float>(k) * 0.7F, seed, 1, color, open ? &carve : nullptr);
+		AddStone(prop.farMesh, at, radius, height, turn + static_cast<float>(k) * 0.7F, seed, 0, color, open ? &carve : nullptr);
+		StoneCount++;
+	};
+	for (size_t k = 0; k < CaveStones.size(); k++) {
+		const auto &[u, v, bottom, radius, height] = CaveStones[k];
+		stone(u, v, bottom, radius, height, static_cast<uint32_t>(k));
+	}
+	if (open) {
+		// The tunnel's back and floor, dark, in case no stone closes them.
+		auto point = [&](float u, float v, float z) { return V3 { middle.x + along.x * u + across.x * v, middle.y + along.y * u + across.y * v, z }; };
+		const float h = CaveMouthHalf;
+		auto dark = [&](std::array<V3, 4> q, V3 inside, int darkness) {
+			for (const auto &[i, j, k] : { std::array { 0, 1, 2 }, std::array { 0, 2, 3 } }) {
+				const size_t before = b.mesh.size();
+				AddSolidTriangle(b.mesh, q[i], q[j], q[k], inside, 0);
+				if (b.mesh.size() > before) {
+					b.mesh.back().mapping = MeshSolid;
+					b.mesh.back().fallback = darkness < 0 ? NearestColor(6.0F, 6.0F, 9.0F) : color;
+					b.mesh.back().darkness = static_cast<uint8_t>(std::max(darkness, 0));
+					prop.farMesh.push_back(b.mesh.back());
+				}
+			}
+		};
+		const V3 below = point(CaveMouthBack + 0.5F, 0.0F, -1.0F);
+		const float t = CaveMouthTop * (1.0F + CaveMouthRagged);
+		const float w = h * (1.0F + CaveMouthRagged);
+		dark({ point(CaveMouthBack, -w, 0.0F), point(CaveMouthBack, w, 0.0F), point(CaveMouthBack, w, t), point(CaveMouthBack, -w, t) }, point(CaveMouthBack - 1.0F, 0.0F, 0.5F), -1);
+		// The floor going in, black, under the arch's middle (the rock's foot either side of it is the stones').
+		dark({ point(CaveMouthBack, -h * 0.8F, 0.004F), point(CaveMouthBack + 0.65F, -h * 0.8F, 0.004F), point(CaveMouthBack + 0.65F, h * 0.8F, 0.004F), point(CaveMouthBack, h * 0.8F, 0.004F) }, below, -1);
+	} else {
+		// The boulder the art blocks the mouth with.
+		stone(1.15F, 0.0F, 0.0F, 0.58F, 0.8F, 100);
+	}
+	if (b.mesh.empty())
+		return;
+	FitPropBounds(prop);
+	LogInfo("fp: the caves' entrance: a mound of {} stones on {} tiles, {}", CaveStones.size() + (open ? 0 : 1), tiles.size(), open ? "open" : "closed");
+	TownProps.push_back(std::move(prop));
+}
+
 /** @brief The gravestones and crosses of a group of grave tiles. */
 void BuildGraves(const std::vector<Point> &tiles)
 {
@@ -7944,6 +8235,12 @@ void BuildTownProps()
 			else if (GetPieceTextures(dPiece[x][y]).hasTallArt && IsTreePiece(dPiece[x][y]))
 				kinds[index(x, y)] = PropKind::Tree; // a tree beside a house, its tile claimed by the house's art: still the tree's
 		}
+	// The caves' entrance's mouth is boulders (BuildCaveMound), whatever its pieces' art is told as.
+	if (Vec2 middle, along; FindCaveMound(middle, along))
+		for (int y = 68; y <= 71; y++)
+			for (int x = 14; x <= 17; x++)
+				if (BuildingTiles[index(x, y)] == 0 && GetPieceTextures(dPiece[x][y]).hasTallArt)
+					kinds[index(x, y)] = PropKind::Rock;
 	// Trees: groups of neighbouring tree tiles.
 	int treeCount = 0;
 	std::vector<uint8_t> seen(kinds.size(), 0);
@@ -8133,9 +8430,31 @@ void BuildTownProps()
 		prop.middle = { (prop.art.x0 + prop.art.x1) / 2.0F, (prop.art.y0 + prop.art.y1) / 2.0F };
 		prop.radius = std::hypot(prop.art.x1 - prop.art.x0, prop.art.y1 - prop.art.y0) / 2.0F;
 	}
+	// The caves' entrance: its mound of boulders, built as one (BuildCaveMound); the field round it as before.
+	std::vector<uint8_t> inMound(kinds.size(), 0);
+	{
+		Vec2 middle;
+		Vec2 along;
+		if (FindCaveMound(middle, along)) {
+			std::vector<Point> tiles;
+			for (int y = 0; y < MAXDUNY; y++)
+				for (int x = 0; x < MAXDUNX; x++) {
+					const float dx = static_cast<float>(x) + 0.5F - middle.x;
+					const float dy = static_cast<float>(y) + 0.5F - middle.y;
+					const bool mouth = x >= 14 && x <= 17 && y >= 68 && y <= 71 && GetPieceTextures(dPiece[x][y]).hasTallArt;
+					if (!mouth && (kinds[index(x, y)] != PropKind::Rock || dx * dx + dy * dy > CaveMoundReach * CaveMoundReach))
+						continue;
+					inMound[index(x, y)] = 1;
+					BuildingTiles[index(x, y)] = 3;
+					tiles.push_back({ x, y });
+				}
+			BuildCaveMound(tiles, middle, along);
+			hullTiles += static_cast<int>(tiles.size());
+		}
+	}
 	// Boulders and gravestones: groups of neighbouring tiles of each, from their art together.
 	for (const PropKind kind : { PropKind::Rock, PropKind::Slab }) {
-		std::vector<uint8_t> grouped(kinds.size(), 0);
+		std::vector<uint8_t> grouped(inMound);
 		for (int y = 0; y < MAXDUNY; y++) {
 			for (int x = 0; x < MAXDUNX; x++) {
 				if (kinds[index(x, y)] != kind || grouped[index(x, y)] != 0 || BuildingTiles[index(x, y)] != 3)
@@ -8891,6 +9210,24 @@ void DrawTownProps(const Surface &out, const Projection &proj, std::vector<float
 		const PieceTextures *columnFor = nullptr;
 		Point columnTile { -1, -1 };
 		const std::vector<WorldTriangle> &mesh = far ? prop.farMesh : prop.art.mesh;
+		// Big ones (heaps of boulders, the caves' mound) front to back too, so hidden pixels are turned away unshaded.
+		static std::vector<uint32_t> sorted;
+		const std::vector<uint32_t> *order = nullptr;
+		if (mesh.size() > 600) {
+			static std::vector<std::pair<float, uint32_t>> byDistance;
+			byDistance.clear();
+			for (uint32_t i = 0; i < mesh.size(); i++) {
+				const WorldTriangle &tri = mesh[i];
+				const float dx = (tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F - proj.pos.x;
+				const float dy = (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F - proj.pos.y;
+				byDistance.emplace_back(dx * dx + dy * dy, i);
+			}
+			std::sort(byDistance.begin(), byDistance.end());
+			sorted.clear();
+			for (const auto &[d, i] : byDistance)
+				sorted.push_back(i);
+			order = &sorted;
+		}
 		RasterizeTriangles(out, proj, depthBuffer, mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
 			float x = wx;
 			float y = wy;
@@ -8944,7 +9281,7 @@ void DrawTownProps(const Surface &out, const Projection &proj, std::vector<float
 				art = tri.fallback;
 			}
 			return static_cast<int>(FpLightTable(level)[ShadeColor(PatchColor(art), tri.darkness)]);
-		}, 1.0F);
+		}, 1.0F, order);
 	}
 }
 

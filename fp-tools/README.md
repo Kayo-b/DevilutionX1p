@@ -152,6 +152,7 @@ Open the console with the backtick key, then run `dev = require('devilutionx.dev
 | `dev.fp.walkto(x,y)`, `dev.fp.where()` | test click-walks; print the camera position |
 | `dev.fp.pick()` | what the crosshair aims at (a monster, a door, an object, an item), as a click there takes it |
 | `dev.fp.operate(x, y)` | operate the object at a tile as a click would (open a sarcophagus, a door, a chest) |
+| `dev.fp.townwarps(mask)` | open the town's warps (1 catacombs, 2 caves, 4 hell): the town shows their entrances once entered again |
 | `dev.fp.weapon(file, record, frame)` | show one Daggerfall weapon frame (`WEAPON<file>.CIF`; record 0 rest, 1-6 strikes); no arguments to follow the player again |
 | `dev.fp.modeltextures(bool)` | town buildings with the 3D models' own textures (default) or their projected iso art |
 | `dev.fp.sarcophagus(bool)` | use the 3D mod-kit sarcophagus model (default on), or a box of its sprite |
@@ -624,6 +625,8 @@ The one tileset still drawn from its art (the caves and hell were, before `fp-ca
 
 ### 5.4 Town houses (cottages)
 1. The town's wall-art tiles are grouped into houses and given a fitted box-and-roof shape (`BuildAll`, `FitBuilding`).
+   A group made only of tree pieces (`IsTreePiece`: a dense crown passes for wall art) is no house: beside the
+   stream south-east of the town, the solid stream tiles made it a footprint, and a cottage stood over the river.
 2. Each house gets the closest-proportioned cottage from the plaza model, stretched to its footprint.
 3. Textures are a stone patch and a thatch patch cut from that house's own iso art (`BuildTextures`), scattered over
    the mesh (`ScatteredTexel`).
@@ -658,11 +661,18 @@ where a replaced house's art claimed their tiles (`ShowsInArt`, `Building::claim
 
 **Boulders, gravestones, low walls** (`BuildRocks`, `BuildGraves`, `BuildTownWallTile`): groups of neighbouring rock
 or grave tiles are cut out of the art together, without the ground in their floor diamonds (`BuildPropCanvas`: only
-the stones' blue there). A heap of boulders is its outline filled with round stones, biggest first (`PackStones`: each
-where the outline is widest and as wide as it is there; the iso view has the same scale across and down, so a
-circle of art is a stone of that size on the ray of its middle). Each is a lumpy low-poly stone (`AddStone`: a
-squashed sphere pushed in and out by a few waves, 80 triangles near, 20 far), half behind the heap's foot and half up
-on the stones in front where its circle is above the foot, never higher than the biggest. A gravestone is made as
+the stones' blue there). A heap of boulders is a few big stones (`PackStones`): the original draws a boulder
+about every `BoulderArtArea` (640) pixels of its heap, and there is a stone for every two of them (one for up to
+three, two for four or five, ...); the same for the field of boulders round the town's west side. Where they lie:
+the biggest circles inside the heap's outline, then a few rounds of k-means over its pixels so that between them
+they cover it; each as big as a disc of its pixels' area (`StoneFill`: a little more, so they overlap), its middle
+on the ray of the disc's (the iso view has the same scale across and down). Each is a lumpy low-poly stone
+(`AddStone`: a squashed sphere pushed in and out by a few waves, 80 triangles near, 20 far), its flattened underside
+on the ground, or up on the stones in front where its disc is above the heap's foot, never higher than the biggest,
+and only if a stone placed before it lies under it there (`supportAt`); else as high as one does, or on the ground,
+further back along the ray (stones used to hang in the air over the field where nothing was under them). (The town
+had 2822 stones, most of them small fillers; it has about 815.) Heaps of more than 600 triangles are drawn nearest
+first, as the buildings are. A gravestone is made as
 what its outline is (`ShapeGrave`): a headstone (round-topped where its top corners are cut), a cross, a post or a
 slab fallen flat, as wide as its body and standing on the ground under its foot (the ground's removal leaves a
 headstone's shaded foot a thin stem, and cuts some in two: pieces one above the other are put back together). Both
@@ -674,6 +684,17 @@ gravestones). Each straight run stands at one place across its tiles, the median
 (`WallAcross`, `WallArtAcross`: tiles of one run differ, and placed one by one they left offset pieces with gaps
 between), and at a corner a wall ends in the one it meets. Corners the art draws across two diagonal tiles (the
 walls ending either side of an empty tile) get that tile as their corner, so the walls meet.
+
+**The caves' entrance** (`BuildCaveMound`; the town's warp to level 9, its trigger at (17, 69)): a mound of 15 big
+boulders (`CaveStones`, laid out round a middle `CaveMoundBack` behind the trigger tile's corner, along the mouth's
+axis and across it) about 2.6 tiles high, as the art draws it: a heap of big angular boulders with a dark mouth low on
+its south-east side, onto the trigger's tile. The mouth is carved through the stones (`StoneCarve` in `AddStone`):
+a ragged half ellipse (`CaveMouthHalf`, `CaveMouthTop`, `CaveMouthRagged`) whose inside is dark rock, black deep in,
+the faces the stones turned out of it dropped, a black back and floor. While the warp is closed (the art then fills
+the mouth with boulders), one more boulder blocks it. Its tiles are the boulder tiles within `CaveMoundReach` and the
+mouth's own pieces (1199-1212, which `IsTreePiece` would otherwise take for trees); its stones take their colours
+from the art of those tiles (`BuildPropCanvas`), and the field round it is packed as before.
+`lua:dev.fp.townwarps(7)` and entering town again (`dev.level.warp.dungeon(1)` then `(0)`) opens the warps to test it.
 
 **Lamplight** (the `LitLandmarks` section of `fp_buildings.cpp`):
 1. Every house is lit. The tavern, smithy and church have rooms measured by hand; the cottages' are fitted to their
@@ -779,6 +800,20 @@ to the level palette and darkened by `TextureDim` in `QuantizeMeshTextures`, sha
 `modelTextures = false` in a `Landmarks` entry keeps a building on its projected art (the fountain does).
 Projective landmarks also bake their art colours once at load (`BakeColors`), used when textures are off. They hide the billboards of tiles under
 them and of art tiles that are mostly the building (`ClaimProjectiveTiles`), and draw plain ground underneath.
+
+**A landmark with no model in the release** is built by the exporter itself: the mausoleum by the cows (tiles x
+48-50, y 18-21), `mausoleum_triangles` in `export_landmarks.py`, measured on the town's art through the iso
+projection (its platform the full 3 x 4 tiles, eaves at 2.42 and ridge at 3.22 tiles of art height): a platform
+of two steps, stone walls with pilasters and a cornice, an iron grate over its front (the gable end towards +y)
+with curls along its top and the dark inside behind, pediments framed and with rosettes, a slate roof with stone
+knobs along its eaves and an iron ring over each end of the ridge. It is laid out in tiles of its platform and
+art heights, so its `Landmarks` entry maps it straight onto them (`zScale` 1, not flipped; no fit needed). Its
+triangles carry the class bit 0x40: their winding is reliable, so the game takes their normals from it
+(`LandmarkMesh::wound`, `AddMeshTriangle`) instead of pointing them away from the building's middle, which would
+turn the roof's undersides and the grate's reveals the wrong way. Its textures are the church's stone and
+pavement and the kit's column stone and steel, tinted to the art's cool grey (`MAUSOLEUM_TINT`), and a slate made
+by the script (`slate_texture`). The dead tree and the creeper the art draws against its long side are not
+rebuilt (with `dev.fp.modeltextures(false)` the projected art shows them).
 
 ### 5.6 Dungeon structures
 All in `fp_buildings.cpp`, built per level in `BuildStructures`:
