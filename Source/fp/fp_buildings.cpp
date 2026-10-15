@@ -9633,6 +9633,12 @@ void SetHouseTexturesEnabled(bool enabled)
 	TexturedHouses = enabled;
 }
 
+void StopTownBuild()
+{
+	LightBuilder.Join();
+	BuiltFor = { nullptr, -1, -1, false };
+}
+
 void SetModelTexturesEnabled(bool enabled)
 {
 	ModelTexturesOn = enabled;

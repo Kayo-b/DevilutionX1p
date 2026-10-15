@@ -51,6 +51,7 @@
 #include "engine/random.hpp"
 #include "engine/render/clx_render.hpp"
 #include "engine/sound.h"
+#include "fp/fp_buildings.hpp"
 #include "fp/fp_controls.hpp"
 #include "fp/fp_view.hpp"
 #include "game_mode.hpp"
@@ -2700,6 +2701,7 @@ void SetCursorPos(Point position)
 
 void FreeGameMem()
 {
+	fp::StopTownBuild();
 	pDungeonCels = nullptr;
 	pMegaTiles = nullptr;
 	pSpecialCels = std::nullopt;

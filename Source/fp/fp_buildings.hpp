@@ -36,6 +36,12 @@ void SetHouseMeshesEnabled(bool enabled);
 void SetModelTexturesEnabled(bool enabled);
 
 /**
+ * @brief Before the level goes (or the game ends): stops working out the town lamps' light (its thread must not
+ * outlive the town's models); the next level builds its own.
+ */
+void StopTownBuild();
+
+/**
  * @brief Per-tile building marks in town (index y * MAXDUNX + x): 0 none, 1 art drawn by a building, 2 also under a
  * model whose ground art must give way to plain ground, 3 a prop drawn as a mesh (a tree, a rock: its own ground
  * without the prop stays). Null outside town.
