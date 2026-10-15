@@ -13,7 +13,9 @@ Binary format (little endian), file `landmarks.bin`:
                                      u8 class, i16 texture (-1: none) }
 u and w run 0..1 over the model's plaza x and y extent; z is plaza units above its lowest point.
 class: 0 wall, 1 roof, 2 door, 3 inside (the church's entrance hall, seen through its open door: lit by its lamps),
-       4 rim (the sides of the church's cross windows, lit by the lamp the game puts behind each).
+       4 rim (the sides of the church's cross windows, lit by the lamp the game puts behind each);
+       + 0x40 (WOUND) where the triangle's winding is reliable (counter-clockwise seen from outside): the game takes its
+       normal from it (the mausoleum's, built here), not from which side of the building's middle it lies.
 Texture coordinates are the OBJ's (v up, repeating past 0..1).
 """
 import os, struct
@@ -246,10 +248,226 @@ def plaza_triangles(box):
     return out
 
 
+# --- The mausoleum by the cows -----------------------------------------------------------------------------------
+# Nexus 67266 has no model of it, so it is built here after the town's iso art (tiles x 48-50, y 18-21): a stone
+# platform of two steps under a stone house, pilasters at its corners and the middles of its long sides, a cornice,
+# an iron grate over its front (the gable end towards +y) with the dark inside behind it, a pitched roof of slate
+# diamonds along y, overhanging, stone knobs along both eaves and an iron ring over each end of the ridge.
+# Units: tiles across (x 0..3) and along (y 0..4) its platform, heights in tiles of the art (39.2 rows each), as
+# measured on the art through the iso projection: the eaves at 2.42, the ridge at 3.22.
+# Textures: the church's stone, the kit's paving, column stone and steel, and a slate made here (no one's art).
+KIT_DIR = os.environ.get('FP_DUNGEON_PIECES_DIR', '/home/kxyx/projects/diablo-hellfire-fp/research/dungeon_pieces')
+MAUSOLEUM_SOURCES = {
+    'stone': (CHURCH_DIR, 'Steinwand_D1_Diffuse.jpg', 0.62, TEXTURE_SIZE), 'base': (CHURCH_DIR, 'Pavement_01_UV_H_CM_1.jpg', 0.7, TEXTURE_SIZE),
+    'trim': (KIT_DIR, 'd_column_extr.tga', 0.68, TEXTURE_SIZE), 'iron': (KIT_DIR, 'Steel_02_UV_H_CM_1.jpg', 0.4, 64),
+    'inside': (CHURCH_DIR, 'Steinwand_D1_Diffuse.jpg', 0.12, 32), 'under': (CHURCH_DIR, 'Steinwand_D1_Diffuse.jpg', 0.4, 128),
+}
+# The art's stone is a cool blue-grey: the textures' warm greys are tinted to it (the game's dusk cools them a little more).
+MAUSOLEUM_TINT = np.array([0.88, 0.92, 1.08])
+M_EAVE = 2.42
+M_RIDGE = 3.22
+M_ROOF = 0.07       # the roof's thickness
+M_WALL = (0.35, 2.65, 0.35, 3.65, 0.2, 2.27)   # x0, x1, y0, y1, z0, z1
+M_CORNICE = (0.27, 2.73, 0.27, 3.73, 2.27, 2.43)
+M_ROOF_X = (0.15, 2.85)
+M_ROOF_Y = (0.18, 3.82)
+M_STEPS = ((0.0, 3.0, 0.0, 4.0, 0.0, 0.1), (0.18, 2.82, 0.18, 3.82, 0.1, 0.2))
+
+
+def slate_texture(size=TEXTURE_SIZE, diamonds=6):
+    """Slate diamonds, a repeat of diamonds x diamonds, each its own tone, lighter towards its top, dark joints."""
+    rng = np.random.default_rng(67266)
+    tones = 0.85 + 0.3 * rng.random((diamonds * 2, diamonds * 2))
+    y, x = np.mgrid[0:size, 0:size] / size * diamonds
+    a = x + y
+    b = x - y
+    ia = np.floor(a).astype(int)
+    ib = np.floor(b).astype(int)
+    fa = a - ia
+    fb = b - ib
+    edge = np.minimum.reduce([fa, 1 - fa, fb, 1 - fb])
+    joint = np.clip(edge / 0.06, 0, 1)
+    shade = 0.8 + 0.35 * (1 - (fa + (1 - fb)) / 2)  # lit from above: lighter at the diamond's top corner
+    tone = tones[ia % (diamonds * 2), ib % (diamonds * 2)]
+    base = np.array([136, 140, 168], dtype=float)  # blue-grey slate, in daylight (the game dims it to dusk)
+    rgb = base[None, None, :] * (tone * shade * (0.35 + 0.65 * joint))[..., None]
+    return np.clip(rgb, 0, 255).astype(np.uint8)
+
+
+_generated = {}
+
+
+def generated_index(name):
+    """A texture of the mausoleum: one of MAUSOLEUM_SOURCES at its brightness, or the slate made here."""
+    if name in _generated:
+        return _generated[name]
+    from PIL import Image
+    if name == 'slate':
+        rgb = slate_texture()
+    else:
+        directory, file, gain, size = MAUSOLEUM_SOURCES[name]
+        im = Image.open(os.path.join(directory, file)).convert('RGB').resize((size, size), Image.LANCZOS)
+        rgb = np.asarray(im, dtype=float) * gain
+        if name != 'iron':
+            grey = rgb.mean(axis=2, keepdims=True)
+            rgb = (grey + 0.5 * (rgb - grey)) * MAUSOLEUM_TINT  # half its own colour, the rest the art's
+        rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+    _generated[name] = len(textures)
+    textures.append(rgb)
+    return _generated[name]
+
+
+def mausoleum_triangles():
+    out = []
+    WOUND = 0x40
+
+    def poly(points, outward, material, cls=0, uv=None, scale=1.0):
+        """A convex polygon facing `outward`, wound counter-clockwise seen from there, fanned into triangles."""
+        q = [np.array(c, dtype=float) for c in points]
+        n = np.cross(q[1] - q[0], q[2] - q[0])
+        if np.dot(n, outward) < 0:
+            q = q[::-1]
+        if uv is None:
+            axis = int(np.argmax(np.abs(outward)))
+            if axis == 2:
+                uv = lambda p: (p[0] / scale, p[1] / scale)
+            else:
+                along = 1 if axis == 0 else 0
+                uv = lambda p, along=along: (p[along] / scale, p[2] / scale)
+        tex = generated_index(material)
+        for k in range(1, len(q) - 1):
+            tri = [q[0], q[k], q[k + 1]]
+            out.append((np.array(tri), cls | WOUND, np.array([uv(t) for t in tri]), tex))
+
+    def box(x0, x1, y0, y1, z0, z1, material, top=True, bottom=False, scale=1.0, sides=(True, True, True, True)):
+        if sides[0]:
+            poly([(x1, y0, z0), (x1, y1, z0), (x1, y1, z1), (x1, y0, z1)], (1, 0, 0), material, scale=scale)
+        if sides[1]:
+            poly([(x0, y0, z0), (x0, y1, z0), (x0, y1, z1), (x0, y0, z1)], (-1, 0, 0), material, scale=scale)
+        if sides[2]:
+            poly([(x0, y1, z0), (x1, y1, z0), (x1, y1, z1), (x0, y1, z1)], (0, 1, 0), material, scale=scale)
+        if sides[3]:
+            poly([(x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1)], (0, -1, 0), material, scale=scale)
+        if top:
+            poly([(x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)], (0, 0, 1), material, scale=scale)
+        if bottom:
+            poly([(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0)], (0, 0, -1), material, scale=scale)
+
+    def sphere(c, r, material, segments=8, rings=5):
+        c = np.array(c, dtype=float)
+        at = lambda i, j: c + r * np.array([np.sin(np.pi * j / rings) * np.cos(2 * np.pi * i / segments), np.sin(np.pi * j / rings) * np.sin(2 * np.pi * i / segments), np.cos(np.pi * j / rings)])
+        for j in range(rings):
+            for i in range(segments):
+                pts = [at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)]
+                if j == 0:
+                    pts = [pts[0], pts[2], pts[3]]
+                elif j == rings - 1:
+                    pts = [pts[0], pts[1], pts[2]]
+                mid = np.mean(pts, axis=0)
+                poly(pts, mid - c, material, uv=lambda p: (p[0] * 4, p[2] * 4))
+
+    def ring(c, radius, thickness, material, segments=14, sides=6):
+        """A ring standing in the x-z plane (facing along y), its middle at c."""
+        c = np.array(c, dtype=float)
+        def at(i, j):
+            u = 2 * np.pi * i / segments
+            v = 2 * np.pi * j / sides
+            centre = c + radius * np.array([np.cos(u), 0, np.sin(u)])
+            out_dir = np.array([np.cos(u), 0, np.sin(u)])
+            return centre + thickness * (np.cos(v) * out_dir + np.sin(v) * np.array([0, 1, 0])), centre
+        for i in range(segments):
+            for j in range(sides):
+                (a, ca), (b, _), (d, _), (e, _) = at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)
+                mid = (a + b + d + e) / 4
+                core = c + radius * (mid - c) * np.array([1, 0, 1]) / max(np.linalg.norm((mid - c) * np.array([1, 0, 1])), 1e-6)
+                poly([a, b, d, e], mid - core, material, uv=lambda p: (p[0] * 4, p[2] * 4))
+
+    # The platform, two steps of paving.
+    for step in M_STEPS:
+        box(*step, 'base')
+    # The walls, and the dark inside behind the grate over the front.
+    wx0, wx1, wy0, wy1, wz0, wz1 = M_WALL
+    gx0, gx1, gz0, gz1 = 0.72, 2.28, wz0 + 0.04, 1.95
+    box(wx0, wx1, wy0, wy1, wz0, wz1, 'stone', top=False, scale=1.2, sides=(True, True, False, True))
+    # The front wall round the grate's opening.
+    for x0, x1, z0, z1 in ((wx0, gx0, wz0, wz1), (gx1, wx1, wz0, wz1), (gx0, gx1, gz1, wz1)):
+        poly([(x0, wy1, z0), (x1, wy1, z0), (x1, wy1, z1), (x0, wy1, z1)], (0, 1, 0), 'stone', scale=1.2)
+    poly([(gx0, wy1 - 0.12, gz0), (gx1, wy1 - 0.12, gz0), (gx1, wy1 - 0.12, gz1), (gx0, wy1 - 0.12, gz1)], (0, 1, 0), 'inside', scale=1.2)
+    for x in (gx0, gx1):  # its reveals
+        poly([(x, wy1 - 0.12, gz0), (x, wy1, gz0), (x, wy1, gz1), (x, wy1 - 0.12, gz1)], (1 if x == gx0 else -1, 0, 0), 'stone', scale=1.2)
+    poly([(gx0, wy1 - 0.12, gz1), (gx1, wy1 - 0.12, gz1), (gx1, wy1, gz1), (gx0, wy1, gz1)], (0, 0, -1), 'stone', scale=1.2)
+    poly([(gx0, wy1 - 0.12, gz0), (gx1, wy1 - 0.12, gz0), (gx1, wy1, gz0), (gx0, wy1, gz0)], (0, 0, 1), 'base')
+    # The grate: bars, three rails.
+    bars = 12
+    for k in range(bars + 1):
+        x = gx0 + 0.06 + (gx1 - gx0 - 0.12) * k / bars
+        box(x - 0.016, x + 0.016, wy1 - 0.07, wy1 - 0.035, gz0, gz1, 'iron')
+    for z in (0.95, 1.6, 1.88):
+        box(gx0, gx1, wy1 - 0.075, wy1 - 0.03, z - 0.02, z + 0.02, 'iron', bottom=True)
+    # Between the upper rails a band of iron curls, as the art draws over the grate.
+    curls = 6
+    for k in range(curls):
+        x = gx0 + (gx1 - gx0) * (k + 0.5) / curls
+        ring((x, wy1 - 0.05, 1.74), 0.1, 0.013, 'iron', segments=10, sides=4)
+    # Pilasters: the corners, the middles of the long sides, either side of the grate.
+    pw = 0.15
+    for x, y in ((wx0, wy0), (wx1, wy0), (wx0, wy1), (wx1, wy1)):
+        box(x - pw, x + pw, y - pw, y + pw, wz0, wz1, 'trim')
+    for x in (wx0, wx1):
+        box(x - 0.08, x + 0.08, 2.0 - 0.14, 2.0 + 0.14, wz0, wz1, 'trim')
+    for x in (gx0 - 0.08, gx1 + 0.08):
+        box(x - 0.08, x + 0.08, wy1, wy1 + 0.06, wz0, wz1, 'trim')
+    # The cornice round the top of the walls.
+    box(*M_CORNICE, 'trim', top=True, bottom=True)
+    # The gables, from the cornice up under the roof.
+    slope = (M_RIDGE - M_EAVE) / (1.5 - M_ROOF_X[0])
+    under = lambda x: M_EAVE - M_ROOF + slope * (min(x, 3 - x) - M_ROOF_X[0])
+    for y, facing in ((wy0, -1), (wy1, 1)):
+        poly([(wx0, y, M_CORNICE[5]), (wx1, y, M_CORNICE[5]), (1.5, y, under(1.5) + 0.01)], (0, facing, 0), 'stone', scale=1.2)
+        # Its frame: a moulding up each raking edge, standing out of the gable.
+        depth = 0.05 * facing
+        for x0, x1 in ((wx0, 1.5), (wx1, 1.5)):
+            z0 = under(x0) - 0.01
+            z1 = under(x1) - 0.01
+            dz = 0.09
+            face_y = y + depth
+            poly([(x0, face_y, z0 - dz), (x1, face_y, z1 - dz), (x1, face_y, z1), (x0, face_y, z0)], (0, facing, 0), 'trim')
+            poly([(x0, y, z0 - dz), (x1, y, z1 - dz), (x1, face_y, z1 - dz), (x0, face_y, z0 - dz)], (0, 0, -1), 'trim')
+        # A row of dark rosettes in the pediment.
+        for k in range(5):
+            x = 1.5 + (k - 2) * 0.28
+            z = M_CORNICE[5] + 0.14 + (0.18 if k == 2 else (0.08 if k in (1, 3) else 0.0))
+            r = 0.045
+            poly([(x - r, y + 0.01 * facing, z - r), (x + r, y + 0.01 * facing, z - r), (x + r, y + 0.01 * facing, z + r), (x - r, y + 0.01 * facing, z + r)], (0, facing, 0), 'inside')
+    # The roof: two slabs of slate, their undersides, the fascia along the eaves and their ends.
+    ry0, ry1 = M_ROOF_Y
+    for side in (-1, 1):
+        xe = M_ROOF_X[0] if side < 0 else M_ROOF_X[1]
+        top = [(xe, ry0, M_EAVE), (1.5, ry0, M_RIDGE), (1.5, ry1, M_RIDGE), (xe, ry1, M_EAVE)]
+        length = np.hypot(1.5 - M_ROOF_X[0], M_RIDGE - M_EAVE)
+        slat = lambda p, xe=xe: (p[1], abs(p[0] - xe) / (1.5 - M_ROOF_X[0]) * length)
+        poly(top, (side * slope, 0, 1), 'slate', cls=1, uv=slat)
+        bottom = [(x, y, z - M_ROOF) for x, y, z in top]
+        poly(bottom, (-side * slope, 0, -1), 'under', cls=1, uv=slat)
+        poly([(xe, ry0, M_EAVE - M_ROOF), (xe, ry1, M_EAVE - M_ROOF), (xe, ry1, M_EAVE), (xe, ry0, M_EAVE)], (side, 0, 0), 'trim')
+        for y, facing in ((ry0, -1), (ry1, 1)):
+            poly([(xe, y, M_EAVE - M_ROOF), (1.5, y, M_RIDGE - M_ROOF), (1.5, y, M_RIDGE), (xe, y, M_EAVE)], (0, facing, 0), 'trim')
+    # The ridge's roll, the knobs along the eaves, the rings over the ridge's ends.
+    box(1.44, 1.56, ry0 - 0.02, ry1 + 0.02, M_RIDGE - 0.04, M_RIDGE + 0.05, 'trim', bottom=False)
+    for k in range(7):
+        y = 0.45 + k * 0.5
+        for x in (M_ROOF_X[0] + 0.07, M_ROOF_X[1] - 0.07):
+            box(x - 0.025, x + 0.025, y - 0.025, y + 0.025, M_EAVE - 0.01, M_EAVE + 0.04, 'trim', top=False)
+            sphere((x, y, M_EAVE + 0.095), 0.065, 'trim')
+    for y in (ry0 + 0.04, ry1 - 0.04):
+        ring((1.5, y, M_RIDGE + 0.05 + 0.15), 0.15, 0.032, 'iron')
+    return out
+
+
 def main():
     models = []
-    for name, box in PLAZA_BUILDINGS + [('church', None)]:
-        tris = church_triangles() if name == 'church' else plaza_triangles(box)
+    for name, box in PLAZA_BUILDINGS + [('church', None), ('mausoleum', None)]:
+        tris = church_triangles() if name == 'church' else (mausoleum_triangles() if name == 'mausoleum' else plaza_triangles(box))
         models.append((name, tris))
     out = open(os.path.join(ns['ASSETS'], 'landmarks.bin'), 'wb')
     out.write(struct.pack('<4sI', b'FPL2', len(textures)))

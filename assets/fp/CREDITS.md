@@ -29,6 +29,10 @@ textures; anything built from it is under the same restriction.
 `landmarks.bin` also carries the release's diffuse textures for the town buildings, shrunk to 256 x 256 (converted
 to Diablo's palette and darkened in game): the plaza's stone wall, straw roof (outside and inside), timber, door
 and fountain stone, and the church's stone wall, slate roof, wooden ceiling, doors, pavement and stained glass.
+The release has no model of the mausoleum by the cows: it is built by `fp-tools/export/export_landmarks.py`
+(`mausoleum_triangles`) after the town's iso art, measured on it but none of it copied, and wears the release's
+church stone and pavement and its dungeon kit's column stone and steel (graded to a cool grey), and a slate roof
+of diamonds made by the script (no one else's work).
 The original author credits the textures (some made seamless by the author, some made from reference photos) to
 their creators, who made them available free of charge:
 

@@ -728,6 +728,7 @@ struct LandmarkMesh {
 	std::string name;
 	std::vector<std::array<float, 9>> triangles; // u, w (0..1 over the plaza extent), z (plaza units) per vertex
 	std::vector<uint8_t> classes;                // 0 wall, 1 roof, 2 door, 3 inside, 4 a cross window's rim
+	std::vector<uint8_t> wound;                  // 1 where the winding gives the normal (the file's class bit WoundClass)
 	std::vector<std::array<float, 6>> uvs;       // texture coordinates per vertex (FPL2 files)
 	std::vector<int16_t> textures;               // index into MeshTextures, -1 for none
 };
@@ -863,7 +864,7 @@ struct LandmarkPlacement {
 	bool modelTextures = true; // may wear the model's own textures (dev.fp.modeltextures); else always its art
 };
 
-const std::array<LandmarkPlacement, 10> Landmarks { {
+const std::array<LandmarkPlacement, 11> Landmarks { {
 	// The buildings of the Tristram plaza model (Nexus Mods 67266), each fitted to the town's iso art by silhouette
 	// overlap (fp-tools/export/fit_landmark.py; the plaza is laid out like the town, at its scale, y flipped) and
 	// textured by projecting that art back on. The comment gives each fit's overlap with the art.
@@ -882,10 +883,16 @@ const std::array<LandmarkPlacement, 10> Landmarks { {
 	{ "fountain", { 59, 69 }, { 61, 71 }, 59.65F, 61.46F, 69.75F, 71.53F, 0.643F, 100.0F, 0.643F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true, false }, // 0.52
 	// Tristram's church (research/church): tower, nave and round apse, fitted to the iso art by silhouette overlap.
 	{ "church", { 19, 14 }, { 31, 29 }, 19.78F, 32.22F, 14.31F, 30.19F, 0.85F, 100.0F, 0.85F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },
+	// The mausoleum by the cows: not in Nexus 67266, built by export_landmarks.py after the art (mausoleum_triangles),
+	// in tiles of its platform (x 48-50, y 18-21) and art heights.
+	{ "mausoleum", { 48, 18 }, { 50, 21 }, 48.0F, 51.0F, 18.0F, 22.0F, 1.0F, 100.0F, 1.0F, false, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },
 } };
 
 std::vector<LandmarkMesh> LandmarkMeshes;
 bool LandmarksLoaded = false;
+
+/** A bit of a triangle's class in a mesh file: its winding is reliable, the game takes its normal from it. */
+constexpr uint8_t WoundClass = 0x40;
 
 /** @brief Reads a mesh file in the landmarks.bin format (see research/tristram_plaza/export_landmarks.py). */
 void LoadMeshFile(const char *envName, const char *fileName, std::vector<LandmarkMesh> &meshes)
@@ -935,6 +942,7 @@ void LoadMeshFile(const char *envName, const char *fileName, std::vector<Landmar
 			break;
 		mesh.triangles.resize(triangleCount);
 		mesh.classes.resize(triangleCount);
+		mesh.wound.resize(triangleCount);
 		if (textured) {
 			mesh.uvs.resize(triangleCount);
 			mesh.textures.resize(triangleCount);
@@ -949,6 +957,9 @@ void LoadMeshFile(const char *envName, const char *fileName, std::vector<Landmar
 			} else if (ok) {
 				ok = readAll(&mesh.classes[t], 1);
 			}
+			// Its winding is reliable (counter-clockwise seen from outside): the normal comes from it.
+			mesh.wound[t] = (mesh.classes[t] & WoundClass) != 0 ? 1 : 0;
+			mesh.classes[t] &= ~WoundClass;
 		}
 		if (!ok)
 			break;
@@ -1318,7 +1329,7 @@ void FilterPatch(SurfaceTexture &patch, int sizeX, int sizeY)
 	patch.pixels.swap(filtered);
 }
 
-void AddMeshTriangle(Building &b, const std::array<V3, 3> &p, bool roof, V3 middle);
+void AddMeshTriangle(Building &b, const std::array<V3, 3> &p, bool roof, V3 middle, bool wound = false);
 
 /** @brief Places the model's mesh over the footprint, the same way DrawHouseModel places its voxels. */
 void BuildMesh(Building &b)
@@ -1355,7 +1366,7 @@ void BuildMesh(Building &b)
 }
 
 /** @brief Adds a world triangle to the building's mesh, working out how it is textured and shaded. */
-void AddMeshTriangle(Building &b, const std::array<V3, 3> &p, bool roof, V3 middle)
+void AddMeshTriangle(Building &b, const std::array<V3, 3> &p, bool roof, V3 middle, bool wound)
 {
 	WorldTriangle tri;
 	tri.p = p;
@@ -1369,9 +1380,10 @@ void AddMeshTriangle(Building &b, const std::array<V3, 3> &p, bool roof, V3 midd
 		if (length < 1e-9F)
 			return;
 		n = { n.x / length, n.y / length, n.z / length };
-		// The mesh's winding is not reliable: orient the normal away from the middle of the house.
+		// The kit's winding is not reliable: orient the normal away from the middle of the house (unless it is: the
+		// models built for the mod, whose recesses and roof undersides face in towards the middle).
 		const V3 centroid { (tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F, (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F, (tri.p[0].z + tri.p[1].z + tri.p[2].z) / 3.0F };
-		if (n.x * (centroid.x - cx) + n.y * (centroid.y - cy) + n.z * (centroid.z - middle.z) < 0)
+		if (!wound && n.x * (centroid.x - cx) + n.y * (centroid.y - cy) + n.z * (centroid.z - middle.z) < 0)
 			n = { -n.x, -n.y, -n.z };
 		tri.roof = roof;
 		tri.slopeScale = 1.0F;
@@ -1650,7 +1662,7 @@ void BuildLandmarkMesh(Building &b, const LandmarkPlacement &place, const Landma
 		for (int k = 0; k < 3; k++)
 			p[k] = toWorld(&mesh.triangles[t][static_cast<size_t>(k) * 3]);
 		const size_t before = b.mesh.size();
-		AddMeshTriangle(b, p, mesh.classes[t] == 1, middle);
+		AddMeshTriangle(b, p, mesh.classes[t] == 1, middle, !mesh.wound.empty() && mesh.wound[t] != 0);
 		if (b.mesh.size() > before) {
 			b.mesh.back().inside = mesh.classes[t] == 3;
 			b.mesh.back().rim = mesh.classes[t] == 4;
@@ -4117,10 +4129,11 @@ void DrawHouseMesh(const Surface &out, const Projection &proj, std::vector<float
 	for (int y = lightMin.y; y <= lightMax.y; y++)
 		for (int x = lightMin.x; x <= lightMax.x; x++)
 			light[static_cast<size_t>(y - lightMin.y) * lightWidth + x - lightMin.x] = LightAt({ x, y });
-	// Big models: front to back, so the depth test turns hidden pixels away before their colour is looked up.
+	// Big models (most of the landmarks): front to back, so the depth test turns hidden pixels away before their
+	// colour is looked up. Sorting a few hundred triangles costs far less than shading what hides behind them.
 	static std::vector<uint32_t> sorted;
 	const std::vector<uint32_t> *order = nullptr;
-	if (b.mesh.size() > 2000) {
+	if (b.mesh.size() > 600) {
 		static std::vector<std::pair<float, uint32_t>> byDistance;
 		byDistance.clear();
 		for (uint32_t i = 0; i < b.mesh.size(); i++) {

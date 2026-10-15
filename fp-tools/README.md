@@ -694,6 +694,20 @@ to the level palette and darkened by `TextureDim` in `QuantizeMeshTextures`, sha
 Projective landmarks also bake their art colours once at load (`BakeColors`), used when textures are off. They hide the billboards of tiles under
 them and of art tiles that are mostly the building (`ClaimProjectiveTiles`), and draw plain ground underneath.
 
+**A landmark with no model in the release** is built by the exporter itself: the mausoleum by the cows (tiles x
+48-50, y 18-21), `mausoleum_triangles` in `export_landmarks.py`, measured on the town's art through the iso
+projection (its platform the full 3 x 4 tiles, eaves at 2.42 and ridge at 3.22 tiles of art height): a platform
+of two steps, stone walls with pilasters and a cornice, an iron grate over its front (the gable end towards +y)
+with curls along its top and the dark inside behind, pediments framed and with rosettes, a slate roof with stone
+knobs along its eaves and an iron ring over each end of the ridge. It is laid out in tiles of its platform and
+art heights, so its `Landmarks` entry maps it straight onto them (`zScale` 1, not flipped; no fit needed). Its
+triangles carry the class bit 0x40: their winding is reliable, so the game takes their normals from it
+(`LandmarkMesh::wound`, `AddMeshTriangle`) instead of pointing them away from the building's middle, which would
+turn the roof's undersides and the grate's reveals the wrong way. Its textures are the church's stone and
+pavement and the kit's column stone and steel, tinted to the art's cool grey (`MAUSOLEUM_TINT`), and a slate made
+by the script (`slate_texture`). The dead tree and the creeper the art draws against its long side are not
+rebuilt (with `dev.fp.modeltextures(false)` the projected art shows them).
+
 ### 5.6 Dungeon structures
 All in `fp_buildings.cpp`, built per level in `BuildStructures`:
 
