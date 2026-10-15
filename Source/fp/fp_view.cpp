@@ -29,6 +29,7 @@
 #include "fp/fp_dungeon.hpp"
 #include "fp/fp_hell.hpp"
 #include "cursor.h"
+#include "engine/demomode.h"
 #include "items.h"
 #include "monster.h"
 #include "objects.h"
@@ -1127,7 +1128,8 @@ void UpdateFirstPersonActivation()
 
 void ApplyStartView()
 {
-	if (FirstPersonActive || !*GetOptions().Gameplay.startInFirstPerson)
+	// Not for a demo: it records and replays the original view's clicks.
+	if (FirstPersonActive || !*GetOptions().Gameplay.startInFirstPerson || demo::IsRunning() || demo::IsRecording())
 		return;
 	ActivationPending = false;
 	FirstPersonActive = true;

@@ -16,6 +16,12 @@
 #include <tuple>
 #include <cstdint>
 #include <cstring>
+
+#ifdef USE_SDL3
+#include <SDL3/SDL_timer.h>
+#else
+#include <SDL.h>
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include <string>
