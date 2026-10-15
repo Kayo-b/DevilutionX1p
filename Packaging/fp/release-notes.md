@@ -23,8 +23,10 @@ to the original view at any time.
 2. Start it once, then put `DIABDAT.MPQ` (for Hellfire also `hellfire.mpq`, `hfmonk.mpq`, `hfmusic.mpq`,
    `hfvoice.mpq`) in `Android/data/org.diasurgical.devilutionx.fp/files/`: from a PC over USB, or with the import
    screen the app shows when it can't find the data.
-3. For the weapons, put Daggerfall's `WEAPON00.CIF` to `WEAPON11.CIF` and `ART_PAL.COL` (from its `ARENA2` folder) in a
-   `daggerfall` folder there.
+3. For the weapons, copy Daggerfall's `WEAPON00.CIF` to `WEAPON11.CIF` and `ART_PAL.COL` (from its `ARENA2` folder) into
+   a `daggerfall` folder there **with adb from a PC**: a file manager on the device leaves a folder the game can't read.
+   The README's [Android section](https://github.com/Kayo-b/DevilutionX1p#android-ayn-thor-and-other-handhelds) has the
+   commands.
 
 With a gamepad, the left stick walks and the right stick looks. Each release's APK is signed with a new key, so a newer
 one won't install over an older one: copy your saves (`*.sv`) out of that folder, uninstall (which deletes the folder),

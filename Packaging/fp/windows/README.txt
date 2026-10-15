@@ -1,5 +1,5 @@
-Diablo First-Person, version 1
-==============================
+Diablo First-Person
+===================
 
 A first-person view for Diablo and Hellfire, built on DevilutionX. You walk through Tristram and the dungeon
 at eye level, aim with a crosshair and fight with your weapon in hand. Press F4 at any time to switch between

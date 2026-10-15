@@ -1,11 +1,11 @@
-# Diablo First-Person (DevilutionX mod), version 1
+# Diablo First-Person (DevilutionX mod)
 
 This fork of [DevilutionX](https://github.com/diasurgical/devilutionX) adds a **first-person view** to Diablo and
 Hellfire. You walk through Tristram and the dungeon at eye level, aim with a crosshair, and fight with your weapon
 in hand. Press **F4** to switch between first person and the original isometric view at any time. The game itself
 is unchanged: same levels, monsters, items, saves and rules.
 
-## What's in version 1
+## What's in it
 
 - **A software 3D view of the live level.** Walls, floors and ceilings are rebuilt from the game's own tile art.
   Light comes from the game's lighting (torches, your light radius, spells). Arches, recesses, doors, columns,
@@ -76,12 +76,38 @@ Run `./install.sh` again after pulling changes to update. `./install.sh --uninst
 settings are kept), and `./install.sh --help` lists the options for an unattended install (`--yes`, `--diablo`,
 `--game diablo|hellfire`, `--daggerfall`, ...).
 
-### Android
+### Android (AYN Thor and other handhelds)
 
-The releases also have an APK (`DevilutionX-FP-…-android.apk`), for Android handhelds such as the AYN Thor. It installs
-as its own app; put the game's data (`DIABDAT.MPQ`, and Hellfire's) in `Android/data/org.diasurgical.devilutionx.fp/files/`
-and, for the weapons, Daggerfall's 13 files in a `daggerfall` folder there. With a gamepad, the left stick walks and
-the right stick looks. Each release's APK has a new signature: to update, save your `*.sv` files, uninstall, install.
+1. **Install the APK.** On the device, download `DevilutionX-FP-…-android.apk` from the
+   [releases](https://github.com/Kayo-b/DevilutionX1p/releases) and open it (allow installs from your browser or file
+   manager when asked). It installs as an app of its own, `org.diasurgical.devilutionx.fp`, beside the official
+   DevilutionX if you have it. Both icons are named "DevilutionX": the first-person one is the one that opens in 3D.
+2. **Add the game's data.** Start the app. Finding no data, it offers to import it: pick `DIABDAT.MPQ` (for Hellfire also
+   `hellfire.mpq`, `hfmonk.mpq`, `hfmusic.mpq`, `hfvoice.mpq`), from Downloads for example. It copies them into its own
+   folder, `Android/data/org.diasurgical.devilutionx.fp/files/` on internal storage, next to its `diablo.ini` and your
+   saves. That folder is the only one the game reads: not Downloads, not the SD card, not the official DevilutionX's
+   folder (each app has its own).
+3. **Add Daggerfall's weapons (optional), from a PC with adb.** Copy them with adb, not with a file manager on the
+   device: on Android 13 a file manager leaves the folder owned by itself, and the game can't read it (no weapon shows,
+   and no error says why). On a PC, put the 13 files (`WEAPON00.CIF` to `WEAPON11.CIF` and `ART_PAL.COL`, from
+   Daggerfall's `ARENA2` folder, names in capitals) in a folder named `daggerfall`. On the device, turn on USB debugging
+   (Settings > About > tap *Build number* 7 times, then Developer options > *USB debugging*), connect it to the PC and
+   allow the prompt on the device's screen. Then, in the folder holding `daggerfall` (adb: `sudo pacman -S android-tools`,
+   `sudo apt install adb`, or Google's [platform-tools](https://developer.android.com/tools/releases/platform-tools)):
+   ```bash
+   adb push daggerfall /sdcard/Android/data/org.diasurgical.devilutionx.fp/files/
+   adb shell chmod 775 /sdcard/Android/data/org.diasurgical.devilutionx.fp/files/daggerfall
+   adb shell am force-stop org.diasurgical.devilutionx.fp
+   ```
+   The game looks for the weapons once as it starts, so close it fully before trying again (the last line does).
+   The weapon shows in the dungeon; in Tristram it's put away. If a `daggerfall` folder copied there by a file manager
+   is in the way (`adb shell ls` on it says *Permission denied*), move it aside first:
+   `adb shell mv /sdcard/Android/data/org.diasurgical.devilutionx.fp/files/daggerfall /sdcard/Android/data/org.diasurgical.devilutionx.fp/files/daggerfall.old`.
+4. **Play.** With the handheld's controls, the left stick walks and the right stick looks.
+
+**Updating:** each release's APK is signed with a new key, so a newer one won't install over an older one. Copy your
+saves to the PC first (`adb pull /sdcard/Android/data/org.diasurgical.devilutionx.fp/files/ fp-backup`: uninstalling
+deletes that folder), uninstall, install the new APK, then put the data, saves and `daggerfall` folder back.
 
 ### By hand
 
@@ -115,8 +141,8 @@ the GOG install under Wine, `~/.wine/drive_c/GOG Games/Daggerfall/arena2`).
 [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) compiler and SDL2's MinGW build (once, into
 `~/.cache/devilutionx-fp`), builds `devilutionx.exe` and packs `DevilutionX-FP-<version>-windows-x64.zip` with
 `Install.bat` into `build-windows/release/`; `Packaging/fp/package-linux.sh` packs the Linux tarball (with
-`install.sh`, which then skips the build) into `build-linux/release/`. Pushing a version tag (`git tag v1 && git push
-origin v1`) makes the GitHub workflow `fp_release.yml` build both and publish them as that version's release.
+`install.sh`, which then skips the build) into `build-linux/release/`. Pushing a version tag (`git tag vX.Y && git push
+origin vX.Y`) makes the GitHub workflow `fp_release.yml` build both and publish them as that version's release.
 
 ## Controls (first person)
 
