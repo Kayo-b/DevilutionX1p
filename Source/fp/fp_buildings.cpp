@@ -121,6 +121,7 @@ struct WorldTriangle {
 	bool cull = false;  // one-sided: skipped when turned away from the camera (closed shapes, slabs)
 	bool inside = false; // inside a lit landmark (the church's entrance hall, through its open door): lit by its lamps
 	bool rim = false;    // a side of the church's cross windows: lit by the lamp behind it (CrossLamps)
+	bool slit = false;   // a gap between the planks of a wall (Adria's): glows with the light inside (GlowSlits)
 	V3 normal { 0, 0, 0 }; // outward, for culling
 	// Baked colours (projective landmarks): an N x N grid over the triangle's (u, v) = weights of p1 and p2.
 	uint32_t bakeOffset = 0;
@@ -740,6 +741,7 @@ struct MeshTexture {
 	int height = 0;
 	std::vector<uint8_t> rgb;
 	std::vector<uint8_t> indexed;
+	bool artColors = false; // the original art's colours already (Adria's shack and wares): not dimmed for dusk
 	/** Smaller copies (mip levels 1, 2, ...: each half the size of the one before, averaged), for far surfaces. */
 	struct Level {
 		int width;
@@ -759,8 +761,9 @@ constexpr float TextureDim = 0.42F;
  */
 void QuantizeMeshTextures(float dim = 0.42F, bool dusk = true, std::array<float, 3> tint = { 1.0F, 1.0F, 1.0F })
 {
-	std::vector<int16_t> lut(32768, -1);
-	auto quantize = [&](const std::vector<uint8_t> &rgb, std::vector<uint8_t> &indexed) {
+	std::vector<int16_t> lut(32768, -1); // by the colour after darkening: shared by every texture
+	// asIs: the art's colours already (MeshTexture::artColors), only matched to the palette.
+	auto quantizeWith = [&](const std::vector<uint8_t> &rgb, std::vector<uint8_t> &indexed, bool asIs) {
 		indexed.resize(rgb.size() / 3);
 		for (size_t i = 0; i < indexed.size(); i++) {
 			// The textures are daylight photographs; Tristram is drawn at dusk, dim and cool. Darken and pull the
@@ -769,10 +772,13 @@ void QuantizeMeshTextures(float dim = 0.42F, bool dusk = true, std::array<float,
 			const float g0 = rgb[i * 3 + 1];
 			const float b0 = rgb[i * 3 + 2];
 			const float grey = (r0 + g0 + b0) / 3.0F;
-			const float sat = dusk ? 0.75F : 0.85F;
-			const int r = std::clamp(static_cast<int>((r0 * sat + grey * (1.0F - sat)) * dim * (dusk ? 0.92F : 1.0F) * tint[0]), 0, 255);
-			const int g = std::clamp(static_cast<int>((g0 * sat + grey * (1.0F - sat)) * dim * (dusk ? 0.95F : 1.0F) * tint[1]), 0, 255);
-			const int bl = std::clamp(static_cast<int>((b0 * sat + grey * (1.0F - sat)) * dim * (dusk ? 1.08F : 1.0F) * tint[2]), 0, 255);
+			const float sat = asIs ? 1.0F : (dusk ? 0.75F : 0.85F);
+			const float scale = asIs ? 1.0F : dim;
+			const std::array<float, 3> cast = asIs ? std::array<float, 3> { 1.0F, 1.0F, 1.0F }
+			                                       : std::array<float, 3> { (dusk ? 0.92F : 1.0F) * tint[0], (dusk ? 0.95F : 1.0F) * tint[1], (dusk ? 1.08F : 1.0F) * tint[2] };
+			const int r = std::clamp(static_cast<int>((r0 * sat + grey * (1.0F - sat)) * scale * cast[0]), 0, 255);
+			const int g = std::clamp(static_cast<int>((g0 * sat + grey * (1.0F - sat)) * scale * cast[1]), 0, 255);
+			const int bl = std::clamp(static_cast<int>((b0 * sat + grey * (1.0F - sat)) * scale * cast[2]), 0, 255);
 			const int key = (r >> 3) << 10 | (g >> 3) << 5 | (bl >> 3);
 			if (lut[key] < 0) {
 				const int qr = (r & ~7) + 4;
@@ -794,6 +800,7 @@ void QuantizeMeshTextures(float dim = 0.42F, bool dusk = true, std::array<float,
 		}
 	};
 	for (MeshTexture &tex : MeshTextures) {
+		auto quantize = [&](const std::vector<uint8_t> &rgb, std::vector<uint8_t> &indexed) { quantizeWith(rgb, indexed, tex.artColors); };
 		quantize(tex.rgb, tex.indexed);
 		// Mip levels: each texel the average of 2 x 2 of the level above, averaged before quantizing so far
 		// surfaces show the texture's mean colours instead of whichever texel a screen pixel happens to hit.
@@ -865,7 +872,7 @@ struct LandmarkPlacement {
 	bool modelTextures = true; // may wear the model's own textures (dev.fp.modeltextures); else always its art
 };
 
-const std::array<LandmarkPlacement, 11> Landmarks { {
+const std::array<LandmarkPlacement, 13> Landmarks { {
 	// The buildings of the Tristram plaza model (Nexus Mods 67266), each fitted to the town's iso art by silhouette
 	// overlap (fp-tools/export/fit_landmark.py; the plaza is laid out like the town, at its scale, y flipped) and
 	// textured by projecting that art back on. The comment gives each fit's overlap with the art.
@@ -880,19 +887,28 @@ const std::array<LandmarkPlacement, 11> Landmarks { {
 	// Griswold's smithy: the long hall, and over the forge where he stands an open porch roof on the model's own two
 	// posts. The plaza porch eaves are low; they are lifted to the hall's wall height, high enough to stand under.
 	{ "smithy", { 60, 56 }, { 70, 64 }, 60.17F, 70.87F, 56.78F, 64.08F, 1.59F, 1.0F, 0.60F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true }, // 0.59
-	// The fountain's model texture is a coarse rock that reads as a blob at its size: it keeps its art.
-	{ "fountain", { 59, 69 }, { 61, 71 }, 59.65F, 61.46F, 69.75F, 71.53F, 0.643F, 100.0F, 0.643F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true, false }, // 0.52
+	// The fountain wears its parts' colours from the original art (its art projected on it came out a patchwork: the
+	// water's amber on its walls) and the art's amber water in its basin (export_landmarks.py, fountain_triangles).
+	{ "fountain", { 59, 69 }, { 61, 71 }, 59.65F, 61.46F, 69.75F, 71.53F, 0.643F, 100.0F, 0.643F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true }, // 0.52
 	// Tristram's church (research/church): tower, nave and round apse, fitted to the iso art by silhouette overlap.
 	{ "church", { 19, 14 }, { 31, 29 }, 19.78F, 32.22F, 14.31F, 30.19F, 0.85F, 100.0F, 0.85F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },
 	// The mausoleum by the cows: not in Nexus 67266, built by export_landmarks.py after the art (mausoleum_triangles),
 	// in tiles of its platform (x 48-50, y 18-21) and art heights.
 	{ "mausoleum", { 48, 18 }, { 50, 21 }, 48.0F, 51.0F, 18.0F, 22.0F, 1.0F, 100.0F, 1.0F, false, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },
+	// Adria's shack (research/adria): planks, a roof sloping down to the back, her wares on shelves beside the door.
+	// Fitted to its art by eye (the roof's corners and its slope): the model at 0.94 of the plaza's scale. Her cauldron
+	// on its frame, from the same file, fits the art where it is (fit_landmark.py, at the plaza's scale), a tile from
+	// where the shack's placement would put it.
+	{ "adria", { 74, 16 }, { 79, 21 }, 74.519F, 79.041F, 16.571F, 20.951F, 0.875F, 100.0F, 0.875F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },
+	{ "cauldron", { 81, 18 }, { 83, 19 }, 81.537F, 83.367F, 18.464F, 19.434F, 0.956F, 100.0F, 0.956F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true }, // 0.51
 } };
 
 std::vector<LandmarkMesh> LandmarkMeshes;
 bool LandmarksLoaded = false;
 
-/** A bit of a triangle's class in a mesh file: its winding is reliable, the game takes its normal from it. */
+/** The top bit of a triangle's class in a mesh file: its texture is in the original art's colours already. */
+constexpr uint8_t ArtColorsClass = 0x80;
+/** The next bit: its winding is reliable (counter-clockwise seen from outside), the game takes its normal from it. */
 constexpr uint8_t WoundClass = 0x40;
 
 /** @brief Reads a mesh file in the landmarks.bin format (see research/tristram_plaza/export_landmarks.py). */
@@ -955,6 +971,12 @@ void LoadMeshFile(const char *envName, const char *fileName, std::vector<Landmar
 				int16_t texture;
 				ok = readAll(mesh.uvs[t].data(), sizeof(float) * 6) && readAll(&mesh.classes[t], 1) && readAll(&texture, 2);
 				mesh.textures[t] = texture < 0 ? int16_t { -1 } : static_cast<int16_t>(texture + textureBase);
+				// The class's top bit: its texture is in the original art's colours already (ArtColorsClass).
+				if (ok && (mesh.classes[t] & ArtColorsClass) != 0) {
+					mesh.classes[t] &= ~ArtColorsClass;
+					if (mesh.textures[t] >= 0 && static_cast<size_t>(mesh.textures[t]) < MeshTextures.size())
+						MeshTextures[mesh.textures[t]].artColors = true;
+				}
 			} else if (ok) {
 				ok = readAll(&mesh.classes[t], 1);
 			}
@@ -1667,6 +1689,7 @@ void BuildLandmarkMesh(Building &b, const LandmarkPlacement &place, const Landma
 		if (b.mesh.size() > before) {
 			b.mesh.back().inside = mesh.classes[t] == 3;
 			b.mesh.back().rim = mesh.classes[t] == 4;
+			b.mesh.back().slit = mesh.classes[t] == 5;
 		}
 		if (mesh.classes[t] == 2) {
 			// A door: its bounds, grown by each of its triangles (the leaf and its parts are one door where they touch).
@@ -1739,8 +1762,9 @@ struct LitLandmark {
 	std::array<float, 3> color;               // of its light: fire and candles, the church's through red glass
 	bool glass = false;                       // also lit inside its stained glass box (the church's nave)
 	bool autoRoom = false;                    // its room fitted to its walls from inside (AddAutoRoom), not measured
+	bool unglazed = false;                    // its openings stay open, no glass in them (the gaps of Adria's planks)
 };
-constexpr std::array<LitLandmark, 9> LitLandmarks { {
+constexpr std::array<LitLandmark, 10> LitLandmarks { {
 	// The tavern's two wings (the plaza model's x 73.8 - 79.9, y 250.2 - 254.6 and x 73.8 - 77.1, y 248.2 - 250.3).
 	{ "ogden", 2, { { { 0.0803F, 0.8780F, 0.3438F, 0.9012F, 0.088F, 5.588F }, { 0.0803F, 0.5118F, 0.0904F, 0.3564F, 0.088F, 5.588F } } }, 1.0F, { 255.0F, 112.0F, 40.0F } },
 	// The smithy's hall (x 86.6 - 96.0, y 251.35 - 254.5), not the open porch.
@@ -1755,6 +1779,9 @@ constexpr std::array<LitLandmark, 9> LitLandmarks { {
 	{ "pepin", 0, {}, 0.75F, { 255.0F, 118.0F, 44.0F }, false, true },
 	{ "cottage_small", 0, {}, 0.75F, { 255.0F, 118.0F, 44.0F }, false, true },
 	{ "cottage_tall", 0, {}, 0.75F, { 255.0F, 118.0F, 44.0F }, false, true },
+	// Adria's shack, inside its planks (x 100.2 - 104.18, y 290.92 - 294.9 of the model): the art's light in its
+	// doorway and the gaps between its planks is a warm yellow. No glass: its openings are gaps and slits.
+	{ "adria", 1, { { { 0.0882F, 0.9156F, 0.0790F, 0.9330F, 0.02F, 2.7F }, {} } }, 0.8F, { 255.0F, 150.0F, 50.0F }, false, false, true },
 } };
 
 /** The lamps' light outside, falling from the windows, per unit of strength. */
@@ -2897,9 +2924,38 @@ void AddAutoRoom(Building &b, int lit, const LandmarkPlacement &place)
 	}
 }
 
+/**
+ * @brief The gaps between the planks of a lit landmark's walls (WorldTriangle::slit: Adria's shack) glow with its
+ * light, as a window's glass does: the art shows the lamplight inside between them.
+ */
+void GlowSlits(Building &b, int lit)
+{
+	for (WorldTriangle &tri : b.mesh) {
+		if (!tri.slit)
+			continue;
+		// Each strip is a quad: both its triangles span its bounds, the middle and half the size of its glow.
+		const float x0 = std::min({ tri.p[0].x, tri.p[1].x, tri.p[2].x });
+		const float x1 = std::max({ tri.p[0].x, tri.p[1].x, tri.p[2].x });
+		const float y0 = std::min({ tri.p[0].y, tri.p[1].y, tri.p[2].y });
+		const float y1 = std::max({ tri.p[0].y, tri.p[1].y, tri.p[2].y });
+		const float z0 = std::min({ tri.p[0].z, tri.p[1].z, tri.p[2].z });
+		const float z1 = std::max({ tri.p[0].z, tri.p[1].z, tri.p[2].z });
+		tri.mapping = MeshPane;
+		tri.texture = -1;
+		tri.cull = false;
+		tri.arch = static_cast<int16_t>(lit);
+		tri.mirrorX = (x0 + x1) / 2.0F;
+		tri.mirrorY = (y0 + y1) / 2.0F;
+		tri.downX = (z0 + z1) / 2.0F;
+		tri.slopeScale = std::max(x1 - x0, y1 - y0) / 2.0F;
+		tri.downY = (z1 - z0) / 2.0F;
+	}
+}
+
 /** @brief A lit landmark's rooms (or the church's glass box), their insides and their lamps. */
 void AddLitRooms(Building &b, int lit, const LandmarkPlacement &place)
 {
+	GlowSlits(b, lit);
 	auto height = [&](float z) {
 		return z <= place.eaveIn ? z * place.zScale : place.eaveIn * place.zScale + (z - place.eaveIn) * place.zScaleAbove;
 	};
@@ -2950,7 +3006,7 @@ void AddLitRooms(Building &b, int lit, const LandmarkPlacement &place)
 			AddRoomLamps(static_cast<int>(LitRooms.size() - 1));
 		}
 	}
-	if (!LitLandmarks[lit].glass) {
+	if (!LitLandmarks[lit].glass && !LitLandmarks[lit].unglazed) {
 		// The windows the model has; a house whose model has none gets a few set into its ground floor's walls.
 		std::vector<WindowOpening> glazed = GlazeWindows(b, lit, firstRoom);
 		if (LitLandmarks[lit].autoRoom && glazed.empty())
@@ -6516,7 +6572,8 @@ ArtStats UprightStats(const PieceTextures &t)
 /** @brief Whether a town piece is a boulder's (the known boulder pieces, or one its art shows is). */
 bool IsTownRockPiece(uint16_t piece)
 {
-	return (piece >= 220 && piece <= 232) || piece == 556 || piece == 558 || piece == 835 || piece == 836 || piece == 1166 || piece >= 1202;
+	// (556 and 558, once taken for boulders, are Adria's cauldron: a landmark of its own.)
+	return (piece >= 220 && piece <= 232) || piece == 835 || piece == 836 || piece == 1166 || piece >= 1202;
 }
 
 /** @brief Whether a town piece is one of the trees' (its art is the tree alone, even beside a house). */
@@ -6812,9 +6869,11 @@ void BuildTrees(const std::vector<Point> &tiles, int &treeCount)
 	const int h = b.canvasHeight;
 	auto at = [&](int x, int y) { return static_cast<size_t>(y) * w + x; };
 	std::vector<uint8_t> inDiamond(b.canvas.size(), 0);
+	std::vector<std::pair<float, float>> diamondMiddles;
 	for (const Point t : tiles) {
 		const float cx = static_cast<float>((t.x - t.y) * 32 - b.originX);
 		const float cy = static_cast<float>((t.x + t.y + 2) * 16 - 16 - b.originY);
+		diamondMiddles.emplace_back(cx, cy);
 		for (int y = static_cast<int>(cy) - 16; y <= static_cast<int>(cy) + 16; y++)
 			for (int x = static_cast<int>(cx) - 32; x <= static_cast<int>(cx) + 32; x++)
 				if (x >= 0 && y >= 0 && x < w && y < h && std::abs(static_cast<float>(x) + 0.5F - cx) / 32.0F + std::abs(static_cast<float>(y) + 0.5F - cy) / 16.0F <= 1.0F)
@@ -6828,65 +6887,79 @@ void BuildTrees(const std::vector<Point> &tiles, int &treeCount)
 		float sx; // iso screen position of its foot
 		float sy;
 	};
-	// The bark above the floor diamonds is the trees' own (trunks and branches); in the diamonds the trunks' feet are
-	// drawn over the ground, in colours the ground uses too. They are grown down from the bark above, row by row,
-	// through the art's pixels in the bark's colours, each run no wider than the one above it.
-	std::array<bool, 256> barkColors {};
-	for (size_t i = 0; i < b.canvas.size(); i++)
-		if (inDiamond[i] == 0 && b.canvas[i] > 0 && !leafy(b.canvas[i]))
-			barkColors[static_cast<uint8_t>(b.canvas[i])] = true;
-	std::array<bool, 256> like {};
-	for (int j = 1; j < 256; j++)
-		for (int i = 1; i < 256 && !like[j]; i++) {
-			if (!barkColors[i])
-				continue;
-			const SDL_Color p = logical_palette[i];
-			const SDL_Color q = logical_palette[j];
-			like[j] = std::abs(p.r - q.r) + std::abs(p.g - q.g) + std::abs(p.b - q.b) <= 6;
-		}
+	// The bark above the floor diamonds is the trees' own (trunks and branches). In the diamonds each trunk goes on
+	// down over the pale ground under its tree (earth and fallen leaves) to its foot, near the diamond's middle. It is
+	// followed there row by row by its dark core, the bark's darkest shades, which that ground has next to none of,
+	// and goes on as wide as it is above (moved a pixel to keep its core in it, where it leans): its lit side there is
+	// as bright as the ground, and the art draws it thin and broken, so where the ground shows through, it is the bark
+	// above.
+	auto luminance = [](int16_t pixel) {
+		const SDL_Color c = logical_palette[pixel];
+		return (c.r * 3 + c.g * 6 + c.b) / 10;
+	};
+	constexpr int DarkBark = 10;   // the trunk's core, in the diamonds
+	constexpr int ShadedBark = 22; // the trunk's lit side there (and some of the ground)
+	constexpr int WidestTrunk = 12;
+	struct TrunkRow {
+		int from;
+		int to;
+		int shift; // from the trunk above
+	};
 	std::vector<uint8_t> trunkPixel(b.canvas.size(), 0);
 	for (size_t i = 0; i < b.canvas.size(); i++)
 		trunkPixel[i] = inDiamond[i] == 0 && b.canvas[i] > 0 && !leafy(b.canvas[i]) ? 1 : 0;
-	std::vector<int> runWidth(b.canvas.size(), 0); // the width of the run each traced pixel is in
+	// Bark is near black or blue; the shadows on the ground (a trunk's own among them) are mostly green or yellow-grey.
+	auto bark = [&](int x, int y, int brightest) {
+		const int16_t p = raw.canvas[at(x, y)];
+		return p > 0 && !leafy(p) && luminance(p) <= brightest && logical_palette[p].b >= logical_palette[p].g;
+	};
 	for (int y = 1; y < h; y++) {
-		int x = 0;
-		while (x < w) {
-			auto candidate = [&](int cx) {
-				if (inDiamond[at(cx, y)] == 0 || trunkPixel[at(cx, y)] != 0)
-					return false;
-				const int16_t p = raw.canvas[at(cx, y)];
-				if (p <= 0 || !like[static_cast<uint8_t>(p)])
-					return false;
-				for (int dx = -1; dx <= 1; dx++)
-					if (cx + dx >= 0 && cx + dx < w && trunkPixel[at(cx + dx, y - 1)] != 0)
-						return true;
-				return false;
-			};
-			if (!candidate(x)) {
-				x++;
+		std::vector<TrunkRow> runs; // this row's trunk, from each run of trunk in the row above
+		for (int x = 0; x < w; x++) {
+			if (trunkPixel[at(x, y - 1)] == 0)
 				continue;
+			int aboveFrom = x;
+			while (x + 1 < w && trunkPixel[at(x + 1, y - 1)] != 0)
+				x++;
+			int aboveTo = x;
+			// Its dark core here, in a diamond, a pixel either side of it at most.
+			int from = w;
+			int to = -1;
+			for (int cx = std::max(0, aboveFrom - 1); cx <= std::min(w - 1, aboveTo + 1); cx++)
+				if (inDiamond[at(cx, y)] != 0 && bark(cx, y, DarkBark)) {
+					from = std::min(from, cx);
+					to = std::max(to, cx);
+				}
+			if (to < 0)
+				continue; // the trunk ends above (or is not over a diamond)
+			if (aboveTo - aboveFrom + 1 > WidestTrunk) {
+				// A trunk with a branch beside it above: the trunk round its core.
+				aboveFrom = std::max(0, (from + to) / 2 - WidestTrunk / 2);
+				aboveTo = std::min(w - 1, aboveFrom + WidestTrunk - 1);
 			}
-			int end = x;
-			while (end + 1 < w && candidate(end + 1))
-				end++;
-			// The run above it: its bark's width there.
-			int above = 0;
-			for (int ax = std::max(0, x - 1); ax <= std::min(w - 1, end + 1); ax++)
-				if (trunkPixel[at(ax, y - 1)] != 0)
-					above++;
-			int from = x;
-			int to = end;
-			const int widest = std::min(above, 9);
-			if (to - from + 1 > widest) {
-				const int middle = (from + to) / 2;
-				from = middle - widest / 2;
-				to = from + widest - 1;
-			}
-			for (int cx = from; cx <= to; cx++) {
+			const int shift = from < aboveFrom && to <= aboveTo ? -1 : (to > aboveTo && from >= aboveFrom ? 1 : 0);
+			runs.push_back({ std::max(0, aboveFrom + shift), std::min(w - 1, aboveTo + shift), shift });
+		}
+		for (const TrunkRow &run : runs) {
+			for (int cx = run.from; cx <= run.to; cx++) {
+				if (inDiamond[at(cx, y)] == 0 || trunkPixel[at(cx, y)] != 0)
+					continue;
+				int16_t pixel = raw.canvas[at(cx, y)];
+				if (!bark(cx, y, ShadedBark)) {
+					// The ground showing through: the bark above (where the trunk was, before it leant a pixel).
+					const int ax = std::clamp(cx - run.shift, 0, w - 1);
+					pixel = trunkPixel[at(ax, y - 1)] != 0 ? b.canvas[at(ax, y - 1)] : -1;
+					for (int d = 1; pixel <= 0 && d <= WidestTrunk; d++) {
+						for (const int nx : { ax - d, ax + d })
+							if (pixel <= 0 && nx >= 0 && nx < w && trunkPixel[at(nx, y - 1)] != 0)
+								pixel = b.canvas[at(nx, y - 1)];
+					}
+				}
+				if (pixel <= 0)
+					continue;
 				trunkPixel[at(cx, y)] = 1;
-				b.canvas[at(cx, y)] = raw.canvas[at(cx, y)];
+				b.canvas[at(cx, y)] = pixel;
 			}
-			x = end + 1;
 		}
 	}
 	// In the floor diamonds only the trunks and the leaves of the canopy stay: not the shadows on the ground, nor the
@@ -6941,6 +7014,85 @@ void BuildTrees(const std::vector<Point> &tiles, int &treeCount)
 						}
 				if (!grounded)
 					continue; // a branch, cut off from its trunk by the leaves in front of it
+				// A trunk the art draws lit where it goes into the ground (its dark core gone a few rows) is lost
+				// there: it goes on down to the middle of the diamond under it, its bark the widest of its lowest rows
+				// (the runs of bark over its foot, not branches beside it) drawn on down, with those just as wide in
+				// turn, leaning a little as they lean where it is one stem (not two), and darker as it nears the
+				// ground (a lit tip drawn on would be a pale pipe).
+				{
+					// The runs of bark in a row, those that reach to within a few pixels of the foot's.
+					auto runsAt = [&](int row, int bandFrom, int bandTo) {
+						std::vector<int> xs;
+						for (const auto &[x, y] : pixels)
+							if (y == row)
+								xs.push_back(x);
+						std::sort(xs.begin(), xs.end());
+						std::vector<std::pair<int, int>> runs;
+						for (size_t i = 0; i < xs.size(); i++) {
+							if (runs.empty() || xs[i] > runs.back().second + 1)
+								runs.emplace_back(xs[i], xs[i]);
+							else
+								runs.back().second = xs[i];
+						}
+						std::erase_if(runs, [&](const std::pair<int, int> &r) { return r.second < bandFrom || r.first > bandTo; });
+						return runs;
+					};
+					auto width = [](const std::vector<std::pair<int, int>> &runs) {
+						int n = 0;
+						for (const auto &[from, to] : runs)
+							n += to - from + 1;
+						return n;
+					};
+					constexpr int Band = 3;
+					const std::vector<std::pair<int, int>> foot = runsAt(footY, 0, w);
+					const int footFrom = foot.front().first;
+					const int footTo = foot.back().second;
+					float middleY = -1;
+					const float px = static_cast<float>(footFrom + footTo) / 2.0F + 0.5F;
+					for (int dy = 0; dy <= 8 && middleY < 0; dy++)
+						for (const auto &[cx, cy] : diamondMiddles)
+							if (std::abs(px - cx) / 32.0F + std::abs(static_cast<float>(footY + dy) + 0.5F - cy) / 16.0F <= 1.0F)
+								middleY = cy;
+					const int target = static_cast<int>(middleY) - 1;
+					if (middleY >= 0 && footY < target - 3 && target < h) {
+						constexpr int Lowest = 6;        // the rows looked at
+						constexpr float Lean = 0.5F;     // pixels a row at most
+						constexpr float GroundShade = 0.6F; // how much darker it is at the ground
+						std::vector<std::vector<std::pair<int, int>>> rows;
+						int widest = 0;
+						for (int row = footY; row > footY - Lowest && row >= 0; row--) {
+							rows.push_back(runsAt(row, footFrom - Band, footTo + Band));
+							widest = std::max(widest, width(rows.back()));
+						}
+						std::vector<size_t> sources; // its widest lowest rows: those the same as the lowest of them
+						for (size_t i = 0; i < rows.size(); i++)
+							if (width(rows[i]) == widest && (sources.empty() || rows[i] == rows[sources.front()]))
+								sources.push_back(i);
+						const std::vector<std::pair<int, int>> &top = rows.back();
+						const bool oneStem = foot.size() == 1 && top.size() == 1 && rows.size() == static_cast<size_t>(Lowest);
+						const float lean = oneStem ? std::clamp(static_cast<float>(footFrom + footTo - top[0].first - top[0].second) / (2.0F * (Lowest - 1)), -Lean, Lean)
+						                           : 0.0F;
+						const std::vector<std::pair<int, int>> &runs = rows[sources.front()];
+						for (int y = footY + 1; y <= target; y++) {
+							const int from = footY - static_cast<int>(sources[static_cast<size_t>(y - footY - 1) % sources.size()]);
+							// That row under the foot's middle, leaning on from there.
+							const int offset = (footFrom + footTo - runs.front().first - runs.back().second) / 2 + static_cast<int>(std::lround(lean * static_cast<float>(y - footY)));
+							const float shade = 1.0F - GroundShade * static_cast<float>(y - footY) / static_cast<float>(target - footY);
+							for (const auto &[runFrom, runTo] : runs)
+								for (int x = runFrom; x <= runTo; x++) {
+									const int nx = x + offset;
+									if (nx < 0 || nx >= w || trunkPixel[at(nx, y)] != 0)
+										continue;
+									const SDL_Color c = logical_palette[b.canvas[at(x, from)]];
+									b.canvas[at(nx, y)] = NearestColor(c.r * shade, c.g * shade, c.b * shade);
+									trunkPixel[at(nx, y)] = 1;
+									seen[at(nx, y)] = 1;
+									pixels.emplace_back(nx, y);
+								}
+						}
+						footY = target;
+					}
+				}
 				int sum = 0;
 				int n = 0;
 				for (const auto &[x, y] : pixels)
@@ -7038,7 +7190,9 @@ void BuildTrees(const std::vector<Point> &tiles, int &treeCount)
 	}
 #endif
 	// Each art pixel to its trunk: the nearest across the screen (a canopy spreads sideways more than it hangs), of
-	// the trunks whose foot is below it.
+	// the trunks whose foot is below it. Nothing below its tree's foot stays: what is there is the ground's (a twig,
+	// fallen leaves, the edge of a diamond's art) or leaves the iso view shows lower than the foot because they hang
+	// out towards it, which on the tree's upright card would be sunk into the ground, poking out of it.
 	std::vector<std::vector<std::pair<int, int>>> owned(trunks.size());
 	for (int y = 0; y < b.canvasHeight; y++) {
 		for (int x = 0; x < b.canvasWidth; x++) {
@@ -7059,6 +7213,8 @@ void BuildTrees(const std::vector<Point> &tiles, int &treeCount)
 					}
 				}
 			}
+			if (sy > trunks[best].sy + 1.0F)
+				continue;
 			owned[best].emplace_back(x, y);
 		}
 	}
@@ -8191,6 +8347,37 @@ void BuildGraves(const std::vector<Point> &tiles)
 }
 
 /**
+ * @brief A tree the original art paints into a landmark's own tiles, which no tree tile holds (the autumn tree at the
+ * corner of Adria's shack): the town's tree of the same drawing, the one whose foot is at `like`, stands in for it.
+ */
+struct PaintedTree {
+	const char *landmark;
+	Vec2 foot; // the foot of the art's trunk
+	Vec2 like;
+};
+constexpr std::array<PaintedTree, 1> PaintedTrees { {
+	{ "adria", { 77.15F, 21.45F }, { 79.6F, 4.35F } },
+} };
+
+void AddPaintedTrees()
+{
+	for (const PaintedTree &painted : PaintedTrees) {
+		const bool placed = std::any_of(Buildings.begin(), Buildings.end(), [&](const Building &b) {
+			return b.landmark >= 0 && std::string_view(Landmarks[b.landmark].name) == painted.landmark;
+		});
+		// The nearest tree to where it is expected (within a tile and a half: its foot moves as its cutting changes).
+		const auto like = std::min_element(TreeSprites.begin(), TreeSprites.end(), [&](const TreeSprite &a, const TreeSprite &c) {
+			return std::hypot(a.foot.x - painted.like.x, a.foot.y - painted.like.y) < std::hypot(c.foot.x - painted.like.x, c.foot.y - painted.like.y);
+		});
+		if (!placed || like == TreeSprites.end() || std::hypot(like->foot.x - painted.like.x, like->foot.y - painted.like.y) > 1.5F)
+			continue;
+		TreeSprite tree = *like;
+		tree.foot = painted.foot;
+		TreeSprites.push_back(std::move(tree));
+	}
+}
+
+/**
  * @brief Replaces the town's remaining tall-art tiles (those no building draws) with meshes: trees, and the hulls of
  * the rest. Pieces of the church's art its model stands in for are hidden. Marks the tiles (BuildingTiles 3) so
  * they are no longer billboards and their floor is the ground under them.
@@ -8267,6 +8454,7 @@ void BuildTownProps()
 			BuildTrees(group, treeCount);
 		}
 	}
+	AddPaintedTrees();
 	// The low stone walls' heights, from their art.
 	WallHeights.assign(static_cast<size_t>(MAXDUNX) * MAXDUNY, 0.0F);
 	for (int y = 0; y < MAXDUNY; y++)

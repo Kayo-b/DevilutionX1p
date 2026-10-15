@@ -13,12 +13,15 @@ Binary format (little endian), file `landmarks.bin`:
                                      u8 class, i16 texture (-1: none) }
 u and w run 0..1 over the model's plaza x and y extent; z is plaza units above its lowest point.
 class: 0 wall, 1 roof, 2 door, 3 inside (the church's entrance hall, seen through its open door: lit by its lamps),
-       4 rim (the sides of the church's cross windows, lit by the lamp the game puts behind each);
-       + 0x40 (WOUND) where the triangle's winding is reliable (counter-clockwise seen from outside): the game takes its
+       4 rim (the sides of the church's cross windows, lit by the lamp the game puts behind each),
+       5 slit (a gap between the planks of Adria's walls: drawn glowing with the light inside, as window glass is);
+       plus 128 (ART_COLOURS): its texture is in the original art's colours already, which the game keeps as they are
+       (Adria's shack and wares) instead of dimming it to dusk as it does the daylight photographs;
+       plus 64 (WOUND) where the triangle's winding is reliable (counter-clockwise seen from outside): the game takes its
        normal from it (the mausoleum's, built here), not from which side of the building's middle it lies.
 Texture coordinates are the OBJ's (v up, repeating past 0..1).
 """
-import os, struct
+import os, struct, subprocess
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -220,8 +223,9 @@ ROOF_MATERIALS = ('straw_roof_ext', 'straw_roof_int', 'Roof_straw', 'roof_int')
 _plaza = None
 
 
-def plaza_triangles(box):
-    """Triangles (with class: 0 wall, 1 roof, 2 door; uvs; texture) of the plaza groups inside box, above the ground."""
+def plaza_triangles(box, with_groups=False):
+    """Triangles (with class: 0 wall, 1 roof, 2 door; uvs; texture) of the plaza groups inside box, above the ground.
+    with_groups: each texture paired with the triangle's group, (texture, group)."""
     global _plaza
     if _plaza is None:
         _plaza = read_obj(os.path.join(PLAZA_DIR, 'Tristram_plaza.obj'))
@@ -244,7 +248,334 @@ def plaza_triangles(box):
         if p[:, 2].max() <= PLAZA_GROUND + 0.05:
             continue
         cls = 1 if (m in ROOF_MATERIALS or 'roof' in g.lower()) else (2 if m == 'door' else 0)
-        out.append((p, cls, tri_uv(uvs, a, b, c), texture_index(PLAZA_DIR, PLAZA_TEXTURES, m)))
+        tex = (None, g) if with_groups else texture_index(PLAZA_DIR, PLAZA_TEXTURES, m)
+        out.append((p, cls, tri_uv(uvs, a, b, c), tex))
+    return out
+
+
+# Adria's shack (research/adria, "Adria's Shack" of the same rebuild, extracted from its archive if missing): a hut of
+# planks on a frame, its roof sloping down to the back, shelves and the door on the side facing the path, and her
+# cauldron hanging from a frame beside it. The file is in the plaza's coordinates and also holds the hinges of every
+# door in the plaza (left out), so the shack and the cauldron are each the groups inside a box.
+ADRIA_DIR = os.environ.get('FP_ADRIA_DIR', '/home/kxyx/projects/diablo-hellfire-fp/research/adria')
+ADRIA_ARCHIVE = os.environ.get('FP_ADRIA_ARCHIVE', os.path.expanduser("~/projects/diablo-hellfire-fp/Adria's Shack-67266-.7z"))
+ADRIA_SHACK = (99.5, 290.4, 104.7, 295.3)
+ADRIA_CAULDRON = (106.0, 292.5, 108.5, 294.0)
+# Left out: the hinges (a few hundred triangles each for a strap a few pixels long), and the cauldron's chains, a
+# few hundred triangles a link: two thin rods stand in for them (ADRIA_CHAINS: x, y, from z up to z).
+ADRIA_SKIP = ('hinge', 'za_', 'hook')
+ADRIA_CHAINS = [(107.085, 293.355, 15.84, 16.52), (107.655, 293.355, 15.84, 16.52)]
+ADRIA_CHAIN_HALF = 0.014
+# The door stands open, swung into the shack on its hinges (the art shows the doorway lit, the leaf inside).
+ADRIA_DOOR = {f'Box{n}' for n in range(424, 432)}
+ADRIA_DOOR_HINGE = (104.24, 292.44, -95.0)
+# The roof's planks (the same wood as the walls): class 1, what the game hangs the rooms' ceilings under.
+ADRIA_ROOF = {f'Box{n}' for n in range(385, 394)}
+
+
+_adria = None
+
+
+def adria_obj():
+    global _adria
+    if _adria is None:
+        path = os.path.join(ADRIA_DIR, 'Adria_shack_hinges.obj')
+        if not os.path.exists(path):
+            subprocess.run(['7z', 'x', '-y', f'-o{ADRIA_DIR}', ADRIA_ARCHIVE], check=True, stdout=subprocess.DEVNULL)
+        _adria = read_obj(path)
+    return _adria
+
+
+ART_COLOURS = 128  # added to a triangle's class: its texture is in the art's colours already (see the format above)
+
+
+# The shack's wood in the art is dark slate, its roof a lighter blue-grey with patches of green-grey moss, the
+# cauldron's iron a blue-black: the model's textures with their shades put on ramps of those colours (dark to light;
+# picked from the art's pixels, a little lighter, as the iso view shows them in the hero's light). The planks'
+# texture runs across its planks' length in the model's texture coordinates: turned, its grain runs along them.
+# The fountain's stone (the plaza's coarse rock, softened: the art's is smooth, mottled) and its parts' colours, the
+# same way: the basin's slate wall and the pedestal (purplish in their shadows), the pale rim and cap, the base's
+# steps between, the inside of the basin above the water and the spouts' rings darker.
+FOUNTAIN_STONE = os.path.join(PLAZA_DIR, 'Jagged+Stone+seamless+texture-1_diff.tga')
+ART_RAMPS = {
+    'adria_wall': (os.path.join(ADRIA_DIR, 'grinda_02.jpg'), True, [(3, 6, 9), (10, 11, 20), (17, 18, 30), (25, 26, 40), (37, 36, 50), (54, 50, 62)]),
+    'adria_roof': (os.path.join(ADRIA_DIR, 'grinda_02.jpg'), True, [(12, 13, 21), (22, 24, 36), (31, 34, 52), (40, 44, 62), (52, 54, 76), (68, 66, 92)]),
+    'adria_iron': (os.path.join(ADRIA_DIR, 'Dirty_Steel_02_UV_H_CM_1.jpg'), False, [(3, 4, 9), (8, 10, 20), (14, 16, 30), (22, 24, 40), (34, 36, 56), (52, 54, 78)]),
+    'fountain_stone': (FOUNTAIN_STONE, False, [(12, 8, 14), (20, 14, 22), (26, 21, 30), (32, 29, 41), (40, 40, 56), (50, 50, 70)]),
+    'fountain_light': (FOUNTAIN_STONE, False, [(44, 41, 57), (53, 50, 69), (60, 57, 78), (66, 64, 88), (73, 70, 96), (82, 78, 104)]),
+    'fountain_rim': (FOUNTAIN_STONE, False, [(33, 31, 44), (42, 40, 56), (50, 48, 66), (57, 55, 76), (65, 63, 87), (74, 70, 96)]),
+    'fountain_base': (FOUNTAIN_STONE, False, [(22, 20, 28), (28, 26, 36), (34, 33, 46), (41, 40, 55), (50, 48, 66), (59, 56, 77)]),
+    'fountain_inner': (FOUNTAIN_STONE, False, [(6, 6, 10), (9, 9, 15), (13, 12, 19), (17, 16, 24), (22, 21, 30), (28, 27, 38)]),
+    'fountain_spout': (FOUNTAIN_STONE, False, [(4, 4, 8), (7, 7, 12), (10, 10, 16), (14, 14, 20), (18, 18, 26), (24, 24, 32)]),
+}
+RAMP_SIZES = {name: 128 for name in ART_RAMPS if name.startswith('fountain')}  # small: a small piece
+RAMP_BLURS = {name: 0.8 for name in ART_RAMPS if name.startswith('fountain')}  # the source softened (pixels)
+# How much of its ramp a texture spans about the ramp's middle (1: all of it, evenly): the fountain's stone is mostly
+# one tone, faintly mottled.
+RAMP_CONTRASTS = {name: 0.4 for name in ART_RAMPS if name.startswith('fountain')}
+WOOD_MOSS = (30, 42, 38)
+_art_textures = {}
+
+
+def adria_texture(material):
+    """The texture of a material of the Adria model: the planks and the iron on the art's ramps (ART_COLOURS)."""
+    return ramp_texture({'grinzi': 'adria_wall', 'cauldron': 'adria_iron', '02___Default': 'adria_iron'}[material])
+
+
+def ramp_texture(name):
+    """A texture of the model on one of ART_RAMPS: each texel the ramp's colour at its shade's rank."""
+    if name not in _art_textures:
+        from PIL import Image
+        source, turn, ramp = ART_RAMPS[name]
+        size = RAMP_SIZES.get(name, TEXTURE_SIZE)
+        im = Image.open(source).convert('RGB').resize((size, size), Image.LANCZOS)
+        if name in RAMP_BLURS:
+            from PIL import ImageFilter
+            im = im.filter(ImageFilter.GaussianBlur(RAMP_BLURS[name]))
+        rgb = np.asarray(im, dtype=float)
+        if turn:
+            rgb = rgb.transpose(1, 0, 2)
+        lum = rgb @ np.array([0.3, 0.59, 0.11])
+        rank = np.argsort(np.argsort(lum.ravel())).reshape(lum.shape) / (lum.size - 1)
+        ramp = np.array(ramp, dtype=float)
+        pos = (0.5 + (rank - 0.5) * RAMP_CONTRASTS.get(name, 1.0)) * (len(ramp) - 1)
+        k = np.minimum(pos.astype(int), len(ramp) - 2)
+        f = (pos - k)[..., None]
+        out = ramp[k] * (1 - f) + ramp[k + 1] * f
+        if name == 'adria_roof':
+            # Moss: soft patches (smooth noise, the same every export) pulling the shade towards green-grey.
+            rng = np.random.default_rng(67266)
+            noise = np.asarray(Image.fromarray((rng.random((6, 6)) * 255).astype(np.uint8)).resize((size, size), Image.BICUBIC), dtype=float) / 255
+            moss = np.clip((noise - 0.55) / 0.25, 0, 1)[..., None] * 0.6
+            out = out * (1 - moss) + np.array(WOOD_MOSS) * (0.6 + 0.8 * rank[..., None]) * moss
+        _art_textures[name] = len(textures)
+        textures.append(np.clip(out, 0, 255).astype(np.uint8))
+    return _art_textures[name]
+
+
+def adria_triangles(box):
+    """The groups of the Adria model inside box (x0, y0, x1, y1), as plaza_triangles gives them."""
+    v, uvs, faces = adria_obj()
+    extent = {}
+    for a, b, c, m, g in faces:
+        p = v[[a[0], b[0], c[0]]]
+        e = extent.get(g)
+        extent[g] = (np.minimum(e[0], p.min(0)), np.maximum(e[1], p.max(0))) if e else (p.min(0), p.max(0))
+    inside = {g for g, (lo, hi) in extent.items() if lo[0] >= box[0] and hi[0] <= box[2] and lo[1] >= box[1] and hi[1] <= box[3]}
+    out = []
+    for a, b, c, m, g in faces:
+        if g not in inside or any(g.startswith(s) for s in ADRIA_SKIP):
+            continue
+        p = v[[a[0], b[0], c[0]]]
+        if g in ADRIA_DOOR:
+            p = swing(p, *ADRIA_DOOR_HINGE)
+        if p[:, 2].max() <= PLAZA_GROUND + 0.05:
+            continue
+        roof = g in ADRIA_ROOF
+        out.append((p, (1 if roof else 0) | ART_COLOURS, tri_uv(uvs, a, b, c), ramp_texture('adria_roof') if roof else adria_texture(m)))
+    return out
+
+
+def plank_slits(out, v, faces, groups):
+    """Glowing strips (class 5) in the gaps between the upright planks of the shack's walls, in each wall's middle:
+    the art shows the light inside between them. A wall is the thin, tall planks in one plane."""
+    extent = {}
+    for a, b, c, m, g in faces:
+        if g in groups:
+            p = v[[a[0], b[0], c[0]]]
+            e = extent.get(g)
+            extent[g] = (np.minimum(e[0], p.min(0)), np.maximum(e[1], p.max(0))) if e else (p.min(0), p.max(0))
+    middle = np.mean([(lo + hi) / 2 for lo, hi in extent.values()], axis=0)
+    count = 0
+    for axis in (0, 1):  # the wall's normal: x or y
+        along = 1 - axis
+        walls = {}
+        for g, (lo, hi) in extent.items():
+            if hi[axis] - lo[axis] < 0.05 and hi[2] - lo[2] > 1.0 and hi[along] - lo[along] < 1.0:
+                walls.setdefault(round((lo[axis] + hi[axis]) / 2, 1), []).append((lo, hi))
+        for planks in walls.values():
+            planks.sort(key=lambda e: e[0][along])
+            plane = np.mean([(lo[axis] + hi[axis]) / 2 for lo, hi in planks])
+            for (lo0, hi0), (lo1, hi1) in zip(planks, planks[1:]):
+                a0, a1 = hi0[along], lo1[along]
+                z0, z1 = max(lo0[2], lo1[2]) + 0.04, min(hi0[2], hi1[2]) - 0.04
+                if not 0.005 < a1 - a0 < 0.08 or z1 - z0 < 0.3:
+                    continue
+                def at(t, z):
+                    q = np.zeros(3)
+                    q[axis], q[along], q[2] = plane, t, z
+                    return q
+                q = [at(a0, z0), at(a1, z0), at(a1, z1), at(a0, z1)]
+                outward = np.zeros(3)
+                outward[axis] = np.sign(plane - middle[axis])
+                if np.dot(np.cross(q[1] - q[0], q[2] - q[0]), outward) < 0:
+                    q = q[::-1]
+                uv = np.zeros((3, 2))
+                out.append((np.array([q[0], q[1], q[2]]), 5, uv, -1))
+                out.append((np.array([q[0], q[2], q[3]]), 5, uv, -1))
+                count += 1
+    print(f'adria: {count} slits between planks')
+
+
+def box_prism(out, x, y, half, z0, z1, tex, cls=0):
+    """A thin upright square rod, its four sides wound outward, textured along its length."""
+    corners = [(x - half, y - half), (x + half, y - half), (x + half, y + half), (x - half, y + half)]
+    for k in range(4):
+        (ax, ay), (bx, by) = corners[k], corners[(k + 1) % 4]
+        q = [np.array(p) for p in ((ax, ay, z0), (bx, by, z0), (bx, by, z1), (ax, ay, z1))]
+        uv = [(0.0, z0), (0.1, z0), (0.1, z1), (0.0, z1)]
+        out.append((np.array([q[0], q[1], q[2]]), cls, np.array([uv[0], uv[1], uv[2]]), tex))
+        out.append((np.array([q[0], q[2], q[3]]), cls, np.array([uv[0], uv[2], uv[3]]), tex))
+
+
+# Adria's wares on her shelves, as the original art has them: flasks, bottles and jugs of glass and clay in its
+# colours (each a base and a highlight, taken from the art's pixels; the game keeps them as they are, ART_COLOURS).
+# Shapes: a profile of (radius, height) pairs, as fractions of the piece's widest radius and its height.
+WARE_SHAPES = {
+    'flask': (0.42, [(0.0, 0.0), (0.55, 0.0), (0.9, 0.12), (1.0, 0.3), (0.86, 0.5), (0.42, 0.63), (0.3, 0.86), (0.38, 0.93), (0.34, 1.0), (0.0, 1.0)]),
+    'bottle': (0.22, [(0.0, 0.0), (1.0, 0.0), (1.0, 0.56), (0.8, 0.68), (0.36, 0.78), (0.32, 0.94), (0.4, 1.0), (0.0, 1.0)]),
+    'jug': (0.38, [(0.0, 0.0), (0.7, 0.0), (0.95, 0.2), (1.0, 0.45), (0.86, 0.7), (0.55, 0.82), (0.6, 0.93), (0.64, 1.0), (0.0, 1.0)]),
+}
+WARE_COLOURS = {
+    'yellow': ((50, 36, 13), (104, 76, 30)), 'green': ((18, 29, 18), (44, 62, 34)), 'red': ((50, 12, 9), (96, 30, 18)),
+    'clay': ((42, 21, 10), (80, 44, 22)), 'blue': ((13, 15, 30), (34, 38, 62)),
+}
+# The shelves (their tops, the plaza's z) and what stands on each: (shape, colour, y, height).
+WARE_SHELF_X = 104.42  # the middle of the shelves' depth
+WARES = [
+    (16.58, [('jug', 'blue', 291.18, 0.30), ('bottle', 'green', 291.62, 0.34)]),                  # over the door
+    (15.66, [('flask', 'yellow', 291.05, 0.34)]),                                                 # beside it
+    (16.58, [('jug', 'clay', 292.52, 0.32), ('bottle', 'green', 292.92, 0.36)]),                  # the middle shelves
+    (15.89, [('flask', 'yellow', 292.84, 0.36), ('bottle', 'green', 293.22, 0.32), ('bottle', 'red', 293.44, 0.24)]),
+    (15.18, [('flask', 'yellow', 292.78, 0.24), ('bottle', 'green', 293.12, 0.3), ('jug', 'red', 293.5, 0.3), ('bottle', 'green', 293.86, 0.26)]),
+    (15.89, [('jug', 'blue', 294.36, 0.34), ('bottle', 'green', 294.76, 0.36)]),                  # past the brace
+]
+WARE_SEGMENTS = 8
+_ware_textures = {}
+
+
+def ware_texture(colour):
+    """A small texture of a ware's colour: its highlight on the side towards the path, darker round the back and at
+    the foot (rows top to bottom, u around the piece)."""
+    if colour not in _ware_textures:
+        base, light = (np.array(c, dtype=float) for c in WARE_COLOURS[colour])
+        w, h = 16, 16
+        u = (np.arange(w) + 0.5) / w
+        t = 1.0 - (np.arange(h) + 0.5) / h  # height up the piece
+        around = np.clip(1.0 - np.abs(((u - 0.875 + 0.5) % 1.0) - 0.5) / 0.18, 0, 1)  # the highlight, facing +x, -y
+        shade = 0.75 + 0.25 * np.clip(t * 3, 0, 1)
+        img = (base[None, None, :] * shade[:, None, None] + (light - base)[None, None, :] * around[None, :, None] * shade[:, None, None])
+        _ware_textures[colour] = len(textures)
+        textures.append(np.clip(img, 0, 255).astype(np.uint8))
+    return _ware_textures[colour]
+
+
+def lathe(out, shape, x, y, z, height, tex):
+    """A ware turned on a lathe (WARE_SEGMENTS sides), standing at (x, y, z), its faces wound outward."""
+    radius, profile = WARE_SHAPES[shape]
+    radius *= height
+    rings = [(r * radius, z + t * height, t) for r, t in profile]
+    for k in range(len(rings) - 1):
+        (r0, z0, t0), (r1, z1, t1) = rings[k], rings[k + 1]
+        for s in range(WARE_SEGMENTS):
+            a0, a1 = 2 * np.pi * s / WARE_SEGMENTS, 2 * np.pi * (s + 1) / WARE_SEGMENTS
+            p = lambda r, zz, a: np.array([x + r * np.cos(a), y + r * np.sin(a), zz])
+            uv = lambda i, t: (i / WARE_SEGMENTS, 0.02 + 0.96 * t)
+            q = [p(r0, z0, a0), p(r0, z0, a1), p(r1, z1, a1), p(r1, z1, a0)]
+            quv = [uv(s, t0), uv(s + 1, t0), uv(s + 1, t1), uv(s, t1)]
+            # Going up the profile the radius may grow or shrink; a ring of radius 0 makes a fan (one triangle).
+            if r0 > 0:
+                out.append((np.array([q[0], q[1], q[2]]), ART_COLOURS, np.array([quv[0], quv[1], quv[2]]), tex))
+            if r1 > 0:
+                out.append((np.array([q[0], q[2], q[3]]), ART_COLOURS, np.array([quv[0], quv[2], quv[3]]), tex))
+    return out
+
+
+def adria_shack():
+    out = adria_triangles(ADRIA_SHACK)
+    v, _, faces = adria_obj()
+    walls = {g for a, b, c, m, g in faces if m == 'grinzi' and g not in ADRIA_DOOR and g not in ADRIA_ROOF}
+    inside = {g for a, b, c, m, g in faces if all(ADRIA_SHACK[k] <= x <= ADRIA_SHACK[k + 2] for k, x in enumerate(v[a[0]][:2]))}
+    plank_slits(out, v, faces, walls & inside)
+    for top, wares in WARES:
+        for shape, colour, y, height in wares:
+            lathe(out, shape, WARE_SHELF_X, y, top, height, ware_texture(colour))
+    return out
+
+
+def adria_cauldron():
+    out = adria_triangles(ADRIA_CAULDRON)
+    iron = adria_texture('02___Default')
+    for x, y, z0, z1 in ADRIA_CHAINS:
+        box_prism(out, x, y, ADRIA_CHAIN_HALF, z0, z1, iron, ART_COLOURS)
+    return out
+
+
+# The fountain, in its parts' colours from the original art (ART_RAMPS), and the amber water the art fills its basin
+# with nearly to the rim (the model's basin is empty down to its floor, which the water hides: left out). The
+# model is round about FOUNTAIN_MIDDLE; its parts are told apart by their radius and height.
+FOUNTAIN_MIDDLE = (85.6, 241.11)
+FOUNTAIN_WATER = 15.42                # the water's surface (the rim's top is at 15.5)
+FOUNTAIN_BASIN = (0.30, 0.545)        # between the pedestal and the basin's inner wall
+FOUNTAIN_WATER_COLOURS = [(78, 50, 28), (107, 74, 24), (46, 33, 12), (62, 58, 78)]  # dithered; dark; a glint
+
+
+def fountain_part(p, group):
+    """Which of the fountain's ramps a triangle wears, or None for the basin's floor under the water."""
+    if group.startswith('Torus'):
+        return 'fountain_spout'
+    n = np.cross(p[1] - p[0], p[2] - p[0])
+    n = n / max(np.linalg.norm(n), 1e-12)
+    r = np.hypot(p[:, 0] - FOUNTAIN_MIDDLE[0], p[:, 1] - FOUNTAIN_MIDDLE[1])
+    z0, z1 = p[:, 2].min(), p[:, 2].max()
+    if n[2] > 0.8:  # facing up: the cap and the rim on top, the steps below
+        if z1 < 14.8 and r.max() < FOUNTAIN_BASIN[1] + 0.02:
+            return None
+        return 'fountain_light' if z0 > 15.45 else 'fountain_base'
+    if n[2] < -0.8:  # the undersides of the rim's lip and the cap
+        return 'fountain_stone'
+    if z1 <= 14.78:
+        return 'fountain_base'  # the steps' edges
+    if r.min() > FOUNTAIN_BASIN[1] - 0.01 and r.max() < FOUNTAIN_BASIN[1] + 0.02:
+        return 'fountain_inner'
+    if (z0 >= 15.39 and r.min() > 0.63) or z0 >= 15.85:
+        return 'fountain_rim'  # the rim's and the cap's edges
+    return 'fountain_stone'  # the basin's wall, the pedestal
+
+
+_fountain_water = None
+
+
+def fountain_water_texture():
+    """The art's water: an orange and yellow dither, a few darker and lavender (the sky's) specks."""
+    global _fountain_water
+    if _fountain_water is None:
+        rng = np.random.default_rng(241)
+        size = 32
+        y, x = np.mgrid[0:size, 0:size]
+        pick = (x + y) % 2
+        speck = rng.random((size, size))
+        pick = np.where(speck < 0.08, 2, np.where(speck > 0.94, 3, pick))
+        _fountain_water = len(textures)
+        textures.append(np.array(FOUNTAIN_WATER_COLOURS, dtype=np.uint8)[pick])
+    return _fountain_water
+
+
+def fountain_triangles(box):
+    out = []
+    for p, cls, uv, tex in plaza_triangles(box, with_groups=True):
+        part = fountain_part(p, tex[1])
+        if part is not None:
+            out.append((p, cls | ART_COLOURS, uv, ramp_texture(part)))
+    # The water: a ring between the pedestal and the basin's wall, facing up, its texture laid flat.
+    water = fountain_water_texture()
+    (cx, cy), (r0, r1), z = FOUNTAIN_MIDDLE, FOUNTAIN_BASIN, FOUNTAIN_WATER
+    segments = 32
+    at = lambda r, k: np.array([cx + r * np.cos(2 * np.pi * k / segments), cy + r * np.sin(2 * np.pi * k / segments), z])
+    flat = lambda q: (q[0] * 2.0, q[1] * 2.0)
+    for k in range(segments):
+        for tri in ((at(r0, k), at(r1, k), at(r1, k + 1)), (at(r0, k), at(r1, k + 1), at(r0, k + 1))):
+            out.append((np.array(tri), ART_COLOURS, np.array([flat(q) for q in tri]), water))
     return out
 
 
@@ -467,8 +798,17 @@ def mausoleum_triangles():
 def main():
     models = []
     for name, box in PLAZA_BUILDINGS + [('church', None), ('mausoleum', None)]:
-        tris = church_triangles() if name == 'church' else (mausoleum_triangles() if name == 'mausoleum' else plaza_triangles(box))
+        if name == 'church':
+            tris = church_triangles()
+        elif name == 'mausoleum':
+            tris = mausoleum_triangles()
+        elif name == 'fountain':
+            tris = fountain_triangles(box)
+        else:
+            tris = plaza_triangles(box)
         models.append((name, tris))
+    models.append(('adria', adria_shack()))
+    models.append(('cauldron', adria_cauldron()))
     out = open(os.path.join(ns['ASSETS'], 'landmarks.bin'), 'wb')
     out.write(struct.pack('<4sI', b'FPL2', len(textures)))
     for t in textures:
@@ -485,7 +825,7 @@ def main():
         nm = name.encode()
         out.write(struct.pack('<B', len(nm)) + nm + struct.pack('<fI', float(hi[2] - lo[2]), len(records)) + b''.join(records))
         textured = sum(1 for t in tris if t[3] >= 0)
-        print(f'{name}: {len(records)} triangles ({textured} textured), size {(hi - lo).round(2)}')
+        print(f'{name}: {len(records)} triangles ({textured} textured), size {(hi - lo).round(2)}, from {lo.round(3)}')
     out.close()
     print(len(textures), 'textures; landmarks.bin', os.path.getsize(os.path.join(ns['ASSETS'], 'landmarks.bin')), 'bytes')
 

@@ -31,6 +31,7 @@
 #include "fp/fp_textures.hpp"
 #include "fp/fp_world.hpp"
 #include "items.h"
+#include "levels/dun_tile_data.hpp"
 #include "player.h"
 
 namespace devilution::fp {
@@ -279,6 +280,9 @@ void DrawFirstPersonWeapon(const Surface &out)
 		return;
 	const Player &player = *MyPlayer;
 	const bool preview = WeaponPreview.file >= 0 && WeaponPreview.file < DfWeaponFiles;
+	// No one fights in Tristram (the game lets no blow be struck there): the weapon is put away, but for a preview.
+	if (leveltype == DTYPE_TOWN && !preview)
+		return;
 	const DfWeapon &weapon = GetWeapon(preview ? WeaponPreview.file : WeaponFileFor(HeldWeapon(player)));
 	if (weapon.records.empty())
 		return;

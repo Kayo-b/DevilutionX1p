@@ -8,7 +8,7 @@ textures (`dungeontex.bin`) are derived from a fan-made rebuild of Diablo 1's as
 - **Contents of the original release:** stairs to hell, all the houses of the town, the fountain, Adria's shack,
   the church, and a set of dungeon pieces.
 - **Used here:** the Tristram plaza houses (the cottages, Griswold's smithy, Ogden's tavern), the church exterior,
-  and the dungeon kit's entrance stairs (`stairs_01`), and on branch `fp-modkit` its column, sarcophagus (also split into body and lid, for the lid opening), candle stand
+  Adria's shack and her cauldron (`landmarks.bin`, `adria` and `cauldron`), and the dungeon kit's entrance stairs (`stairs_01`), and on branch `fp-modkit` its column, sarcophagus (also split into body and lid, for the lid opening), candle stand
   and door, with the kit's stone block, pavement, marble and iron textures (`dungeonkit.bin`); and the stairs to hell
   ("Diablo's Hell stairs", `hell_stairs.obj`: a rib cage over a pit, the spine going down into it), hell's stairs in
   `dungeonkit.bin` (`hell_stairs`, `hell_ribs`), with its bone texture (`bone_bump.jpg`) in `dungeontex.bin`. They were converted by the scripts in `fp-tools/export/`:
@@ -29,6 +29,10 @@ textures; anything built from it is under the same restriction.
 `landmarks.bin` also carries the release's diffuse textures for the town buildings, shrunk to 256 x 256 (converted
 to Diablo's palette and darkened in game): the plaza's stone wall, straw roof (outside and inside), timber, door
 and fountain stone, and the church's stone wall, slate roof, wooden ceiling, doors, pavement and stained glass.
+Adria's shack wears the release's weathered planks (`grinda_02`) and its cauldron the release's dirty steel
+(`Dirty_Steel_02_UV_H_CM_1`), and the fountain its stone, all graded to the colours of the same buildings in the
+original art (measured, none copied) by `fp-tools/export/export_landmarks.py`; the fountain's water is made from
+nothing but its colours.
 The release has no model of the mausoleum by the cows: it is built by `fp-tools/export/export_landmarks.py`
 (`mausoleum_triangles`) after the town's iso art, measured on it but none of it copied, and wears the release's
 church stone and pavement and its dungeon kit's column stone and steel (graded to a cool grey), and a slate roof
