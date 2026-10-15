@@ -582,6 +582,8 @@ struct GameplayOptions : OptionCategoryBase {
 
 	/** @brief Gameplay ticks per second. */
 	OptionEntryInt<int> tickRate;
+	/** @brief Start each game in the first-person view (F4 still switches views). */
+	OptionEntryBoolean startInFirstPerson;
 	/** @brief Enable double walk speed when in town. */
 	OptionEntryBoolean runInTown;
 	/** @brief Do not let the mouse leave the application window. */

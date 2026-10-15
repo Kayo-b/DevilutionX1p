@@ -841,6 +841,7 @@ std::vector<OptionEntryBase *> GraphicsOptions::GetEntries()
 GameplayOptions::GameplayOptions()
     : OptionCategoryBase("Game", N_("Gameplay"), N_("Gameplay Settings"))
     , tickRate("Speed", OptionEntryFlags::Invisible, "Speed", "Gameplay ticks per second.", 20)
+    , startInFirstPerson("Start in First Person", OptionEntryFlags::None, N_("Start in First Person"), N_("Each game starts in the first-person view. F4 switches between first person and the isometric view."), true)
     , runInTown("Run in Town", OptionEntryFlags::CantChangeInMultiPlayer, N_("Run in Town"), N_("Enable jogging/fast walking in town for Diablo and Hellfire. This option was introduced in the expansion."), false)
     , grabInput("Grab Input", OptionEntryFlags::None, N_("Grab Input"), N_("When enabled mouse is locked to the game window."), false)
     , pauseOnFocusLoss("Pause Game When Window Loses Focus", OptionEntryFlags::None, N_("Pause Game When Window Loses Focus"), N_("When enabled, the game will pause when focus is lost."), true)
@@ -897,6 +898,7 @@ std::vector<OptionEntryBase *> GameplayOptions::GetEntries()
 {
 	return {
 		&tickRate,
+		&startInFirstPerson,
 		&friendlyFire,
 		&multiplayerFullQuests,
 		&randomizeQuests,

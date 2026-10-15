@@ -16,6 +16,8 @@ namespace devilution::fp {
 void ToggleFirstPerson();
 /** @brief Switches first person on once it was asked for and the town's models are built. Call once a frame. */
 void UpdateFirstPersonActivation();
+/** @brief Switches first person on as a game starts or loads, if the options say to (Start in First Person); before PrepareTown. */
+void ApplyStartView();
 
 /**
  * @brief Renders the first-person view of the current level.

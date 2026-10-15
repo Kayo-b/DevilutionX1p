@@ -81,12 +81,22 @@ Point TileAt(float x, float y)
 	return { static_cast<int>(std::floor(x)), static_cast<int>(std::floor(y)) };
 }
 
+/** @brief The developer console (debug builds only) is open: it takes the keyboard and the cursor. */
+bool ConsoleOpen()
+{
+#ifdef _DEBUG
+	return IsConsoleOpen();
+#else
+	return false;
+#endif
+}
+
 /** @brief UI states that need the regular mouse cursor (panels, menus, item on cursor, ...). */
 bool NeedsCursor()
 {
 	return InGameMenu()
 	    || IsLeftPanelOpen() || IsRightPanelOpen()
-	    || SpellSelectFlag || DropGoldFlag || IsWithdrawGoldOpen || DoomFlag || IsChatActive() || IsConsoleOpen()
+	    || SpellSelectFlag || DropGoldFlag || IsWithdrawGoldOpen || DoomFlag || IsChatActive() || ConsoleOpen()
 	    || pcurs >= CURSOR_FIRSTITEM || IsAnyOf(pcurs, CURSOR_IDENTIFY, CURSOR_REPAIR, CURSOR_RECHARGE, CURSOR_OIL, CURSOR_HOURGLASS)
 	    || MyPlayerIsDead;
 }
@@ -94,7 +104,7 @@ bool NeedsCursor()
 /** @brief Keyboard movement is allowed unless text is being typed or a modal menu is up. */
 bool KeyboardMovementAllowed()
 {
-	return !InGameMenu() && !IsChatActive() && !DropGoldFlag && !IsWithdrawGoldOpen && !IsConsoleOpen();
+	return !InGameMenu() && !IsChatActive() && !DropGoldFlag && !IsWithdrawGoldOpen && !ConsoleOpen();
 }
 
 void SetMouseCapture(bool capture)

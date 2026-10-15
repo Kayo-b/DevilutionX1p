@@ -3,7 +3,8 @@
  *
  * The weapon in the player's hand, drawn over the first-person view with the first-person weapon art of
  * The Elder Scrolls II: Daggerfall. The art is read at run time from the player's own Daggerfall install
- * (FP_DAGGERFALL_DIR, the ARENA2 folder) and never shipped; without it no weapon is drawn.
+ * (FP_DAGGERFALL_DIR, the ARENA2 folder, else the "daggerfall" folder next to the game, where the installers copy it
+ * from that install) and never shipped; without it no weapon is drawn.
  *
  * WEAPONnn.CIF: a 320 x 200 screen's worth of sprites. The first record is a plain image (x, y, width, height,
  * 0, size, then the pixels); the rest are animations with a 76-byte header (width, height, width again, x, y,
@@ -33,6 +34,8 @@
 #include "items.h"
 #include "levels/dun_tile_data.hpp"
 #include "player.h"
+#include "utils/paths.h"
+#include "utils/str_cat.hpp"
 
 namespace devilution::fp {
 
@@ -68,10 +71,15 @@ enum DfWeaponFile : uint8_t {
 	DfWeaponFiles = 12,
 };
 
+/** @brief FP_DAGGERFALL_DIR (set but empty: no weapon), else the "daggerfall" folder next to the game. */
 const char *DaggerfallDir()
 {
-	static const char *dir = std::getenv("FP_DAGGERFALL_DIR");
-	return dir != nullptr && *dir != '\0' ? dir : nullptr;
+	static const std::string dir = [] {
+		if (const char *env = std::getenv("FP_DAGGERFALL_DIR"))
+			return std::string(env);
+		return StrCat(paths::BasePath(), "daggerfall");
+	}();
+	return dir.empty() ? nullptr : dir.c_str();
 }
 
 std::vector<uint8_t> ReadFile(const std::string &path)

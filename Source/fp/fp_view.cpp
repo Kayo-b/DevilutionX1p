@@ -32,6 +32,7 @@
 #include "items.h"
 #include "monster.h"
 #include "objects.h"
+#include "options.h"
 #include "player.h"
 #include "qol/itemlabels.h"
 #include "stores.h"
@@ -1081,13 +1082,15 @@ void DrawCrosshair(const Surface &out)
 	}
 }
 
-/** @brief Temporary readout used while verifying coordinates; remove once M4 is confirmed. */
+#ifdef _DEBUG
+/** @brief The tile, light and level readout in the corner (debug builds: the console's dev.fp commands go by it). */
 void DrawDebugInfo(const Surface &out, const Projection &proj)
 {
 	const Point here { static_cast<int>(std::floor(proj.pos.x)), static_cast<int>(std::floor(proj.pos.y)) };
 	const std::string text = StrCat("tile ", here.x, ",", here.y, " light ", static_cast<int>(LightAt(here)), " lvl ", static_cast<int>(leveltype));
 	DrawString(out, text, { { 8, 8 }, { out.w() - 16, 20 } });
 }
+#endif
 
 } // namespace
 
@@ -1120,6 +1123,15 @@ void UpdateFirstPersonActivation()
 		FinishTownBuild();
 		ToggleFirstPerson();
 	}
+}
+
+void ApplyStartView()
+{
+	if (FirstPersonActive || !*GetOptions().Gameplay.startInFirstPerson)
+		return;
+	ActivationPending = false;
+	FirstPersonActive = true;
+	ResetViewState();
 }
 
 void DrawFirstPersonView(const Surface &out)
@@ -1190,7 +1202,9 @@ void DrawFirstPersonView(const Surface &out)
 	}
 	if (IsMouseLookActive())
 		DrawCrosshair(out);
+#ifdef _DEBUG
 	DrawDebugInfo(out, proj);
+#endif
 }
 
 } // namespace devilution::fp
