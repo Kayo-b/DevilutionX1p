@@ -221,8 +221,9 @@ ROOF_MATERIALS = ('straw_roof_ext', 'straw_roof_int', 'Roof_straw', 'roof_int')
 _plaza = None
 
 
-def plaza_triangles(box):
-    """Triangles (with class: 0 wall, 1 roof, 2 door; uvs; texture) of the plaza groups inside box, above the ground."""
+def plaza_triangles(box, with_groups=False):
+    """Triangles (with class: 0 wall, 1 roof, 2 door; uvs; texture) of the plaza groups inside box, above the ground.
+    with_groups: each texture paired with the triangle's group, (texture, group)."""
     global _plaza
     if _plaza is None:
         _plaza = read_obj(os.path.join(PLAZA_DIR, 'Tristram_plaza.obj'))
@@ -245,7 +246,8 @@ def plaza_triangles(box):
         if p[:, 2].max() <= PLAZA_GROUND + 0.05:
             continue
         cls = 1 if (m in ROOF_MATERIALS or 'roof' in g.lower()) else (2 if m == 'door' else 0)
-        out.append((p, cls, tri_uv(uvs, a, b, c), texture_index(PLAZA_DIR, PLAZA_TEXTURES, m)))
+        tex = (None, g) if with_groups else texture_index(PLAZA_DIR, PLAZA_TEXTURES, m)
+        out.append((p, cls, tri_uv(uvs, a, b, c), tex))
     return out
 
 
@@ -289,11 +291,26 @@ ART_COLOURS = 128  # added to a triangle's class: its texture is in the art's co
 # cauldron's iron a blue-black: the model's textures with their shades put on ramps of those colours (dark to light;
 # picked from the art's pixels, a little lighter, as the iso view shows them in the hero's light). The planks'
 # texture runs across its planks' length in the model's texture coordinates: turned, its grain runs along them.
+# The fountain's stone (the plaza's coarse rock, softened: the art's is smooth, mottled) and its parts' colours, the
+# same way: the basin's slate wall and the pedestal (purplish in their shadows), the pale rim and cap, the base's
+# steps between, the inside of the basin above the water and the spouts' rings darker.
+FOUNTAIN_STONE = os.path.join(PLAZA_DIR, 'Jagged+Stone+seamless+texture-1_diff.tga')
 ART_RAMPS = {
-    'adria_wall': ('grinda_02.jpg', True, [(3, 6, 9), (10, 11, 20), (17, 18, 30), (25, 26, 40), (37, 36, 50), (54, 50, 62)]),
-    'adria_roof': ('grinda_02.jpg', True, [(12, 13, 21), (22, 24, 36), (31, 34, 52), (40, 44, 62), (52, 54, 76), (68, 66, 92)]),
-    'adria_iron': ('Dirty_Steel_02_UV_H_CM_1.jpg', False, [(3, 4, 9), (8, 10, 20), (14, 16, 30), (22, 24, 40), (34, 36, 56), (52, 54, 78)]),
+    'adria_wall': (os.path.join(ADRIA_DIR, 'grinda_02.jpg'), True, [(3, 6, 9), (10, 11, 20), (17, 18, 30), (25, 26, 40), (37, 36, 50), (54, 50, 62)]),
+    'adria_roof': (os.path.join(ADRIA_DIR, 'grinda_02.jpg'), True, [(12, 13, 21), (22, 24, 36), (31, 34, 52), (40, 44, 62), (52, 54, 76), (68, 66, 92)]),
+    'adria_iron': (os.path.join(ADRIA_DIR, 'Dirty_Steel_02_UV_H_CM_1.jpg'), False, [(3, 4, 9), (8, 10, 20), (14, 16, 30), (22, 24, 40), (34, 36, 56), (52, 54, 78)]),
+    'fountain_stone': (FOUNTAIN_STONE, False, [(12, 8, 14), (20, 14, 22), (26, 21, 30), (32, 29, 41), (40, 40, 56), (50, 50, 70)]),
+    'fountain_light': (FOUNTAIN_STONE, False, [(44, 41, 57), (53, 50, 69), (60, 57, 78), (66, 64, 88), (73, 70, 96), (82, 78, 104)]),
+    'fountain_rim': (FOUNTAIN_STONE, False, [(33, 31, 44), (42, 40, 56), (50, 48, 66), (57, 55, 76), (65, 63, 87), (74, 70, 96)]),
+    'fountain_base': (FOUNTAIN_STONE, False, [(22, 20, 28), (28, 26, 36), (34, 33, 46), (41, 40, 55), (50, 48, 66), (59, 56, 77)]),
+    'fountain_inner': (FOUNTAIN_STONE, False, [(6, 6, 10), (9, 9, 15), (13, 12, 19), (17, 16, 24), (22, 21, 30), (28, 27, 38)]),
+    'fountain_spout': (FOUNTAIN_STONE, False, [(4, 4, 8), (7, 7, 12), (10, 10, 16), (14, 14, 20), (18, 18, 26), (24, 24, 32)]),
 }
+RAMP_SIZES = {name: 128 for name in ART_RAMPS if name.startswith('fountain')}  # small: a small piece
+RAMP_BLURS = {name: 0.8 for name in ART_RAMPS if name.startswith('fountain')}  # the source softened (pixels)
+# How much of its ramp a texture spans about the ramp's middle (1: all of it, evenly): the fountain's stone is mostly
+# one tone, faintly mottled.
+RAMP_CONTRASTS = {name: 0.4 for name in ART_RAMPS if name.startswith('fountain')}
 WOOD_MOSS = (30, 42, 38)
 _art_textures = {}
 
@@ -308,21 +325,25 @@ def ramp_texture(name):
     if name not in _art_textures:
         from PIL import Image
         source, turn, ramp = ART_RAMPS[name]
-        im = Image.open(os.path.join(ADRIA_DIR, source)).convert('RGB').resize((TEXTURE_SIZE, TEXTURE_SIZE), Image.LANCZOS)
+        size = RAMP_SIZES.get(name, TEXTURE_SIZE)
+        im = Image.open(source).convert('RGB').resize((size, size), Image.LANCZOS)
+        if name in RAMP_BLURS:
+            from PIL import ImageFilter
+            im = im.filter(ImageFilter.GaussianBlur(RAMP_BLURS[name]))
         rgb = np.asarray(im, dtype=float)
         if turn:
             rgb = rgb.transpose(1, 0, 2)
         lum = rgb @ np.array([0.3, 0.59, 0.11])
         rank = np.argsort(np.argsort(lum.ravel())).reshape(lum.shape) / (lum.size - 1)
         ramp = np.array(ramp, dtype=float)
-        pos = rank * (len(ramp) - 1)
+        pos = (0.5 + (rank - 0.5) * RAMP_CONTRASTS.get(name, 1.0)) * (len(ramp) - 1)
         k = np.minimum(pos.astype(int), len(ramp) - 2)
         f = (pos - k)[..., None]
         out = ramp[k] * (1 - f) + ramp[k + 1] * f
         if name == 'adria_roof':
             # Moss: soft patches (smooth noise, the same every export) pulling the shade towards green-grey.
             rng = np.random.default_rng(67266)
-            noise = np.asarray(Image.fromarray((rng.random((6, 6)) * 255).astype(np.uint8)).resize((TEXTURE_SIZE, TEXTURE_SIZE), Image.BICUBIC), dtype=float) / 255
+            noise = np.asarray(Image.fromarray((rng.random((6, 6)) * 255).astype(np.uint8)).resize((size, size), Image.BICUBIC), dtype=float) / 255
             moss = np.clip((noise - 0.55) / 0.25, 0, 1)[..., None] * 0.6
             out = out * (1 - moss) + np.array(WOOD_MOSS) * (0.6 + 0.8 * rank[..., None]) * moss
         _art_textures[name] = len(textures)
@@ -488,10 +509,78 @@ def adria_cauldron():
     return out
 
 
+# The fountain, in its parts' colours from the original art (ART_RAMPS), and the amber water the art fills its basin
+# with nearly to the rim (the model's basin is empty down to its floor, which the water hides: left out). The
+# model is round about FOUNTAIN_MIDDLE; its parts are told apart by their radius and height.
+FOUNTAIN_MIDDLE = (85.6, 241.11)
+FOUNTAIN_WATER = 15.42                # the water's surface (the rim's top is at 15.5)
+FOUNTAIN_BASIN = (0.30, 0.545)        # between the pedestal and the basin's inner wall
+FOUNTAIN_WATER_COLOURS = [(78, 50, 28), (107, 74, 24), (46, 33, 12), (62, 58, 78)]  # dithered; dark; a glint
+
+
+def fountain_part(p, group):
+    """Which of the fountain's ramps a triangle wears, or None for the basin's floor under the water."""
+    if group.startswith('Torus'):
+        return 'fountain_spout'
+    n = np.cross(p[1] - p[0], p[2] - p[0])
+    n = n / max(np.linalg.norm(n), 1e-12)
+    r = np.hypot(p[:, 0] - FOUNTAIN_MIDDLE[0], p[:, 1] - FOUNTAIN_MIDDLE[1])
+    z0, z1 = p[:, 2].min(), p[:, 2].max()
+    if n[2] > 0.8:  # facing up: the cap and the rim on top, the steps below
+        if z1 < 14.8 and r.max() < FOUNTAIN_BASIN[1] + 0.02:
+            return None
+        return 'fountain_light' if z0 > 15.45 else 'fountain_base'
+    if n[2] < -0.8:  # the undersides of the rim's lip and the cap
+        return 'fountain_stone'
+    if z1 <= 14.78:
+        return 'fountain_base'  # the steps' edges
+    if r.min() > FOUNTAIN_BASIN[1] - 0.01 and r.max() < FOUNTAIN_BASIN[1] + 0.02:
+        return 'fountain_inner'
+    if (z0 >= 15.39 and r.min() > 0.63) or z0 >= 15.85:
+        return 'fountain_rim'  # the rim's and the cap's edges
+    return 'fountain_stone'  # the basin's wall, the pedestal
+
+
+_fountain_water = None
+
+
+def fountain_water_texture():
+    """The art's water: an orange and yellow dither, a few darker and lavender (the sky's) specks."""
+    global _fountain_water
+    if _fountain_water is None:
+        rng = np.random.default_rng(241)
+        size = 32
+        y, x = np.mgrid[0:size, 0:size]
+        pick = (x + y) % 2
+        speck = rng.random((size, size))
+        pick = np.where(speck < 0.08, 2, np.where(speck > 0.94, 3, pick))
+        _fountain_water = len(textures)
+        textures.append(np.array(FOUNTAIN_WATER_COLOURS, dtype=np.uint8)[pick])
+    return _fountain_water
+
+
+def fountain_triangles(box):
+    out = []
+    for p, cls, uv, tex in plaza_triangles(box, with_groups=True):
+        part = fountain_part(p, tex[1])
+        if part is not None:
+            out.append((p, cls | ART_COLOURS, uv, ramp_texture(part)))
+    # The water: a ring between the pedestal and the basin's wall, facing up, its texture laid flat.
+    water = fountain_water_texture()
+    (cx, cy), (r0, r1), z = FOUNTAIN_MIDDLE, FOUNTAIN_BASIN, FOUNTAIN_WATER
+    segments = 32
+    at = lambda r, k: np.array([cx + r * np.cos(2 * np.pi * k / segments), cy + r * np.sin(2 * np.pi * k / segments), z])
+    flat = lambda q: (q[0] * 2.0, q[1] * 2.0)
+    for k in range(segments):
+        for tri in ((at(r0, k), at(r1, k), at(r1, k + 1)), (at(r0, k), at(r1, k + 1), at(r0, k + 1))):
+            out.append((np.array(tri), ART_COLOURS, np.array([flat(q) for q in tri]), water))
+    return out
+
+
 def main():
     models = []
     for name, box in PLAZA_BUILDINGS + [('church', None)]:
-        tris = church_triangles() if name == 'church' else plaza_triangles(box)
+        tris = church_triangles() if name == 'church' else fountain_triangles(box) if name == 'fountain' else plaza_triangles(box)
         models.append((name, tris))
     models.append(('adria', adria_shack()))
     models.append(('cauldron', adria_cauldron()))

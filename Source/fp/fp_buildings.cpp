@@ -885,8 +885,9 @@ const std::array<LandmarkPlacement, 12> Landmarks { {
 	// Griswold's smithy: the long hall, and over the forge where he stands an open porch roof on the model's own two
 	// posts. The plaza porch eaves are low; they are lifted to the hall's wall height, high enough to stand under.
 	{ "smithy", { 60, 56 }, { 70, 64 }, 60.17F, 70.87F, 56.78F, 64.08F, 1.59F, 1.0F, 0.60F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true }, // 0.59
-	// The fountain's model texture is a coarse rock that reads as a blob at its size: it keeps its art.
-	{ "fountain", { 59, 69 }, { 61, 71 }, 59.65F, 61.46F, 69.75F, 71.53F, 0.643F, 100.0F, 0.643F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true, false }, // 0.52
+	// The fountain wears its parts' colours from the original art (its art projected on it came out a patchwork: the
+	// water's amber on its walls) and the art's amber water in its basin (export_landmarks.py, fountain_triangles).
+	{ "fountain", { 59, 69 }, { 61, 71 }, 59.65F, 61.46F, 69.75F, 71.53F, 0.643F, 100.0F, 0.643F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true }, // 0.52
 	// Tristram's church (research/church): tower, nave and round apse, fitted to the iso art by silhouette overlap.
 	{ "church", { 19, 14 }, { 31, 29 }, 19.78F, 32.22F, 14.31F, 30.19F, 0.85F, 100.0F, 0.85F, true, { Vec2 { 0, 0 }, Vec2 { 0, 0 } }, true },
 	// Adria's shack (research/adria): planks, a roof sloping down to the back, her wares on shelves beside the door.

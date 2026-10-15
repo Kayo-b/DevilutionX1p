@@ -30,8 +30,9 @@ textures; anything built from it is under the same restriction.
 to Diablo's palette and darkened in game): the plaza's stone wall, straw roof (outside and inside), timber, door
 and fountain stone, and the church's stone wall, slate roof, wooden ceiling, doors, pavement and stained glass.
 Adria's shack wears the release's weathered planks (`grinda_02`) and its cauldron the release's dirty steel
-(`Dirty_Steel_02_UV_H_CM_1`), both graded to the colours of the hut in the original art (measured, none copied) by
-`fp-tools/export/export_landmarks.py`.
+(`Dirty_Steel_02_UV_H_CM_1`), and the fountain its stone, all graded to the colours of the same buildings in the
+original art (measured, none copied) by `fp-tools/export/export_landmarks.py`; the fountain's water is made from
+nothing but its colours.
 The original author credits the textures (some made seamless by the author, some made from reference photos) to
 their creators, who made them available free of charge:
 

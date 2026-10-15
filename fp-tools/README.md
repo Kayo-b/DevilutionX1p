@@ -703,7 +703,13 @@ Landmarks (smithy, tavern, church, Adria's shack) are full models placed by hand
 
 Landmarks wear the model's own textures by default (exported with texture coordinates in `landmarks.bin`, converted
 to the level palette and darkened by `TextureDim` in `QuantizeMeshTextures`, shaded by the sun in `MakeProjective`).
-`modelTextures = false` in a `Landmarks` entry keeps a building on its projected art (the fountain does).
+`modelTextures = false` in a `Landmarks` entry keeps a building on its projected art (none does now). The fountain
+wears its parts' colours from the original art (`fountain_triangles` in the exporter): its triangles are told apart by
+radius and height (`fountain_part`: the slate basin wall and pedestal, the pale rim and cap, the base's steps, the
+basin's inside above the water, the spouts' rings) and its rock texture put on each part's ramp of the art's
+colours, softened and kept near the ramp's middle (`RAMP_BLURS`, `RAMP_CONTRASTS`). The model's basin is empty to its
+floor; a ring of the art's amber water (an orange and yellow dither, `fountain_water_texture`) fills it nearly to the
+rim. Its art projected on it had come out a patchwork, the water's amber on its outer walls.
 Projective landmarks also bake their art colours once at load (`BakeColors`), used when textures are off. They hide the billboards of tiles under
 them and of art tiles that are mostly the building (`ClaimProjectiveTiles`), and draw plain ground underneath.
 
