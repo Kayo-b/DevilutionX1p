@@ -368,10 +368,9 @@ bool ShadeFine(float texelsPerWorld)
 	return ShadePixelWorld * texelsPerWorld < UpscaleBelow;
 }
 
-/** @brief A face texel up close: from the face's UpscaledTexture at (u, v) in texels of the face, `width` wide. */
-int16_t FineFaceTexel(const std::vector<int16_t> &face, int width, float u, float v)
+/** @brief A texel of a face's UpscaledTexture (`fine`) at (u, v) in texels of the face, `width` wide. */
+int16_t FineTexel(const std::vector<int16_t> &fine, int width, float u, float v)
 {
-	const std::vector<int16_t> &fine = UpscaledTexture(face, width);
 	const int fineWidth = width * TextureUpscale;
 	const int fineHeight = static_cast<int>(fine.size()) / fineWidth;
 	const int x = std::clamp(static_cast<int>(u * TextureUpscale), 0, fineWidth - 1);
@@ -379,14 +378,23 @@ int16_t FineFaceTexel(const std::vector<int16_t> &face, int width, float u, floa
 	return fine[static_cast<size_t>(y) * fineWidth + x];
 }
 
-/** @brief Iso art pixel at the screen position of a world point, searching a few pixels around for opaque art. */
-int16_t SampleArt(const Building &b, float wx, float wy, float wz)
+/** @brief A face texel up close: from the face's UpscaledTexture at (u, v) in texels of the face, `width` wide. */
+int16_t FineFaceTexel(const std::vector<int16_t> &face, int width, float u, float v)
+{
+	return FineTexel(UpscaledTexture(face, width), width, u, v);
+}
+
+/**
+ * @brief Iso art pixel at the screen position of a world point, searching a few pixels around for opaque art. Up close,
+ * from the canvas's UpscaledTexture: `fineCanvas` if given (the threads of a bake, which must not fill the cache).
+ */
+int16_t SampleArt(const Building &b, float wx, float wy, float wz, const std::vector<int16_t> *fineCanvas = nullptr)
 {
 	if (FineCanvas() && ShadeFine(32.0F) && !b.canvas.empty()) {
 		const float fx = (wx - wy) * 32.0F - static_cast<float>(b.originX);
 		const float fy = (wx + wy) * 16.0F - wz * HeightPixels - static_cast<float>(b.originY);
 		if (fx >= 0 && fy >= 0 && fx < static_cast<float>(b.canvasWidth) && fy < static_cast<float>(b.canvasHeight)) {
-			const int16_t pixel = FineFaceTexel(b.canvas, b.canvasWidth, fx, fy);
+			const int16_t pixel = fineCanvas != nullptr ? FineTexel(*fineCanvas, b.canvasWidth, fx, fy) : FineFaceTexel(b.canvas, b.canvasWidth, fx, fy);
 			if (pixel > 0)
 				return pixel;
 		}
@@ -427,6 +435,28 @@ int16_t SurfaceColor(const Building &b, const Plane &plane, V3 hit)
 			hit.y = b.y0 + b.y1 - hit.y;
 	}
 	return SampleArt(b, hit.x, hit.y, hit.z);
+}
+
+/** @brief Runs `work(i)` for every i below `count`, spread over the processor's threads (in no particular order). */
+template <typename Work>
+void ParallelFor(size_t count, const Work &work)
+{
+	std::atomic<size_t> next { 0 };
+	auto run = [&]() {
+		for (size_t i = next++; i < count; i = next++)
+			work(i);
+	};
+	const size_t threads = std::min<size_t>(std::clamp(std::thread::hardware_concurrency(), 1U, 16U), count);
+	if (threads <= 1) {
+		run();
+		return;
+	}
+	std::vector<std::thread> pool;
+	for (size_t t = 1; t < threads; t++)
+		pool.emplace_back(run);
+	run();
+	for (std::thread &thread : pool)
+		thread.join();
 }
 
 /** @brief How well the model's iso silhouette matches the stitched art (intersection over union). */
@@ -478,8 +508,7 @@ void FitBuilding(Building &b)
 	else
 		ridgeChoices = { true, false };
 
-	Params best {};
-	float bestScore = -1.0F;
+	std::vector<Params> tried;
 	for (const bool ridgeAlongX : ridgeChoices) {
 		// The roof spans the side across the ridge.
 		const float span = ridgeAlongX ? depth : width;
@@ -488,14 +517,19 @@ void FitBuilding(Building &b)
 				for (const float overhangRatio : { 0.06F, 0.10F, 0.14F }) {
 					const float eave = eaveRatio * span;
 					const float ridge = ridgeRatio * span;
-					const Params p { ridgeAlongX, eave, ridge - eave, overhangRatio * span };
-					const float score = FitScore(b, p);
-					if (score > bestScore) {
-						bestScore = score;
-						best = p;
-					}
+					tried.push_back({ ridgeAlongX, eave, ridge - eave, overhangRatio * span });
 				}
 			}
+		}
+	}
+	std::vector<float> scores(tried.size());
+	ParallelFor(tried.size(), [&](size_t i) { scores[i] = FitScore(b, tried[i]); });
+	Params best {};
+	float bestScore = -1.0F;
+	for (size_t i = 0; i < tried.size(); i++) {
+		if (scores[i] > bestScore) {
+			bestScore = scores[i];
+			best = tried[i];
 		}
 	}
 	b.params = best;
@@ -3908,6 +3942,11 @@ float SlantTexelsPerWorld = 0;
 
 /** @brief Palette colour of a mesh surface point: the house's own art patches tiled at the art's pixel density. */
 uint8_t MeshColor(const Building &b, const WorldTriangle &tri, float wx, float wy, float wz);
+/**
+ * @brief MeshColor without the model's textures or the baked colours: the art projected onto the point, or its patches
+ * (`fineCanvas`: see SampleArt).
+ */
+uint8_t ArtColor(const Building &b, const WorldTriangle &tri, float wx, float wy, float wz, const std::vector<int16_t> *fineCanvas = nullptr);
 
 /** @brief The two coordinates of a point kept when dropping an axis. */
 inline std::pair<float, float> DropAxis(uint8_t axis, float x, float y, float z)
@@ -3915,11 +3954,38 @@ inline std::pair<float, float> DropAxis(uint8_t axis, float x, float y, float z)
 	return axis == 0 ? std::pair { y, z } : (axis == 1 ? std::pair { x, z } : std::pair { x, y });
 }
 
-/** @brief Bakes the colours of a projective landmark's triangles, at about the art's 32 pixels per tile. */
+/** @brief Samples the baked colours of a landmark's triangles, spread over the threads. */
+void SampleBakedColors(Building &b)
+{
+	const float pixelWas = ShadePixelWorld;
+	ShadePixelWorld = 0; // the art at its finest, whatever the view drew last
+	PatchColor(0); // its table is made on first use, not by the threads
+	const std::vector<int16_t> *fineCanvas = b.canvas.empty() ? nullptr : &UpscaledTexture(b.canvas, b.canvasWidth); // nor the upscaled canvas
+	ParallelFor(b.mesh.size(), [&](size_t t) {
+		const WorldTriangle &tri = b.mesh[t];
+		if (tri.bakeN == 0)
+			return;
+		const int size = tri.bakeN;
+		const V3 &p0 = tri.p[0];
+		const V3 e1 { tri.p[1].x - p0.x, tri.p[1].y - p0.y, tri.p[1].z - p0.z };
+		const V3 e2 { tri.p[2].x - p0.x, tri.p[2].y - p0.y, tri.p[2].z - p0.z };
+		for (int j = 0; j < size; j++) {
+			for (int i = 0; i + j < size; i++) {
+				const float u = (static_cast<float>(i) + 0.33F) / static_cast<float>(size);
+				const float v = (static_cast<float>(j) + 0.33F) / static_cast<float>(size);
+				b.baked[tri.bakeOffset + static_cast<size_t>(j) * size + i] = ArtColor(b, tri, p0.x + e1.x * u + e2.x * v, p0.y + e1.y * u + e2.y * v, p0.z + e1.z * u + e2.z * v, fineCanvas);
+			}
+		}
+	});
+	ShadePixelWorld = pixelWas;
+}
+
+/**
+ * @brief Bakes the colours of a projective landmark's triangles, at about the art's 32 pixels per tile: the art
+ * projected onto them (what those wearing a model texture show when model textures are switched off).
+ */
 void BakeColors(Building &b)
 {
-	const bool texturesWere = ModelTexturesOn;
-	ModelTexturesOn = false; // bake the art projection, for when model textures are switched off
 	b.baked.clear();
 	for (WorldTriangle &tri : b.mesh) {
 		const V3 &p0 = tri.p[0];
@@ -3951,18 +4017,8 @@ void BakeColors(Building &b)
 		tri.bakeN = static_cast<uint16_t>(size);
 		tri.bakeOffset = static_cast<uint32_t>(b.baked.size());
 		b.baked.resize(b.baked.size() + static_cast<size_t>(size) * size, 0);
-		const uint16_t n0 = tri.bakeN;
-		tri.bakeN = 0; // sample unbaked
-		for (int j = 0; j < size; j++) {
-			for (int i = 0; i + j < size; i++) {
-				const float u = (static_cast<float>(i) + 0.33F) / static_cast<float>(size);
-				const float v = (static_cast<float>(j) + 0.33F) / static_cast<float>(size);
-				b.baked[tri.bakeOffset + static_cast<size_t>(j) * size + i] = MeshColor(b, tri, p0.x + e1.x * u + e2.x * v, p0.y + e1.y * u + e2.y * v, p0.z + e1.z * u + e2.z * v);
-			}
-		}
-		tri.bakeN = n0;
 	}
-	ModelTexturesOn = texturesWere;
+	SampleBakedColors(b);
 }
 
 uint8_t MeshColor(const Building &b, const WorldTriangle &tri, float wx, float wy, float wz)
@@ -3997,6 +4053,11 @@ uint8_t MeshColor(const Building &b, const WorldTriangle &tri, float wx, float w
 		const int i = std::clamp(static_cast<int>(u * static_cast<float>(n)), 0, n - 1 - j);
 		return b.baked[tri.bakeOffset + static_cast<size_t>(j) * n + i];
 	}
+	return ArtColor(b, tri, wx, wy, wz);
+}
+
+uint8_t ArtColor(const Building &b, const WorldTriangle &tri, float wx, float wy, float wz, const std::vector<int16_t> *fineCanvas)
+{
 	const SurfaceTexture &patch = tri.roof ? b.roofPatch : b.wallPatch;
 	const float up = tri.roof ? 32.0F : HeightPixels;
 	static const bool flatShade = std::getenv("FP_FLAT_SHADE") != nullptr; // debug: time the rasterizing alone
@@ -4015,7 +4076,7 @@ uint8_t MeshColor(const Building &b, const WorldTriangle &tri, float wx, float w
 				y = wy - 2.0F * d * tri.normalY;
 			}
 			if (IsoVisible(b, x, y, wz)) {
-				const int16_t art = SampleArt(b, x, y, wz);
+				const int16_t art = SampleArt(b, x, y, wz, fineCanvas);
 				if (art > 0)
 					return PatchColor(art);
 			}
