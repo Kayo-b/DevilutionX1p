@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <expected>
 #include <string>
+#include <vector>
 
 #include <magic_enum/magic_enum.hpp>
 
