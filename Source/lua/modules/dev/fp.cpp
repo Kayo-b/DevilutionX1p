@@ -345,6 +345,8 @@ std::string DebugCmdFpLowWalls()
 
 std::string DebugCmdFpOn(bool enabled)
 {
+	fp::FinishTownBuild(); // at once, not once the town's models are built
+	fp::UpdateFirstPersonActivation();
 	if (fp::IsFirstPersonActive() != enabled)
 		fp::ToggleFirstPerson();
 	return enabled ? "First person on." : "First person off.";

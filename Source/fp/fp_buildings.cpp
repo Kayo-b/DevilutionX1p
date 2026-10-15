@@ -29,6 +29,7 @@
 #include "fp/fp_dungeon.hpp"
 #include "fp/fp_hell.hpp"
 #include "fp/fp_textures.hpp"
+#include "fp/fp_view.hpp"
 #include "fp/fp_world.hpp"
 #include "levels/gendung.h"
 #include "levels/tile_properties.hpp"
@@ -3820,7 +3821,8 @@ void BuildAll()
 
 }
 
-void EnsureBuilt()
+/** @brief Builds the level's models, unless they are built for it already. */
+void BuildForLevel()
 {
 	NotePaletteChange();
 	const LevelKey key { pDungeonCels.get(), currlevel, static_cast<int>(leveltype), setlevel, PaletteVersion() };
@@ -3828,6 +3830,31 @@ void EnsureBuilt()
 		return;
 	BuiltFor = key;
 	BuildAll();
+}
+
+/**
+ * The town's models are built on a thread of their own as soon as the town has loaded (PrepareTown), while the iso
+ * view plays; the game waits for it (FinishTownBuild) before first person touches them and before the level goes.
+ */
+struct TownThread {
+	std::thread thread;
+	std::atomic<bool> done { false };
+	~TownThread()
+	{
+		Join();
+	}
+	void Join()
+	{
+		if (thread.joinable() && thread.get_id() != std::this_thread::get_id())
+			thread.join();
+	}
+};
+TownThread TownBuilder;
+
+void EnsureBuilt()
+{
+	FinishTownBuild();
+	BuildForLevel();
 }
 
 /** @brief Screen rectangle that can contain the building; false if it is entirely off screen. */
@@ -9633,8 +9660,35 @@ void SetHouseTexturesEnabled(bool enabled)
 	TexturedHouses = enabled;
 }
 
+void PrepareTown()
+{
+	FinishTownBuild();
+	if (leveltype != DTYPE_TOWN)
+		return;
+	if (IsFirstPersonActive()) {
+		BuildForLevel(); // on the loading screen: first person shows the town as it opens
+		return;
+	}
+	TownBuilder.done = false;
+	TownBuilder.thread = std::thread([] {
+		BuildForLevel();
+		TownBuilder.done = true;
+	});
+}
+
+bool IsTownBuilding()
+{
+	return TownBuilder.thread.joinable() && !TownBuilder.done;
+}
+
+void FinishTownBuild()
+{
+	TownBuilder.Join();
+}
+
 void StopTownBuild()
 {
+	FinishTownBuild();
 	LightBuilder.Join();
 	BuiltFor = { nullptr, -1, -1, false };
 }

@@ -427,6 +427,7 @@ bool HandleEvent(const SDL_Event &event)
 
 void ProcessFrame()
 {
+	UpdateFirstPersonActivation();
 	if (!IsFirstPersonActive()) {
 		SetMouseCapture(false);
 		return;

@@ -51,6 +51,8 @@ namespace devilution::fp {
 namespace {
 
 bool FirstPersonActive = false;
+/** First person was switched on while the town's models were still being built: it comes on once they are. */
+bool ActivationPending = false;
 
 uint8_t Shade(uint8_t color, uint8_t light)
 {
@@ -1096,11 +1098,28 @@ bool IsFirstPersonActive()
 
 void ToggleFirstPerson()
 {
+	if (ActivationPending) {
+		ActivationPending = false; // pressed again before it came on: it stays off
+		return;
+	}
+	if (!FirstPersonActive && IsTownBuilding()) {
+		ActivationPending = true;
+		return;
+	}
 	FirstPersonActive = !FirstPersonActive;
 	if (FirstPersonActive)
 		ResetViewState();
 	else
 		ReleaseInput();
+}
+
+void UpdateFirstPersonActivation()
+{
+	if (ActivationPending && !IsTownBuilding()) {
+		ActivationPending = false;
+		FinishTownBuild();
+		ToggleFirstPerson();
+	}
 }
 
 void DrawFirstPersonView(const Surface &out)

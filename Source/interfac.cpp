@@ -31,6 +31,7 @@
 #include "engine/palette.h"
 #include "engine/render/clx_render.hpp"
 #include "engine/render/primitive_render.hpp"
+#include "fp/fp_buildings.hpp"
 #include "game_mode.hpp"
 #include "headless_mode.hpp"
 #include "hwcursor.hpp"
@@ -311,6 +312,7 @@ bool HandleProgressBarUpdate()
 
 void DoLoad(interface_mode uMsg)
 {
+	fp::StopTownBuild();
 	IncProgress();
 	sound_init();
 	IncProgress();
@@ -480,6 +482,8 @@ void DoLoad(interface_mode uMsg)
 #endif
 		return;
 	}
+
+	fp::PrepareTown();
 
 	SDL_Event event;
 	CustomEventToSdlEvent(event, WM_DONE);

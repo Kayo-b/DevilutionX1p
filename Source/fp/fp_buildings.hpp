@@ -36,8 +36,18 @@ void SetHouseMeshesEnabled(bool enabled);
 void SetModelTexturesEnabled(bool enabled);
 
 /**
- * @brief Before the level goes (or the game ends): stops working out the town lamps' light (its thread must not
- * outlive the town's models); the next level builds its own.
+ * @brief Starts building the town's models for first person (its houses, landmarks and props: seconds of work) as soon
+ * as the town has loaded: on a thread of its own while the iso view plays, or right away when first person is on (on
+ * the loading screen). Call at the end of a level's loading.
+ */
+void PrepareTown();
+/** @brief Whether the town's models are still being built (PrepareTown): first person waits for them to come on. */
+[[nodiscard]] bool IsTownBuilding();
+/** @brief Waits for the town's models (PrepareTown) before anything reads them. */
+void FinishTownBuild();
+/**
+ * @brief Before the level goes (or the game ends): waits for the town's models and stops working out their lamps' light
+ * (both read the level); the next level builds its own.
  */
 void StopTownBuild();
 
