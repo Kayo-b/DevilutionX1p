@@ -33,7 +33,9 @@ Repository: `/home/kxyx/projects/DevilutionX1p`, the fork `Kayo-b/DevilutionX1p`
 |---|---|
 | `Source/fp/` | all first-person code |
 | `assets/fp/` | the mod's generated mesh files |
-| `fp-tools/run.sh` | build changed files and launch |
+| `fp-tools/run.sh` | build changed files and launch (the developer build) |
+| `install.sh` | the players' Linux installer: builds a Release game and installs it with their data (2.1) |
+| `Packaging/fp/` | the Windows release: `package-windows.sh` (cross-builds the zip on Linux), `windows/` (`Install.bat`, `install.ps1`, the zip's `README.txt`), the release notes (2.1) |
 | `fp-tools/selftest/` | headless test scripts; output goes to `fp-tools/selftest/out/` (git-ignored) |
 | `fp-tools/export/` | Python scripts that turn the 3D models into `assets/fp/*.bin` |
 | `fp-tools/d1cli/` | a headless driver for `d1-graphics-tool`'s format code: exports a level's tileset as PNGs (5.1.2) |
@@ -43,7 +45,7 @@ Outside the repo (not committed: big source files):
 | Path | What it is |
 |---|---|
 | `~/Downloads/devilutionX/` | game data: `DIABDAT.MPQ`, `hellfire.mpq`, `hf*.mpq` (override with `FP_DATA_DIR`) |
-| `~/.wine/drive_c/GOG Games/Daggerfall/arena2/` | Daggerfall's first-person weapon art (`WEAPON*.CIF`, `ART_PAL.COL`), read at run time from your own copy and **never committed or shipped** (override with `FP_DAGGERFALL_DIR`; empty: no weapon drawn) |
+| `~/.wine/drive_c/GOG Games/Daggerfall/arena2/` | Daggerfall's first-person weapon art (`WEAPON*.CIF`, `ART_PAL.COL`), read at run time from your own copy and **never committed or shipped** (`FP_DAGGERFALL_DIR`, which `run.sh` sets to this folder; empty: no weapon drawn; unset: the `daggerfall` folder next to the game, where the installers copy it) |
 | `~/projects/diablo-hellfire-fp/*.7z, *.rar` | fan-made 3D models (plaza, church, dungeon pieces, Adria's shack, hell stairs) from Nexus Mods 67266; **free, non-commercial use only**: see `assets/fp/CREDITS.md` |
 | `~/projects/diablo-hellfire-fp/research/{tristram_plaza,church,dungeon_pieces}/` | the extracted models and textures the export scripts read (override with `FP_PLAZA_DIR`, `FP_CHURCH_DIR`, `FP_DUNGEON_PIECES_DIR`; `export_dungeon_textures.py` extracts the kit textures it misses from `FP_DUNGEON_PIECES_ARCHIVE`, the `.7z`, with `7z`) |
 | `~/projects/diablo-hellfire-fp/research/adria/` | "Adria's Shack" (Nexus 67266) unpacked: `Adria_shack_hinges.obj` and its textures (`FP_ADRIA_DIR`; `export_landmarks.py` extracts it from `FP_ADRIA_ARCHIVE`, the `.7z`, if missing) |
@@ -101,7 +103,8 @@ Then:
 fp-tools/run.sh          # builds only the files that changed, then launches
 fp-tools/run.sh -f       # extra arguments go to the game (-f shows FPS)
 ```
-In game, **F4** toggles first person. Single player only.
+The game starts in first person (the option Settings > Gameplay > *Start in First Person*, `ApplyStartView`, on by
+default; the selftests set the view themselves) and **F4** toggles it. Single player only.
 
 To start straight on a level, in first person and god mode (no hits taken; a missile or spell kills), set `LEVEL`:
 the menu is clicked through for you, the dev commands run (the autotest's steps, section 4), then the game is yours.
@@ -128,6 +131,29 @@ The build copies it to `build/assets/fp/`.
   Conflicts are most likely in the few upstream files the mod touches outside `Source/fp/` (cursor, diablo, engine
   render hooks, `CMake/Assets.cmake`, the Lua dev modules).
 - Publish with `git push origin master` (and the feature branch).
+
+
+### 2.1 Releases: the players' installers
+
+Players don't use `run.sh`: they get a Release build without `DEBUG` (no console, no autotest, no tile readout in the
+corner), set up with their data by an installer. **Code that uses the console or the autotest must stay under
+`#ifdef _DEBUG`**, or the release builds break (`ConsoleOpen` in fp_controls.cpp is the pattern).
+
+- **Linux: `install.sh`** builds `build-release/` (Release, the system's libraries where it has them) and installs to
+  `~/.local/share/devilutionx-fp`: the binary, `assets/` and `mods/` from the build, the MPQs (Diablo alone or with
+  Hellfire, as the player picks), Daggerfall's 13 files in `daggerfall/`, a `~/.local/bin/devilutionx-fp` link and
+  `.desktop` entries. The questions come first (each has an option for an unattended run: `--help`), then the build.
+  To try it without touching your own install: `./install.sh --yes --dir /tmp/fp-test --no-shortcuts`.
+- **Windows: `Packaging/fp/package-windows.sh`** cross-compiles on Linux with llvm-mingw
+  (`CMake/platforms/llvm-mingw64.toolchain.cmake`; the C++ runtime is linked in, so the game needs only `SDL2.dll`)
+  and packs `build-windows/release/DevilutionX-FP-<FP_VERSION>-windows-x64.zip` (not in `dist/`: CMake takes a
+  `dist/` folder for a source distribution's). The player unpacks it and runs `Install.bat`
+  (`install.ps1`: Windows PowerShell 5.1, so no `??`, ternaries or `&&`, and plain ASCII), which copies their data in
+  place and makes shortcuts. `assets/fp/` ships as loose files: first person opens them from the folder, never from
+  `devilutionx.mpq`. Wine runs the `.exe` (and a `DEBUG=ON` cross-build runs the selftests' steps, `FP_TEST_STEPS`).
+- **Publishing:** push a tag (`git tag v1.1 && git push origin v1.1`): `.github/workflows/fp_windows_release.yml`
+  builds the zip and attaches it to that version's release, with `Packaging/fp/release-notes.md` as its text. Run the
+  workflow by hand (Actions tab) for a test build.
 
 ---
 

@@ -32,6 +32,7 @@
 #include "engine/render/clx_render.hpp"
 #include "engine/render/primitive_render.hpp"
 #include "fp/fp_buildings.hpp"
+#include "fp/fp_view.hpp"
 #include "game_mode.hpp"
 #include "headless_mode.hpp"
 #include "hwcursor.hpp"
@@ -483,6 +484,8 @@ void DoLoad(interface_mode uMsg)
 		return;
 	}
 
+	if (uMsg == WM_DIABNEWGAME || uMsg == WM_DIABLOADGAME)
+		fp::ApplyStartView(); // before PrepareTown: the town is then built on the loading screen
 	fp::PrepareTown();
 
 	SDL_Event event;
