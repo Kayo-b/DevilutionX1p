@@ -17,52 +17,92 @@ is unchanged: same levels, monsters, items, saves and rules.
   The town fades into fog from about 20 tiles away.
 - **Free movement:** walk with WASD and look with the mouse. Clicks go to whatever the crosshair points at, so
   attacking, talking, opening doors and picking things up all work as in the original.
-- **Weapons in hand (optional).** If you own The Elder Scrolls II: Daggerfall, its first-person weapon art is used
-  for the weapon you have equipped (swords, axes, maces, flails, hammers, staves, bows, bare fists), and it swings
-  with your attacks.
+- **Weapons in hand (optional).** If you have The Elder Scrolls II: Daggerfall (free on GOG), its first-person weapon
+  art is used for the weapon you have equipped (swords, axes, maces, flails, hammers, staves, bows, bare fists), and
+  it swings with your attacks.
 - Single player only.
 
-## Requirements
+## Install
 
-- The data files of the original game: `DIABDAT.MPQ`, plus `hellfire.mpq` and the `hf*.mpq` files for Hellfire.
-  You can get them from the [GOG.com release of Diablo](https://www.gog.com/game/diablo).
-- To build: CMake 3.22+, Ninja, a C++23 compiler and SDL3 (or SDL2), as for upstream DevilutionX. See
-  [Building from Source](#building-from-source) for the packages on your platform.
-- Optional: a Daggerfall install, for the weapons (the free GOG/Bethesda release works). The mod reads its
-  `ARENA2` folder at run time; **no Daggerfall files are included in this repository**.
+### What you need
 
-## Build
+- **Diablo**, and if you want it its expansion **Hellfire**. This mod includes none of the game's data: you need your
+  own copy. GOG sells Diablo together with Hellfire: **[Diablo + Hellfire on GOG](https://www.gog.com/en/game/diablo)**.
+- Optional, for the weapon in your hand: **The Elder Scrolls II: Daggerfall**, which is free:
+  **[Daggerfall on GOG](https://www.gog.com/en/game/the_elder_scrolls_chapter_ii_daggerfall)**. Its first-person
+  weapon art is copied from your own install; **no Daggerfall files are included in this repository**.
+
+The game starts in first person (Settings > Gameplay > *Start in First Person* turns that off); **F4** switches views.
+
+### Windows
+
+1. Download `DevilutionX-FP-…-windows-x64.zip` from the [releases](https://github.com/Kayo-b/DevilutionX1p/releases)
+   and unpack it into a folder of your choice.
+2. Double-click **`Install.bat`**. It:
+   - finds your Diablo data (`DIABDAT.MPQ`: GOG Galaxy's and GOG's installer's folders, and the usual places), or asks
+     for its folder;
+   - asks whether to set up **Diablo** alone or **Diablo + Hellfire** (when Hellfire's data is there);
+   - asks whether to use **Daggerfall's weapons**, and finds Daggerfall (GOG, Steam) or asks for its folder;
+   - copies those files next to `devilutionx.exe` and makes desktop and Start menu shortcuts.
+3. Start **Diablo First-Person** (and **Hellfire First-Person**), or `devilutionx.exe`.
+
+Run `Install.bat` again to change your answers, for example to add Hellfire or the weapons.
+
+### Linux
 
 ```bash
 git clone https://github.com/Kayo-b/DevilutionX1p.git
 cd DevilutionX1p
+./install.sh
+```
+
+The installer:
+- checks the build tools (a C++ compiler, CMake, Ninja, SDL2), offers to install the missing ones with your package
+  manager (pacman, apt, dnf, zypper), or downloads CMake and Ninja for the build without root;
+- finds your Diablo data (Wine, Lutris, Heroic, Proton, DevilutionX's own folder, Downloads) or asks for it. It also
+  takes GOG's offline installer (`setup_diablo_1.09_*.exe`) and unpacks the data from it, with `innoextract`;
+- asks **Diablo** or **Diablo + Hellfire**, and whether to use **Daggerfall's weapons** (finds Daggerfall under Wine or
+  Steam, or asks for its folder);
+- builds a Release game and installs it in `~/.local/share/devilutionx-fp`, with a `devilutionx-fp` command and
+  applications menu entries (one for Diablo, one for Hellfire).
+
+Run `./install.sh` again after pulling changes to update. `./install.sh --uninstall` removes it (your heroes and
+settings are kept), and `./install.sh --help` lists the options for an unattended install (`--yes`, `--diablo`,
+`--game diablo|hellfire`, `--daggerfall`, ...).
+
+### By hand
+
+The game looks for everything next to its executable: `DIABDAT.MPQ` (for Hellfire also `hellfire.mpq`, `hfmonk.mpq`,
+`hfmusic.mpq`, `hfvoice.mpq`), and Daggerfall's `WEAPON00.CIF` to `WEAPON11.CIF` and `ART_PAL.COL` (from its `ARENA2`
+folder) in a folder named `daggerfall`. `FP_DAGGERFALL_DIR=/path/to/ARENA2` points the game at Daggerfall's own folder
+instead. Without the Daggerfall files, everything works except that no weapon is drawn.
+
+## Build from source
+
+To build (CMake 3.22+, Ninja, a C++23 compiler and SDL2, as for upstream DevilutionX; see
+[Building from Source](#building-from-source) for the packages on your platform):
+
+```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDEBUG=ON \
   -DBUILD_TESTING=OFF -DNONET=ON -DDEVILUTIONX_SYSTEM_LUA=OFF -DDEVILUTIONX_STATIC_LUA=ON \
   -DDEVILUTIONX_DISABLE_EXCEPTIONS=ON -DDEVILUTIONX_DISABLE_RTTI=ON
 cmake --build build
+./build/devilutionx --data-dir /path/to/folder/with/DIABDAT.MPQ
 ```
 
 - `DEVILUTIONX_SYSTEM_LUA=OFF` builds the bundled Lua. Newer system Lua versions don't work with it.
 - `DEBUG=ON` turns on the developer console, which has the `dev.fp.*` commands. This is the configuration the mod
-  is tested with.
+  is developed with; the installers build without it (`CMAKE_BUILD_TYPE=Release`, no console).
 
-## Run
-
-```bash
-./build/devilutionx --data-dir /path/to/folder/with/DIABDAT.MPQ
-```
-
-On Linux, `fp-tools/run.sh` rebuilds what changed and starts the game. It reads the game data from
+On Linux, `fp-tools/run.sh` rebuilds what changed and starts the developer build. It reads the game data from
 `FP_DATA_DIR` (default `~/Downloads/devilutionX`) and Daggerfall's weapon art from `FP_DAGGERFALL_DIR` (default:
 the GOG install under Wine, `~/.wine/drive_c/GOG Games/Daggerfall/arena2`).
 
-To get the weapons when you start the game yourself, point `FP_DAGGERFALL_DIR` at Daggerfall's `ARENA2` folder:
-
-```bash
-FP_DAGGERFALL_DIR="/path/to/Daggerfall/ARENA2" ./build/devilutionx --data-dir /path/to/diablo-data
-```
-
-Without it, everything works except that no weapon is drawn.
+**Windows releases** are cross-built on Linux: `Packaging/fp/package-windows.sh` downloads the
+[llvm-mingw](https://github.com/mstorsjo/llvm-mingw) compiler and SDL2's MinGW build (once, into
+`~/.cache/devilutionx-fp`), builds `devilutionx.exe` and packs `DevilutionX-FP-<version>-windows-x64.zip` with
+`Install.bat` into `build-windows/release/`. Pushing a version tag (`git tag v1 && git push origin v1`) makes the GitHub workflow
+`fp_windows_release.yml` do the same and publish the zip as that version's release.
 
 ## Controls (first person)
 
@@ -217,7 +257,8 @@ darkened nearly to black and converted to the town palette for this mod. Details
 **First-person weapons: The Elder Scrolls II: Daggerfall.** The weapon art (`WEAPON*.CIF`) and its palette
 (`ART_PAL.COL`) are from *The Elder Scrolls II: Daggerfall* by Bethesda Softworks (© 1996 Bethesda Softworks LLC,
 a ZeniMax Media company), which Bethesda has made available for free. None of it is included in this
-repository: the game reads it at run time from your own Daggerfall install (`FP_DAGGERFALL_DIR`).
+repository: the installers copy it from your own Daggerfall install into the game's `daggerfall` folder, and the game
+reads it from there at run time (or from `FP_DAGGERFALL_DIR`).
 
 **Diablo and Hellfire** are © Blizzard Entertainment (Hellfire by Sierra / Synergistic Software). You need your own
 copy of the game data.
