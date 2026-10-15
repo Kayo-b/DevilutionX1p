@@ -8,7 +8,7 @@
 #
 # Needs cmake (3.22+), ninja, curl, tar, zip, and gettext's msgfmt for the translations. The cross-compiler
 # (llvm-mingw, no install needed) and SDL2's MinGW build are downloaded once into ~/.cache/devilutionx-fp; set
-# LLVM_MINGW and SDL2_MINGW to use copies of your own. The GitHub workflow fp_windows_release.yml runs this.
+# LLVM_MINGW and SDL2_MINGW to use copies of your own. The GitHub workflow fp_release.yml runs this.
 set -euo pipefail
 
 LLVM_MINGW_VERSION=20260922
