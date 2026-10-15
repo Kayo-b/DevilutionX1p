@@ -21,6 +21,7 @@ Repository: `/home/kxyx/projects/DevilutionX1p`, the fork `Kayo-b/DevilutionX1p`
 | `fp-dungeon-overhaul` | the clean dungeon for the cathedral, catacombs and crypt (fp_dungeon.cpp), on top of `fp-wall-depth` |
 | `fp-cave-overhaul` | the caves (levels 9-12) in the clean dungeon too, on top of `fp-dungeon-overhaul` (hell, 13-16: `fp-hell-overhaul`) |
 | `fp-hell-overhaul` | hell (levels 13-16) rebuilt from its own art (fp_hell.cpp, 5.1.2), from `master` |
+| `fp-catacombs-overhaul` | the catacombs (levels 5-8) rebuilt from their own art (fp_catacombs.cpp, 5.1.3), from `master` |
 | `fp` | the earlier first-person base (`fp-buildings` is built on it, not merged back) |
 | `fp-voxel` | paused experiment (voxel monsters) |
 | `master` | tracks upstream DevilutionX |
@@ -52,7 +53,8 @@ All first-person code lives in `Source/fp/` of each checkout:
 | File | Responsibility |
 |---|---|
 | `fp_view.cpp` | the frame: floor/ceiling pass, wall raycaster for town and the levels drawn from their art (Hellfire's nest: art faces, recesses, doors), sprite pass, phase timers; outlines (as the iso view: the item under the crosshair in its quality's colour; enemies in melee range, next to the player, in red: `OutlineColor`) and the items' name labels (the game's item highlighting key and option, `AddItemToLabelQueueAt`) |
-| `fp_dungeon.cpp/.hpp` | **the clean dungeon** (cathedral, catacombs, caves, crypt, and hell's kinds and texture set): tile kinds, texture sets, its floor/ceiling and wall passes, the geometry of its pillars, arches and stairwells, the caves' crest, stalagmites, fences, gates and shoring |
+| `fp_dungeon.cpp/.hpp` | **the clean dungeon** (cathedral, caves, crypt, and the catacombs' and hell's kinds, textures and geometry from their modules): tile kinds, texture sets, its floor/ceiling and wall passes, the geometry of its pillars, arches and stairwells, the caves' crest, stalagmites, fences, gates and shoring |
+| `fp_catacombs.cpp/.hpp` | **the catacombs** (5.1.3): their tiles by the map's tiles, the art cut out for their walls (each face its own), floors, flagstone ceiling, door leaves and timbers, their floor and ceiling pass, their towers, stairs and scaffolds |
 | `fp_hell.cpp/.hpp` | **hell** (5.1.2): its tiles by the map's tiles, the textures cut out of its art (flesh, blood, floors, column crowns), its floor pass and low-wall pass, its bone geometry (beams, spine posts, columns, horns) |
 | `fp_raycast.cpp/.hpp` | camera projection, `CastRay`, what counts as a wall (`IsOpaque`), `WallHeight()`, `VerticalScale()` |
 | `fp_textures.cpp/.hpp` | turns each tile piece's iso art into wall-face, floor and column textures; detects pillars, lava and recesses; supplies the filler wall pair (the clean dungeon reads it only to classify tiles) |
@@ -73,7 +75,7 @@ Assets the game loads come from `assets/fp/` and are listed in `CMake/Assets.cma
 | `housemesh.bin` | cottage triangle meshes | `fp-tools/export/export_meshes.py` |
 | `landmarks.bin` | every town building: the plaza's houses, smithy, tavern, fountain, and the church | `fp-tools/export/export_landmarks.py` |
 | `dungeonkit.bin` | dungeon kit pieces (the entrance stairs, the sarcophagus, the caves' door wood, hell's rib-cage stairs) | `fp-tools/export/export_kit.py` |
-| `dungeontex.bin` | the clean dungeon's texture sets (cathedral, catacombs, caves, crypt, hell's bone), made from the dungeon kit's textures and the Tiny Texture Pack's | `fp-tools/export/export_dungeon_textures.py` |
+| `dungeontex.bin` | the clean dungeon's texture sets (cathedral, caves, crypt, hell's bone; the catacombs' are cut from their art), made from the dungeon kit's textures and the Tiny Texture Pack's | `fp-tools/export/export_dungeon_textures.py` |
 | `hellsky.bin` | hell's dark red haze (a cube map, as `sky.bin`) | `fp-tools/export/export_hell_sky.py` |
 
 ---
@@ -230,7 +232,8 @@ Known test spots:
 | Level 1, seed 777 | stairs down at trigger (81,78); stairs up near (58,47); column (52,52); torch stand (86,44); sarcophagus (63,48); door (53,78) |
 | Level 1, seed 777, all quests | arcade and door (85,62): stand at (85,65), yaw 270; hall with pillars and torch stands (53,52) |
 | Level 2, seed 4242 | colonnade: pillars x = 52/58, y = 38–44; view from (55,42) |
-| Level 5, seed 500 | catacombs: stairs up (46,25), town stairs (48,31), stairs down (30,87) (look from (30,89), yaw 270, pitch -0.3) |
+| Level 5, seed 500, all quests | catacombs: stairs up (46,25) seen from (45,27) yaw 300, town stairs (48,31), stairs down (30,87) (look into the trench from (31,89), yaw 270, pitch -0.8); a lone tower (56,46) from (58,48) yaw 225; an arch between towers from (54,53) yaw 270; a door (56,40) from (58,40) yaw 180 (`dev.fp.operate(56,40)` opens it); scaffolds from (53,45) yaw 180 and (40,57) yaw 270 |
+| Level 8, seed 800, all quests | catacombs on the olive palette: a room of towers and arches from (28,32) yaw 225 |
 | Level 21, seed 2100 (Hellfire) | crypt: town stairs (70,50) and stairs down (73,68), both in notches of the wall; pillared hall (59,58) |
 | Level 9, seed 900, all quests | caves: stairs up (37,60), seen from (37,61) yaw 270; lava and stalagmites from (53,30); a gate in a fence (45,30): from (46,30) yaw 180; shoring (62,66) yaw 270 |
 | Level 10, seed 1000, all quests | caves on a green palette; lava pools from (62,27) yaw 150 |
@@ -245,7 +248,8 @@ Known test spots:
 
 ### 5.1 The clean dungeon: the cathedral, the catacombs and the crypt
 `fp_dungeon.cpp` draws levels 1-12 and Hellfire's 21-24 without their iso art: plain stone with new textures, simple
-geometry. The art is only read to tell what a tile is. (The caves differ in places: 5.1.1; hell has a kit of its own: 5.1.2.)
+geometry. The art is only read to tell what a tile is. (The caves differ in places: 5.1.1; hell has a kit of its own: 5.1.2;
+the catacombs are rebuilt from their own art: 5.1.3.)
 
 - **Tile kinds** (`ClassifyTiles`, per level and whenever the map changes: doors, levers; `dev.fp.cleanmap` shows them):
   a solid tile is a `Wall` (a block up to the ceiling, or a low wall as tall as its art), a solid tile with no solid
@@ -275,7 +279,7 @@ geometry. The art is only read to tell what a tile is. (The caves differ in plac
   slab above a half circle (flattened where it would not fit, `ArchLintel` below the ceiling), as thick as the wall
   between walls, as the pillars in an arcade. In the cathedral an arch resting on a pillar springs from the top of its
   flared block and is as thick as the block's top.
-- **Pillars** (`PillarStyleFor`, `addPillar`): in the catacombs (ten-sided) and the crypt (square), a plinth, a shaft
+- **Pillars** (`PillarStyleFor`, `addPillar`): in the crypt (square), a plinth, a shaft
   and a capital, floor to ceiling. In the cathedral, as its art draws them: a plinth, a round (ten-sided) shaft, a thin
   collar, and a block flaring out on top, its sides straight (the art's are curved) from a little narrower than the
   collar to nearly the tile's width, from 1.42 to 2.0 high; over it a square pier goes on up to the ceiling (its sides
@@ -284,7 +288,7 @@ geometry. The art is only read to tell what a tile is. (The caves differ in plac
   the pier is of the bricks. The shaft wears the set's `pillar` texture, the plinth, the collar and the capital its
   `stone`.
 - **Stairs:** the cathedral's are the kept models (5.6), re-textured with the clean stone (`RetextureClean`). Stairs
-  without a model (the catacombs', the crypt's, quest entrances and exits: `IsUnmodelledStairs`) are a stairwell in the
+  without a model (the crypt's, quest entrances and exits: `IsUnmodelledStairs`; the catacombs' are their own, 5.1.3) are a stairwell in the
   solid tile beside the trigger with the most solid tiles around it (`FindStairs`): a wide arched opening facing the
   trigger, steps inside going down into a pit (`StairsDrop`, the floor cut open over it) or up into the dark
   (`StairsRise`), darker towards the back. Aiming at it walks to the trigger.
@@ -297,8 +301,7 @@ geometry. The art is only read to tell what a tile is. (The caves differ in plac
   pavement's colour at the same relative darkness), as bright as the original's walls, and the marble in the colours
   of the original's marble pillar shafts (`DIABLO_MARBLE`, `rank_recolor`: measured on six shafts of level 1 with
   `dev.fp.dumpiso`; the marble's darkest third, its veins and what lies around them, takes their teal, the rest their
-  pinkish grey, each texel the colour at its rank of brightness); the catacombs: the blocks as grey rubble (a tone per
-  stone, the kit's rough yellow stone over them) on a teal-grey floor of its black marble; the crypt: the blocks at
+  pinkish grey, each texel the colour at its rank of brightness); the crypt: the blocks at
   twice the size in cool grey, pillars of its white marble, a red-brown floor of its yellow stone. Doors are its planks
   with two iron bands of its steel. The blocks repeat once a tile as on the kit's own walls, and its normal and
   specular maps are baked in as light from above (raised blocks, dark joints, like the original's pre-rendered art).
@@ -318,7 +321,7 @@ geometry. The art is only read to tell what a tile is. (The caves differ in plac
   So walls fade smoothly, without the hue speckle of moving texels along palette ramps, and match the sprites' darkness.
   Detail levels (mips) are picked by the footprint of a pixel; up close each pixel jitters its sample point by a 4 x 4
   ordered dither (`Sampler`), which blends the texels instead of showing them as squares. To change a set, edit
-  `cathedral()`, `catacombs()` or `crypt()` in the export script and run it (`--preview DIR PALETTE...` writes
+  `cathedral()`, `caves()` or `crypt()` in the export script and run it (`--preview DIR PALETTE...` writes
   palette-converted sheets; `dev.fp.dumpfile` gets the palettes).
 - **Light:** `CleanLightAt` interpolates `dLight` between tile centres (the game's light falls off with distance, walls
   included), and every pass dithers it to the nearest light levels: smooth light, no tile squares. The ceiling is
@@ -466,7 +469,90 @@ Subtile n of the tool is piece n - 1 of the game (`dPiece`, `GetPieceTextures`);
 right, left and bottom (`DRLG_LPass3`). The cuts above were found that way: compare the PNGs, then cut the same
 pieces at run time from `GetPieceTextures(piece).column`.
 
-### 5.1.3 Art walls: Hellfire's nest (levels 17-20)
+### 5.1.3 The catacombs (levels 5-8)
+`fp_catacombs.cpp` draws the catacombs as part of the clean dungeon (`IsCatacombs`), rebuilt from their own art: nothing
+of the dungeon kit, nothing in `dungeontex.bin`. Their iso art is dry-laid rubble: walls of rough stone in uneven
+courses under a cap of flagstones, round towers of the same stone at the walls' ends and inside corners, flat arches
+from a tower to a wall, square door frames, spiral stairs round a tower.
+
+- **Tiles** (`ClassifyCatacombsTiles`, called by `ClassifyTiles`): by the tile of the level's map (`dungeon`, ids from 1
+  as in `l2.til`; `MegatileAt`, the piece's quarter `QuadrantOf`), not by the art. The top piece of map tiles 6-9,
+  13-16, 38-43, 55, 77, 78, 83, 87, 146-149 and 160 is a tower; a solid piece that does not block light (`SOLData`
+  without `BlockLight`: the scaffolds' fronts, the stairs down's trench) is a `CleanKind::Prop`; 45-51 and the
+  stairs' (71, 72, 76-78, 158-160) show the plain floor's piece (their art paints shadows and steps). `dev.fp.cleanmap`
+  shows `o` for a tower out in the open, `p` for a prop.
+- **Rows of the art:** the game draws all 10 of the catacombs' micros a piece, so their columns are 160 rows, as the
+  Graphics Tool's PNGs show them (unlike hell's, 5.1.2).
+- **Cut from the art when a level loads** (nothing of it is shipped): made four times finer by the game's xBR
+  (`UpscaledTexture`: square texels up close, the retro look; bilinear, Lanczos and a sharpened Lanczos were compared on
+  samples and not taken), kept in the art's palette colours, lit through the game's light tables as the original lights
+  its art, and given detail levels for the distance (2 x 2 texels averaged, the nearest colour: `CleanNearestColor`).
+  Remade when the level's graphics or palette change (`EnsureArtCache`).
+  - **Walls** (`CatacombsFaceArt`, `FaceTexture`): every face the iso drew (those looking towards +x and +y) wears its
+    own tile's face art, so the niches with skeletons, the blood, the cracks and the debris stay; the faces it never
+    drew, those round the doorways and those behind scaffolds, the plain wall pair's (map tile 1's pieces along y, 2's
+    along x, by their place along the wall: the pair repeats every two tiles without a seam). From the foot up to under
+    the cap (`WallShownRows`: 83 rows, 3.2 drawn tiles, the ceiling's height). Each face is an `ArtTexture` of its own
+    (a byte a texel, about 60 KB with its detail levels; 60-80 of them a level), drawn by `DrawCleanWalls` through an
+    `ArtSampler` (the detail level by a pixel's footprint, its sample point dithered up close, as `CleanSampler`).
+  - **Floors** (`DrawCatacombsFloorAndCeiling`, `FloorTexture`): each tile its own floor art.
+  - **The texture set's slots** (`CatacombsArtTexture`, through `EnsureTextures`; `CleanSourceTexture::indices`: palette
+    art, lit through the light tables): `ceiling` and `stone` the flagstones of a lone tower's cap (`CutFlagstones`: the
+    square inside its disc, mirrored, two tiles a repeat; the ceiling `CeilingDarkness` darker), `wall` and `pillar` the
+    plain wall pair, `floor` the plain floor's map tile, `arch` the dressed stone of a door's jamb (`CutReveal`), `door`
+    the closed door (OBJ_L2LDOOR's frame, unsheared, below the shadow along its top) with two straps of the hinges' iron
+    from its open frame (`CutDoorLeaf`), `wood` the planks of map tile 118's deck (`CutWood`).
+- **Towers** (`FindTowers`): in the iso a drum of 0.6 tiles stands where the faces of half-tile-thick walls meet; here
+  the walls fill their tiles, so a tower with open floor beside it takes its tile's place (`CleanKind::Pillar`),
+  `TowerRadius` (0.71, just enough to cover the corners of the wall blocks it joins, 0.29 from the middles of the tiles
+  about it), and on each inside corner of a tower's tile (open diagonally, walls either side) stands another,
+  `TowerCornerRadius`. A plinth (`PlinthOut`, `PlinthHeight`), the drum in the walls' stone (repeating round it a whole
+  number of times: the art's own drum, unwrapped and mirrored, showed its seam as a face), the overhanging rim of its
+  cap under the ceiling (`CapOut`, `CapDrop`). They are drawn by the wall pass, not as meshes (`TowerColumn`, from
+  `DrawCleanWalls`): each column walks its ray through the grid (each tile lists the towers reaching into it), meets
+  each tower's three rings as circles, each at its own depth, and fills the rows between them with the plinth's top and
+  the cap's underside, nearest first and before the walls behind; as meshes they cost 6-10 ms a frame more (a tower
+  close by covers much of the screen, and the wall behind it was drawn too).
+- **Arches** (the special arch cels: from a tower over two floor tiles to a wall): found as the clean dungeon's
+  (`BuildCleanGeometry`), shaped as the art draws them (`CatacombsArchUnderside`): a flat beam `ArchBeamDepth` under the
+  ceiling, its underside curving down into its supports over `ArchHaunch`, starting at the towers' drums,
+  `ArchHalfThickness` either side.
+- **Doorways** (`CatacombsDoorOpening`): flat-topped, the size of the leaf the iso draws in them (0.7 across, 2.15 tall).
+- **Stairs** (no stairwells: `Stairs` stays empty): up and to town a spiral of `StairsSteps` solid steps round their
+  tower, from their trigger's side up to the ceiling over `StairsTurn`, the ceiling open above the last
+  `StairsOpenSteps` (`CeilingHoles`), the flight's end after its top step closed by a face from the floor to the ceiling
+  (else one looked into it, its inner faces culled); down, a trench beside its tower (map tiles 71 and 78's solid pieces), the floor
+  cut open over it, `PitSteps` steps from the trigger's end down to `PitDepth`, its sides darker in bands going down,
+  its far end in the dark (the flight goes on under the floor).
+- **Scaffolds** (map tiles 116-119, the generator's BIG3 and BIG4): timbers on their front tiles against the wall, a
+  deck of planks on posts with braces (118, 119) or fallen to pieces, a broken post and beams leaning on the wall
+  (116, 117); mirrored every other tile.
+- **Wall torches** (`TorchPlate*`, `TorchPole*` in `AddCatacombsGeometry`; `CatacombsTorchFlame`): meshes in the design
+  of their sprites, on the face of their wall by their type (`WallTorchPlacement` in fp_world.cpp, after
+  `AddL2Torches`: OBJ_TORCHL2 and OBJ_TORCHR2 on the wall tile's face towards +x or +y, OBJ_TORCHL and OBJ_TORCHR on
+  the floor before a face towards -x or -y). L2 and R2 (`wtorch1`, `wtorch2`): an iron plate on the wall, a handle from
+  its middle out and up, an iron cup at its tip. L and R (`wtorch4`, `wtorch3`: note the order in `objdat.tsv`): a pole
+  leaning along the wall as the art draws it (the way its top leans: `IsPoleTorch`), its top out from the wall, in an
+  iron ring on an arm. Their iron (`CleanSurface::Iron`) is cut from `wtorch1`'s plate, their wood (the new
+  `CleanSurface::Torch` slot) along `wtorch2`'s handle and `wtorch3`'s pole (`CutStick`: rows across the stick and back
+  round it). The flame is the sprite's animation: per frame what the frames do not share (`TorchArtFor`), drawn at the
+  top of the wood as an upright sprite turned to the camera, each column at its own depth (`Entity::facing`), so it
+  never goes into the wall (a sprite of the whole torch did at a slant), at `FlameScale` of the art's size, unlit as the
+  original draws it. (Outside the catacombs a wall torch would still be its art on a card flat on the wall:
+  `UnshearedTorch`, `Entity::along`.)
+- **Colours:** each level draws one of four palettes at random (`l2_1` olive grey, `l2_2` blue grey, `l2_3` red brown,
+  `l2_4` yellow olive). Everything is cut from the art, so all of it follows; the catacombs cycle no colours.
+- **Performance** (Ryzen 5 5600H, 1280 x 720, headless, the machine otherwise busy, load 4-6): 22.5-26.5 ms a frame
+  where master's catacombs took 19-26 at the same views, run back to back (level 5, seed 500: (54,53) yaw 270, (58,48)
+  yaw 225, (62,44) yaw 180 pitch 0.5 before a torch, (89,50) yaw 0 pitch 0.2): floor 11-12 (as master's), walls 6-10
+  (towers included), meshes 0.3-2.7 (the stairs, arches, scaffolds and torches). The most, 3 ms, before a lone tower
+  close by.
+- **Structures looked at steeply** (`ScreenBounds` in fp_buildings.cpp): their heights are in art units, stretched by
+  `VerticalScale` when drawn; the bounds that decide whether a structure is on screen now stretch them too. Before, a
+  structure above the eye was taken to be lower than it is, and looking up steeply (the horizon below the screen) it
+  was left out whole: the torches' handles, the arches, the cathedral's pillars and stairs.
+
+### 5.1.4 Art walls: Hellfire's nest (levels 17-20)
 The one tileset still drawn from its art (the caves and hell were, before `fp-cave-overhaul` and `fp-hell-overhaul`).
 
 - Every solid tile is a cube. Each face uses its tile's own iso art, unsheared into a texture (`ExtractFace` in
@@ -699,7 +785,7 @@ All in `fp_buildings.cpp`, built per level in `BuildStructures`:
 
 | Structure | How it's made | Code |
 |---|---|---|
-| **Clean pillars, arches, stairwells** (cathedral, catacombs, crypt) | the quads of `BuildCleanGeometry` (fp_dungeon.cpp, 5.1), gathered per 4 x 4 tiles, textured with the set's surfaces by their texture coordinates | `BuildCleanStructures`, `MeshClean` shader |
+| **Clean pillars, arches, stairwells** (cathedral, crypt; the catacombs' towers, arches, stairs and scaffolds, 5.1.3) | the quads of `BuildCleanGeometry` (fp_dungeon.cpp, 5.1), gathered per 4 x 4 tiles, textured with the set's surfaces by their texture coordinates | `BuildCleanStructures`, `MeshClean` shader |
 | **Torch stands** (the cathedral's) and **free-standing columns** (caves) | shape read off the art row by row (the widest pixels give the size at each height; square or round) and turned into a lathe mesh with the art projected onto it, clamped at the ceiling. In the clean dungeon only the torch stands are built this way, and their base is a broad, flat square pyramid of the set's `ivory` instead of what the art reads as (the art's pale pyramid, read as round with the floor around it, came out a wide flared blob): `StandBaseHalf`, `StandBaseHeight`, its texture laid on from above, its sides turned from the art's light (from the left) a light level darker | `ColumnProfile`, `BuildColumn`, `AddCleanPyramid` |
 | **Arcade pillars** (caves) | a shaft from the symmetric lower art; neighbouring pillars joined by **arch walls** wearing the filler wall pair, the painted arch stretched to spring from the capitals and span the gap (`FitArcade`), cut open and an underside added | `BuildArcadePillar`, `AddArcadeWall`, `MeshArcade` shader |
 | **Stairs down (cathedral)** | built by hand from measurements of the art; the floor is cut open over the pit (the exported kit currently has no down-stair mesh); worn with the clean stone by facing (`RetextureClean`) | `BuildStairsDown`, `FloorHoles` |
@@ -784,6 +870,8 @@ commit.
     script, a `SetName`, a `PillarStyleFor`, and the tileset in `IsCleanDungeon`).
   - The caves: a cut corner's diagonal face and the axis faces beside it do not carry the rock's texture on from one to
     the other.
+  - The catacombs (5.1.3): the rubble heaps, collapsed walls and crumbled towers as stone meshes (the town's
+    `PackStones`), the niches with skeletons as recesses; their painted decorations stay on the faces the iso drew.
   - Hell (5.1.2): the meshes' cost close up (the software rasterizer's per-pixel cost); the spikes' rocky mounds as
     meshes (their art is on the floor); the stairs up's rib cage could show steps going up.
   - The clean dungeon's floors are one texture: the art's floor markings (blood, the pentagram of Lazarus' lair) are

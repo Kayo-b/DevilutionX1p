@@ -84,6 +84,7 @@ set(libdevilutionx_SRCS
 
   fp/fp_autotest.cpp
   fp/fp_buildings.cpp
+  fp/fp_catacombs.cpp
   fp/fp_controls.cpp
   fp/fp_doors.cpp
   fp/fp_dungeon.cpp

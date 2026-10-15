@@ -3724,7 +3724,7 @@ void EnsureBuilt()
 }
 
 /** @brief Screen rectangle that can contain the building; false if it is entirely off screen. */
-bool ScreenBounds(const Building &b, const Projection &proj, int &left, int &top, int &right, int &bottom)
+bool ScreenBounds(const Building &b, const Projection &proj, int &left, int &top, int &right, int &bottom, float stretch = 1.0F)
 {
 	float minX = 1e30F;
 	float maxX = -1e30F;
@@ -3743,7 +3743,8 @@ bool ScreenBounds(const Building &b, const Projection &proj, int &left, int &top
 				depth = std::max(depth, 0.05F);
 				const float lateral = (rx * proj.plane.x + ry * proj.plane.y) / (PlaneLength * PlaneLength);
 				const float sx = (lateral / depth + 1.0F) * static_cast<float>(proj.width) / 2.0F;
-				const float sy = static_cast<float>(proj.horizon) - (wz - EyeHeight) / depth * proj.focal;
+				// The structure's heights are in art units, stretched when drawn (DrawStructure's `stretch`).
+				const float sy = static_cast<float>(proj.horizon) - (wz * stretch - EyeHeight) / depth * proj.focal;
 				minX = std::min(minX, sx);
 				maxX = std::max(maxX, sx);
 				minY = std::min(minY, sy);
@@ -6169,7 +6170,7 @@ void DrawStructure(const Surface &out, const Projection &proj, std::vector<float
 	int top;
 	int right;
 	int bottom;
-	if (!ScreenBounds(st.art, proj, left, top, right, bottom))
+	if (!ScreenBounds(st.art, proj, left, top, right, bottom, stretch))
 		return;
 	RasterizeTriangles(out, proj, depthBuffer, st.art.mesh, [&](const WorldTriangle &tri, float wx, float wy, float wz) {
 		if (tri.mapping == MeshSprite) {
