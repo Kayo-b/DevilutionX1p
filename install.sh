@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Diablo First-Person (a DevilutionX mod): the Linux installer.
 #
-# Builds the game from this checkout and installs it with your Diablo data and, if you want them, the first-person
-# weapons drawn from your own copy of The Elder Scrolls II: Daggerfall. The game it installs starts in first person
-# (F4 switches to the original view).
+# Builds the game from this checkout (in a release package, takes the game built in it) and installs it with your
+# Diablo data and, if you want them, the first-person weapons drawn from your own copy of The Elder Scrolls II:
+# Daggerfall. The game it installs starts in first person (F4 switches to the original view).
 #
 #   ./install.sh                 asks each question, with the answer it found as the default
 #   ./install.sh --yes           takes every default: the data it finds, the weapons if Daggerfall is found
@@ -27,6 +27,12 @@ set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 BUILD="$REPO/build-release"
+# A release package (Packaging/fp/package-linux.sh) holds the game built, next to this script: nothing to build.
+PREBUILT=0
+if [ ! -f "$REPO/CMakeLists.txt" ] && [ -x "$REPO/devilutionx" ] && [ -d "$REPO/assets/fp" ]; then
+	PREBUILT=1
+	BUILD=$REPO
+fi
 DEFAULT_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/devilutionx-fp"
 BIN_LINK="$HOME/.local/bin/devilutionx-fp"
 APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
@@ -134,7 +140,11 @@ if [ "$UNINSTALL" = 1 ]; then
 fi
 
 printf '%sDiablo First-Person%s: installer\n' "$B" "$RST"
-info "Builds the game from this folder and installs it with your Diablo data."
+if [ "$PREBUILT" = 1 ]; then
+	info "Installs the game from this package with your Diablo data."
+else
+	info "Builds the game from this folder and installs it with your Diablo data."
+fi
 
 # ---------------------------------------------------------------------------------------------------------------------
 # Questions first, so the long build can then run without anyone watching.
@@ -145,7 +155,7 @@ if [ -z "$DIR" ]; then
 	DIR=$(expand_path "$REPLY")
 fi
 case "$DIR" in /*) ;; *) DIR="$PWD/$DIR" ;; esac
-[ "$DIR" != "$REPO" ] || die "pick a folder other than the source folder"
+[ "$DIR" != "$REPO" ] || die "pick a folder other than this one"
 info "$DIR"
 
 # Finds a file by name in any case: find_ci DIR name -> its path
@@ -339,6 +349,44 @@ else
 	if [ -n "$DAGGERFALL" ]; then info "Using $DAGGERFALL"; else info "No weapons in hand (run this again to add them)."; fi
 fi
 
+DISTRO=""
+if [ -r /etc/os-release ]; then
+	DISTRO=$(. /etc/os-release && echo "${ID:-} ${ID_LIKE:-}")
+fi
+
+# ---------------------------------------------------------------------------------------------------------------------
+# A release package's game: it needs only SDL2 (and a recent enough C library) from the system.
+
+if [ "$PREBUILT" = 1 ]; then
+	step "Checking the game's libraries"
+	sdl_cmd=""
+	case " $DISTRO " in
+	*" arch "*) sdl_cmd="sudo pacman -S --needed sdl2" ;;
+	*" debian "* | *" ubuntu "*) sdl_cmd="sudo apt-get install -y libsdl2-2.0-0" ;;
+	*" fedora "* | *" rhel "*) sdl_cmd="sudo dnf install -y SDL2" ;;
+	*" suse "* | *" opensuse "*) sdl_cmd="sudo zypper install -y libSDL2-2_0-0" ;;
+	esac
+	libraries() { ldd "$REPO/devilutionx" 2>&1 || true; }
+	if grep -q "not a dynamic executable" <<<"$(libraries)"; then
+		die "this package is for another processor than this $(uname -m): build the game from source instead (see README.txt)"
+	fi
+	if grep -q "GLIBC.*not found" <<<"$(libraries)"; then
+		die "this package needs a newer Linux (glibc 2.39 or later: Ubuntu 24.04, Debian 13, Fedora 40); build the game from source instead (see README.txt)"
+	fi
+	missing=$(awk '/=> not found/ {print $1}' <<<"$(libraries)")
+	if [ -n "$missing" ]; then
+		warn "Missing: $missing"
+		if [ -n "$sdl_cmd" ]; then
+			info "Your package manager can install SDL2:"
+			info "  $sdl_cmd"
+			if [ "$YES" != 1 ] && yesno "Run that now (it asks for your password)?" Y; then eval "$sdl_cmd" || warn "The install didn't finish."; fi
+		fi
+		missing=$(awk '/=> not found/ {print $1}' <<<"$(libraries)")
+		[ -z "$missing" ] || die "the game needs $missing${sdl_cmd:+ (install it with: $sdl_cmd)}"
+	fi
+	ok "SDL2 and the C library are there."
+else
+
 # ---------------------------------------------------------------------------------------------------------------------
 # Build tools
 
@@ -391,10 +439,6 @@ check_tools() {
 	have_sdl2 || MISSING+=(sdl2)
 }
 
-DISTRO=""
-if [ -r /etc/os-release ]; then
-	DISTRO=$(. /etc/os-release && echo "${ID:-} ${ID_LIKE:-}")
-fi
 # The distribution's packages for what's missing.
 packages_for() {
 	local want=("$@") pkgs=() w
@@ -517,6 +561,7 @@ status=${PIPESTATUS[0]}
 set -e
 [ "$status" = 0 ] || die "the build failed; the end of build-release.log says why"
 ok "Built."
+fi # the build, in a source checkout
 
 # ---------------------------------------------------------------------------------------------------------------------
 # Install
@@ -528,10 +573,11 @@ rm -rf "$DIR/assets" "$DIR/mods"
 cp -r "$BUILD/assets" "$DIR/assets"
 [ -d "$BUILD/mods" ] && cp -r "$BUILD/mods" "$DIR/mods"
 [ -f "$BUILD/devilutionx.mpq" ] && cp "$BUILD/devilutionx.mpq" "$DIR/"
-cp "$REPO/Packaging/resources/icon.png" "$DIR/icon.png"
-cp "$REPO/Packaging/resources/hellfire.png" "$DIR/hellfire.png"
+if [ "$PREBUILT" = 1 ]; then RESOURCES=$REPO CREDITS=$REPO/CREDITS.md; else RESOURCES=$REPO/Packaging/resources CREDITS=$REPO/assets/fp/CREDITS.md; fi
+cp "$RESOURCES/icon.png" "$DIR/icon.png"
+cp "$RESOURCES/hellfire.png" "$DIR/hellfire.png"
 cp "$REPO/LICENSE.md" "$DIR/LICENSE.md"
-cp "$REPO/assets/fp/CREDITS.md" "$DIR/CREDITS.md"
+cp "$CREDITS" "$DIR/CREDITS.md"
 ok "The game"
 
 # Copies a file under the name the game looks for (the MPQs are found in any case; ours are as GOG names them).
@@ -622,7 +668,11 @@ else
 fi
 info "It starts in first person: WASD walks, the mouse looks, F4 switches to the original view."
 info "To start in the original view instead: Settings > Gameplay > Start in First Person."
-info "To update after pulling new changes, run ./install.sh again; ./install.sh --uninstall removes it."
+if [ "$PREBUILT" = 1 ]; then
+	info "To update, run a newer package's install.sh; ./install.sh --uninstall removes it."
+else
+	info "To update after pulling new changes, run ./install.sh again; ./install.sh --uninstall removes it."
+fi
 if [ "$YES" != 1 ] && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && yesno "Start the game now?" Y; then
 	cd "$DIR" && nohup ./devilutionx >/dev/null 2>&1 &
 fi
