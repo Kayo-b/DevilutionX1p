@@ -538,6 +538,8 @@ The one tileset still drawn from its art (the caves and hell were, before `fp-ca
 
 ### 5.4 Town houses (cottages)
 1. The town's wall-art tiles are grouped into houses and given a fitted box-and-roof shape (`BuildAll`, `FitBuilding`).
+   A group made only of tree pieces (`IsTreePiece`: a dense crown passes for wall art) is no house: beside the
+   stream south-east of the town, the solid stream tiles made it a footprint, and a cottage stood over the river.
 2. Each house gets the closest-proportioned cottage from the plaza model, stretched to its footprint.
 3. Textures are a stone patch and a thatch patch cut from that house's own iso art (`BuildTextures`), scattered over
    the mesh (`ScatteredTexel`).

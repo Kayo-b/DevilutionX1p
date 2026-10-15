@@ -506,6 +506,7 @@ void FitBuilding(Building &b)
 }
 
 bool IsTownRockPiece(uint16_t piece);
+bool IsTreePiece(uint16_t piece);
 
 /**
  * @brief Stitches the iso columns of the tiles into pictures, nearest tiles last: `canvas` from the building's
@@ -3630,6 +3631,10 @@ void BuildAll()
 					}
 				}
 			}
+			// Only trees (a dense crown passes for wall art): no house, though solid ground beside it (the stream by
+			// the tree south-east of the town) would make it a footprint.
+			if (std::all_of(art.begin(), art.end(), [](Point p) { return IsTreePiece(dPiece[p.x][p.y]); }))
+				continue;
 			int artMinX = MAXDUNX;
 			int artMaxX = 0;
 			int artMinY = MAXDUNY;
