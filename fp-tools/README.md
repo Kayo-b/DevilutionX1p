@@ -771,7 +771,8 @@ Texturing modes for structure faces (`AddStructureFace(..., mapping)`):
 
 ### 5.6.1 The weapon in hand
 - Daggerfall's first-person weapon art, drawn over the view (`fp_weapon.cpp`). The CIF format is described at the
-  top of the file. Colours map to the palette's fixed half (128-255), so they are the same on every level.
+  top of the file. It is put away in Tristram, where no one fights (`DrawFirstPersonWeapon`: not in town, but for a
+  preview with `dev.fp.weapon`). Colours map to the palette's fixed half (128-255), so they are the same on every level.
 - Which art for which Diablo weapon: `WeaponFileFor`. Dagger and short sword: 02 (gauntlet and blade); other swords:
   04 (uniques: the gilt 00); axes: 08; maces, clubs, morning stars: 05; flail: 06; war hammer, maul: 07; staves: 01;
   bows: 09; nothing in hand: 10 (fists). 03 (a long blade cut off at Daggerfall's HUD) and 11 (werecreature claws)
