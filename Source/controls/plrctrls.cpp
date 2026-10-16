@@ -514,6 +514,13 @@ bool IsStandingGround()
 
 void Interact()
 {
+	if (fp::IsFirstPersonActive()) {
+		// First person aims with the crosshair: the button does what a click there does (a swing in place at what's
+		// out of reach), never a walk to the nearest monster.
+		ClickAtCursor();
+		return;
+	}
+
 	if (leveltype == DTYPE_TOWN && pcursmonst != -1) {
 		NetSendCmdLocParam1(true, CMD_TALKXY, Towners[pcursmonst].position, pcursmonst);
 		return;
@@ -2251,6 +2258,9 @@ void plrctrls_after_check_curs_move()
 	if (ControlMode == ControlTypes::KeyboardAndMouse || IsPointAndClick()) {
 		return;
 	}
+	// First person keeps what its crosshair aims at (CheckCursMove), not the nearest monster.
+	if (fp::IsFirstPersonActive())
+		return;
 
 	// While holding the button down we should retain target (but potentially lose it if it dies, goes out of view, etc)
 	if (ControllerActionHeld != GameActionType_NONE && IsNoneOf(LastPlayerAction, PlayerActionType::None, PlayerActionType::Attack, PlayerActionType::Spell)) {
@@ -2380,7 +2390,7 @@ bool SpellHasActorTarget()
 
 void UpdateSpellTarget(SpellID spell)
 {
-	if (SpellHasActorTarget())
+	if (SpellHasActorTarget() || fp::IsFirstPersonActive()) // first person: at the crosshair
 		return;
 
 	PlayerUnderCursor = nullptr;

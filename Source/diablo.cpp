@@ -1832,6 +1832,11 @@ const auto OptionChangeHandlerLanguage = (GetOptions().Language.code.SetValueCha
 
 } // namespace
 
+void ClickAtCursor()
+{
+	LeftMouseCmd(false);
+}
+
 uint32_t GetGameId()
 {
 	uint32_t declared = 0;
