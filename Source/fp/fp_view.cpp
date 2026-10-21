@@ -18,7 +18,12 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
+
+#ifdef USE_SDL3
+#include <SDL3/SDL_timer.h>
+#endif
 
 #include "engine/light_tables.hpp"
 #include "engine/palette.h"
@@ -46,6 +51,7 @@
 #include "levels/dun_tile_data.hpp"
 #include "levels/gendung.h"
 #include "utils/clx_decode.hpp"
+#include "utils/language.h"
 #include "utils/str_cat.hpp"
 
 namespace devilution::fp {
@@ -55,6 +61,9 @@ namespace {
 bool FirstPersonActive = false;
 /** First person was switched on while the town's models were still being built: it comes on once they are. */
 bool ActivationPending = false;
+/** A view setting a key just changed (the field of view, third person), shown at the top of the view until then (SDL ticks). */
+std::string Readout;
+uint32_t ReadoutShownUntil = 0;
 
 uint8_t Shade(uint8_t color, uint8_t light)
 {
@@ -214,7 +223,7 @@ void DrawFloorAndCeiling(const Surface &out, const Projection &proj, std::vector
 			std::fill_n(dst, proj.width, 0);
 			continue;
 		}
-		const float heightAboveOrBelow = isFloor ? EyeHeight : wallHeight * VerticalScale() - EyeHeight;
+		const float heightAboveOrBelow = isFloor ? proj.eye : wallHeight * VerticalScale() - proj.eye;
 		const float rowDistance = heightAboveOrBelow * proj.focal / static_cast<float>(rowsFromHorizon);
 
 		const float stepX = rowDistance * (rayRight.x - rayLeft.x) / static_cast<float>(proj.width);
@@ -433,8 +442,8 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 			const float hitHeight = static_cast<float>(WallShownRows(hitRows)) / SpritePixelsPerTileY;
 			const bool lowWall = hitHeight < wallHeight - 0.2F;
 			const float scale = proj.focal / std::max(hit.distance, 0.01F);
-			const float topF = static_cast<float>(proj.horizon) - (hitHeight * stretch - EyeHeight) * scale;
-			const float bottomF = static_cast<float>(proj.horizon) + EyeHeight * scale;
+			const float topF = static_cast<float>(proj.horizon) - (hitHeight * stretch - proj.eye) * scale;
+			const float bottomF = static_cast<float>(proj.horizon) + proj.eye * scale;
 			const int top = std::max(0, static_cast<int>(topF));
 			const int bottom = std::min(proj.height - 1, static_cast<int>(bottomF));
 
@@ -496,7 +505,7 @@ void DrawWalls(const Surface &out, const Projection &proj, std::vector<float> &z
 				const int row = std::clamp(faceHeight - shownRows + static_cast<int>((static_cast<float>(y) - topF) * rowsPerPixel), 0, faceHeight - 1);
 				const size_t at = static_cast<size_t>(row) * FaceTextureWidth + u;
 				// Height above the floor (art tiles) of this screen row at a depth along the ray.
-				auto heightAt = [&](float distance) { return (EyeHeight + static_cast<float>(proj.horizon - y) * distance / proj.focal) / stretch; };
+				auto heightAt = [&](float distance) { return (proj.eye + static_cast<float>(proj.horizon - y) * distance / proj.focal) / stretch; };
 				if (doorOpenU >= 0 && row >= art.door->opening[doorOpenU]) {
 					// Through the doorway: follow the ray through the wall's thickness. If it stays inside the opening it
 					// looks through (to the room behind, and the leaf); else it meets the doorway's side or top there.
@@ -666,8 +675,8 @@ void DrawFacingSprite(const Surface &out, const Projection &proj, const std::vec
 		if (fu < -1.0F || fu >= static_cast<float>(spriteWidth))
 			continue;
 		const float scale = proj.focal / depth;
-		const float top = static_cast<float>(proj.horizon) - (entity.bottom + entity.height - EyeHeight) * scale;
-		const float bottom = static_cast<float>(proj.horizon) - (entity.bottom - EyeHeight) * scale;
+		const float top = static_cast<float>(proj.horizon) - (entity.bottom + entity.height - proj.eye) * scale;
+		const float bottom = static_cast<float>(proj.horizon) - (entity.bottom - proj.eye) * scale;
 		const float stepV = static_cast<float>(spriteHeight) / (bottom - top);
 		const int y0 = std::max(0, static_cast<int>(std::ceil(top - 0.5F)));
 		const int y1 = std::min(proj.height, static_cast<int>(std::ceil(bottom - 0.5F)));
@@ -968,10 +977,10 @@ void DrawFlatSprite(const Surface &out, const Projection &proj, const std::vecto
 			const float rx = world.x - proj.pos.x;
 			const float ry = world.y - proj.pos.y;
 			const float depth = std::max(rx * proj.dir.x + ry * proj.dir.y, 0.1F);
-			const float lateral = (rx * proj.plane.x + ry * proj.plane.y) / (PlaneLength * PlaneLength);
+			const float lateral = (rx * proj.plane.x + ry * proj.plane.y) / (proj.planeLength * proj.planeLength);
 			minX = std::min(minX, (lateral / depth + 1.0F) * static_cast<float>(proj.width) / 2.0F);
 			maxX = std::max(maxX, (lateral / depth + 1.0F) * static_cast<float>(proj.width) / 2.0F);
-			const float sy2 = static_cast<float>(proj.horizon) + EyeHeight / depth * proj.focal;
+			const float sy2 = static_cast<float>(proj.horizon) + proj.eye / depth * proj.focal;
 			minY = std::min(minY, sy2);
 			maxY = std::max(maxY, sy2);
 		}
@@ -983,7 +992,7 @@ void DrawFlatSprite(const Surface &out, const Projection &proj, const std::vecto
 	const int y1 = std::min(proj.height - 1, static_cast<int>(std::ceil(maxY)));
 	const uint8_t *light = entity.lit ? FpLightTable(LightAt(entity.tile)).data() : nullptr;
 	for (int y = y0; y <= y1; y++) {
-		const float depth = EyeHeight / -proj.rowSlope(y); // floor distance for this row
+		const float depth = proj.eye / -proj.rowSlope(y); // floor distance for this row
 		const int fogStep = FogStep(depth);
 		const uint8_t *fog = fogStep > 0 ? FogTables()[fogStep].data() : nullptr;
 		for (int x = x0; x <= x1; x++) {
@@ -1083,6 +1092,34 @@ void DrawCrosshair(const Surface &out)
 	}
 }
 
+void ShowReadout(std::string text)
+{
+	Readout = std::move(text);
+	ReadoutShownUntil = static_cast<uint32_t>(SDL_GetTicks()) + 1500;
+	if (ReadoutShownUntil == 0)
+		ReadoutShownUntil = 1;
+}
+
+void DrawReadout(const Surface &out)
+{
+	if (ReadoutShownUntil == 0)
+		return;
+	if (static_cast<int32_t>(static_cast<uint32_t>(SDL_GetTicks()) - ReadoutShownUntil) >= 0) {
+		ReadoutShownUntil = 0;
+		return;
+	}
+	DrawString(out, Readout, { { 0, 24 }, { out.w(), 20 } }, { .flags = UiFlags::ColorWhite | UiFlags::AlignCenter });
+}
+
+/** @brief Moves a list option to its previous (step < 0) or next value, staying at the list's ends. */
+void StepListOption(OptionEntryInt<int> &option, int step)
+{
+	const size_t index = option.GetActiveListIndex();
+	const size_t next = step < 0 ? (index > 0 ? index - 1 : index) : std::min(index + 1, option.GetListSize() - 1);
+	if (next != index)
+		option.SetActiveListIndex(next);
+}
+
 #ifdef _DEBUG
 /** @brief The tile, light and level readout in the corner (debug builds: the console's dev.fp commands go by it). */
 void DrawDebugInfo(const Surface &out, const Projection &proj)
@@ -1134,6 +1171,38 @@ void ApplyStartView()
 	ActivationPending = false;
 	FirstPersonActive = true;
 	ResetViewState();
+}
+
+bool IsThirdPerson()
+{
+	return *GetOptions().Graphics.thirdPerson;
+}
+
+void ToggleThirdPerson()
+{
+	OptionEntryBoolean &thirdPerson = GetOptions().Graphics.thirdPerson;
+	if (!FirstPersonActive) {
+		// From the isometric view: first person comes on, seen from behind.
+		thirdPerson.SetValue(true);
+		if (!ActivationPending)
+			ToggleFirstPerson();
+	} else {
+		thirdPerson.SetValue(!*thirdPerson); // the camera glides back from the hero's eyes (UpdateCamera)
+	}
+	ShowReadout(std::string(*thirdPerson ? _("Third Person") : _("First Person")));
+}
+
+void StepZoom(int step)
+{
+	if (IsThirdPerson()) {
+		OptionEntryInt<int> &cameraDistance = GetOptions().Graphics.cameraDistance;
+		StepListOption(cameraDistance, step);
+		ShowReadout(StrCat(_("Camera Distance"), ": ", *cameraDistance));
+		return;
+	}
+	OptionEntryInt<int> &fieldOfView = GetOptions().Graphics.fieldOfView;
+	StepListOption(fieldOfView, step);
+	ShowReadout(StrCat(_("Field of View"), ": ", *fieldOfView));
 }
 
 void DrawFirstPersonView(const Surface &out)
@@ -1191,7 +1260,8 @@ void DrawFirstPersonView(const Surface &out)
 	DrawFog(out, proj, depthBuffer);
 	lap(2);
 	DrawEntities(out, proj, zBuffer, &depthBuffer);
-	DrawFirstPersonWeapon(out);
+	if (!IsThirdPerson())
+		DrawFirstPersonWeapon(out);
 	lap(3);
 	if (timePhases) {
 		for (size_t i = 0; i < phase.size(); i++)
@@ -1204,6 +1274,7 @@ void DrawFirstPersonView(const Surface &out)
 	}
 	if (IsMouseLookActive())
 		DrawCrosshair(out);
+	DrawReadout(out);
 #ifdef _DEBUG
 	DrawDebugInfo(out, proj);
 #endif

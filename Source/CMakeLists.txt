@@ -269,6 +269,7 @@ add_devilutionx_object_library(libdevilutionx_control
   control/control_chat_commands.cpp
   control/control_flasks.cpp
   control/control_gold.cpp
+  control/control_hud.cpp
   control/control_infobox.cpp
   control/control_panel.cpp
 )

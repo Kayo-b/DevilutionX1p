@@ -18,6 +18,7 @@
 #include "levels/dun_tile_data.hpp"
 #include "levels/gendung.h"
 #include "levels/tile_properties.hpp"
+#include "options.h"
 #include "utils/ui_fwd.h"
 
 namespace devilution::fp {
@@ -32,18 +33,29 @@ float WallHeight()
 	return static_cast<float>(WallShownRows(LevelWallRows())) / SpritePixelsPerTileY;
 }
 
+float PlaneLength()
+{
+	constexpr float DegreesToRadians = 3.14159265F / 180.0F;
+	const int fov = std::clamp(*GetOptions().Graphics.fieldOfView, 30, 150);
+	return std::tan(static_cast<float>(fov) * 0.5F * DegreesToRadians);
+}
+
 Projection GetProjection()
 {
 	const ViewState &view = GetViewState();
+	const Camera &camera = GetCamera();
 	const Vec2 dir { std::cos(view.yaw), std::sin(view.yaw) };
+	const float planeLength = PlaneLength();
 	Projection projection;
-	projection.pos = { view.x, view.y };
+	projection.pos = camera.pos;
+	projection.eye = camera.eye;
 	projection.dir = dir;
-	projection.plane = { -dir.y * PlaneLength, dir.x * PlaneLength };
+	projection.plane = { -dir.y * planeLength, dir.x * planeLength };
+	projection.planeLength = planeLength;
 	projection.width = gnScreenWidth;
 	projection.height = gnViewportHeight;
-	projection.focal = static_cast<float>(projection.width) / 2.0F / PlaneLength;
-	projection.horizon = projection.height / 2 + static_cast<int>(view.pitch * projection.focal);
+	projection.focal = static_cast<float>(projection.width) / 2.0F / planeLength;
+	projection.horizon = projection.height / 2 + static_cast<int>((view.pitch + camera.pitch) * projection.focal);
 	return projection;
 }
 
@@ -142,11 +154,11 @@ bool IsHoleAt(const RayHit &hit, float height)
 	return holes[static_cast<size_t>(row) * FaceTextureWidth + u] != 0;
 }
 
-RayHit CastRayThroughHoles(Vec2 origin, Vec2 ray, float slope)
+RayHit CastRayThroughHoles(Vec2 origin, float eye, Vec2 ray, float slope)
 {
 	RayHit hit = CastRay(origin, ray);
 	for (int skip = 1; hit.hit && skip < MaxWallLayers; skip++) {
-		if (!IsHoleAt(hit, EyeHeight + slope * hit.distance))
+		if (!IsHoleAt(hit, eye + slope * hit.distance))
 			break;
 		hit = CastRay(origin, ray, skip);
 	}

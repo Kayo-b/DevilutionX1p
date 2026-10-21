@@ -5,6 +5,7 @@
 
 #include "DiabloUI/ui_flags.hpp"
 #include "control/control.hpp"
+#include "control/control_hud.hpp"
 #include "controls/controller_motion.h"
 #include "controls/game_controls.h"
 #include "controls/plrctrls.h"
@@ -146,8 +147,9 @@ void DrawGamepadMenuNavigator(const Surface &out)
 	static const CircleMenuHint DPad(/*top=*/HintIcon::IconMenu, /*right=*/HintIcon::IconInv, /*bottom=*/HintIcon::IconMap, /*left=*/HintIcon::IconChar);
 	static const CircleMenuHint Buttons(/*top=*/HintIcon::IconNull, /*right=*/HintIcon::IconNull, /*bottom=*/HintIcon::IconSpells, /*left=*/HintIcon::IconQuests);
 	const Rectangle &mainPanel = GetMainPanel();
-	DrawCircleMenuHint(out, DPad, { mainPanel.position.x + CircleMarginX, mainPanel.position.y - CircleTop });
-	DrawCircleMenuHint(out, Buttons, { mainPanel.position.x + mainPanel.size.width - (HintBoxSize * 3) - CircleMarginX - (HintBoxMargin * 2), mainPanel.position.y - CircleTop });
+	const int top = GetMainPanelOnScreen().position.y;
+	DrawCircleMenuHint(out, DPad, { mainPanel.position.x + CircleMarginX, top - CircleTop });
+	DrawCircleMenuHint(out, Buttons, { mainPanel.position.x + mainPanel.size.width - (HintBoxSize * 3) - CircleMarginX - (HintBoxMargin * 2), top - CircleTop });
 }
 
 void DrawGamepadHotspellMenu(const Surface &out)
@@ -156,7 +158,7 @@ void DrawGamepadHotspellMenu(const Surface &out)
 		return;
 
 	const Rectangle &mainPanel = GetMainPanel();
-	DrawSpellsCircleMenuHint(out, { mainPanel.position.x + mainPanel.size.width - (HintBoxSize * 3) - CircleMarginX - (HintBoxMargin * 2), mainPanel.position.y - CircleTop });
+	DrawSpellsCircleMenuHint(out, { mainPanel.position.x + mainPanel.size.width - (HintBoxSize * 3) - CircleMarginX - (HintBoxMargin * 2), GetMainPanelOnScreen().position.y - CircleTop });
 }
 
 } // namespace

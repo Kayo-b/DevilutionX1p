@@ -11,6 +11,8 @@
  *   shot:PATH         render the first-person view into a PPM file
  *   iso:PATH          save the previous frame as drawn by the original view (switch it on a few frames earlier)
  *   bench:N           log the average frame time over the next N frames
+ *   click:X,Y         move the mouse to a screen position and click the left button there
+ *   key:CODE          press and release a key (its SDL keycode, such as 45 for '-')
  *   quit              leave the game
  */
 #ifdef _DEBUG
@@ -48,6 +50,18 @@ int BenchFrames = 0;
 int BenchTotal = 0;
 Uint32 BenchStart = 0;
 
+void PushKey(SDL_Keycode key)
+{
+	for (const SDL_EventType type : { SDL_KEYDOWN, SDL_KEYUP }) {
+		SDL_Event event {};
+		event.type = type;
+		event.key.keysym.sym = key;
+		event.key.keysym.scancode = SDL_GetScancodeFromKey(key);
+		event.key.state = type == SDL_KEYDOWN ? SDL_PRESSED : SDL_RELEASED;
+		SDL_PushEvent(&event);
+	}
+}
+
 void PushReturn()
 {
 	for (const SDL_EventType type : { SDL_KEYDOWN, SDL_KEYUP }) {
@@ -58,6 +72,24 @@ void PushReturn()
 		event.key.state = type == SDL_KEYDOWN ? SDL_PRESSED : SDL_RELEASED;
 		SDL_PushEvent(&event);
 		std::this_thread::sleep_for(std::chrono::milliseconds(60));
+	}
+}
+
+void PushClick(int x, int y)
+{
+	SDL_Event motion {};
+	motion.type = SDL_MOUSEMOTION;
+	motion.motion.x = x;
+	motion.motion.y = y;
+	SDL_PushEvent(&motion);
+	for (const SDL_EventType type : { SDL_MOUSEBUTTONDOWN, SDL_MOUSEBUTTONUP }) {
+		SDL_Event event {};
+		event.type = type;
+		event.button.button = SDL_BUTTON_LEFT;
+		event.button.state = type == SDL_MOUSEBUTTONDOWN ? SDL_PRESSED : SDL_RELEASED;
+		event.button.x = x;
+		event.button.y = y;
+		SDL_PushEvent(&event);
 	}
 }
 
@@ -152,6 +184,11 @@ void AutotestTick()
 	} else if (step.rfind("lua:", 0) == 0) {
 		const auto result = RunLuaReplLine(step.substr(4));
 		LogInfo("autotest lua: {}", result.has_value() ? *result : "error: " + result.error());
+	} else if (step.rfind("click:", 0) == 0) {
+		const size_t comma = step.find(',');
+		PushClick(std::atoi(step.c_str() + 6), comma != std::string::npos ? std::atoi(step.c_str() + comma + 1) : 0);
+	} else if (step.rfind("key:", 0) == 0) {
+		PushKey(static_cast<SDL_Keycode>(std::atoi(step.c_str() + 4)));
 	} else if (step.rfind("bench:", 0) == 0) {
 		BenchTotal = BenchFrames = std::atoi(step.c_str() + 6);
 		BenchStart = SDL_GetTicks();

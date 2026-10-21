@@ -23,6 +23,7 @@
 
 #include "DiabloUI/text_input.hpp"
 #include "control/control.hpp"
+#include "control/control_hud.hpp"
 #include "engine/assets.hpp"
 #include "engine/displacement.hpp"
 #include "engine/dx.h"
@@ -563,7 +564,7 @@ void DrawConsole(const Surface &out)
 		return;
 
 	OuterRect.position = { 0, 0 };
-	OuterRect.size = { out.w(), out.h() - GetMainPanel().size.height - 2 };
+	OuterRect.size = { out.w(), out.h() - GetMainPanelOnScreen().size.height - 2 };
 
 	const std::string_view originalInputText = ConsoleInputState.value();
 	if (CurrentInputTextState != InputTextState::UpToDate) {

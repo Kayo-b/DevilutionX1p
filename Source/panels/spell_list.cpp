@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "control/control.hpp"
+#include "control/control_hud.hpp"
 #include "controls/control_mode.hpp"
 #include "controls/plrctrls.h"
 #include "engine/backbuffer_state.hpp"
@@ -200,7 +201,8 @@ std::vector<SpellListItem> GetSpellListItems()
 	std::vector<SpellListItem> spellListItems;
 
 	uint64_t mask;
-	const Point mainPanelPosition = GetMainPanel().position;
+	// Over the panel where it shows on the screen (the HUD Size option can scale it).
+	const Point mainPanelPosition { GetMainPanel().position.x, GetMainPanelOnScreen().position.y };
 
 	int x = mainPanelPosition.x + 12 + (SPLICONLENGTH * SPLROWICONLS);
 	int y = mainPanelPosition.y - 17;
@@ -333,7 +335,7 @@ void ToggleSpell(size_t slot)
 void DoSpeedBook()
 {
 	SpellSelectFlag = true;
-	const Point mainPanelPosition = GetMainPanel().position;
+	const Point mainPanelPosition { GetMainPanel().position.x, GetMainPanelOnScreen().position.y };
 	int xo = mainPanelPosition.x + 12 + (SPLICONLENGTH * 10);
 	int yo = mainPanelPosition.y - 17;
 	int x = xo + (SPLICONLENGTH / 2);

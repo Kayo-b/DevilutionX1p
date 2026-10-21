@@ -19,6 +19,17 @@ void UpdateFirstPersonActivation();
 /** @brief Switches first person on as a game starts or loads, if the options say to (Start in First Person); before PrepareTown. */
 void ApplyStartView();
 
+/** @brief Whether the first-person view follows the hero from behind (the Third Person option) rather than looking through their eyes. */
+[[nodiscard]] bool IsThirdPerson();
+/** @brief Switches third person on or off; from the isometric view, first person comes on with it. */
+void ToggleThirdPerson();
+
+/**
+ * @brief Zooms the view a step in (step < 0) or out (step > 0), and shows the new setting for a moment: the Field of
+ * View option in first person, the Camera Distance option in third.
+ */
+void StepZoom(int step);
+
 /**
  * @brief Renders the first-person view of the current level.
  * @param out Buffer covering the game viewport (excluding the bottom panel).

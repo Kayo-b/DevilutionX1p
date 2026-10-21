@@ -293,10 +293,13 @@ protected:
 	void SetValueInternal(int value);
 
 	void AddEntry(int value);
+	/** @brief Shown after each value in the list (a unit, such as "%"). */
+	void SetUnit(std::string_view unit);
 
 private:
 	int defaultValue;
 	int value;
+	std::string_view unit;
 	mutable std::vector<std::string> entryNames;
 	std::vector<int> entryValues;
 };
@@ -304,12 +307,13 @@ private:
 template <typename T>
 class OptionEntryInt : public OptionEntryIntBase {
 public:
-	OptionEntryInt(std::string_view key, OptionEntryFlags flags, const char *name, const char *description, T defaultValue, std::initializer_list<T> entries)
+	OptionEntryInt(std::string_view key, OptionEntryFlags flags, const char *name, const char *description, T defaultValue, std::initializer_list<T> entries, std::string_view unit = {})
 	    : OptionEntryIntBase(key, flags, name, description, static_cast<int>(defaultValue))
 	{
 		for (auto entry : entries) {
 			AddEntry(static_cast<int>(entry));
 		}
+		SetUnit(unit);
 	}
 	OptionEntryInt(std::string_view key, OptionEntryFlags flags, const char *name, const char *description, T defaultValue)
 	    : OptionEntryInt(key, flags, name, description, defaultValue, { defaultValue })
@@ -558,6 +562,14 @@ struct GraphicsOptions : OptionCategoryBase {
 	OptionEntryInt<int> brightness;
 	/** @brief Zoom on start. */
 	OptionEntryBoolean zoom;
+	/** @brief First person's horizontal field of view, in degrees. */
+	OptionEntryInt<int> fieldOfView;
+	/** @brief The first-person view follows the hero from behind instead of looking through their eyes. */
+	OptionEntryBoolean thirdPerson;
+	/** @brief How far behind the hero the third-person camera stands, in steps. */
+	OptionEntryInt<int> cameraDistance;
+	/** @brief Size of the bottom panel (flasks, belt, buttons), in percent. */
+	OptionEntryInt<int> hudSize;
 	/** @brief Subtile lighting for smoother light gradients. */
 	OptionEntryBoolean perPixelLighting;
 	/** @brief Enable color cycling animations. */

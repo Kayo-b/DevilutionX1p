@@ -21,6 +21,7 @@
 #include "DiabloUI/ui_flags.hpp"
 #include "appfat.h"
 #include "control/control.hpp"
+#include "control/control_hud.hpp"
 #include "controls/axis_direction.h"
 #include "controls/controller_motion.h"
 #include "engine/clx_sprite.hpp"
@@ -187,7 +188,7 @@ void gmenu_draw_pause(const Surface &out)
 	if (leveltype != DTYPE_TOWN)
 		RedBack(out);
 	if (sgpCurrentMenu == nullptr) {
-		DrawString(out, _("Pause"), { { 0, 0 }, { gnScreenWidth, GetMainPanel().position.y } },
+		DrawString(out, _("Pause"), { { 0, 0 }, { gnScreenWidth, GetMainPanelOnScreen().position.y } },
 		    { .flags = UiFlags::FontSize46 | UiFlags::ColorGold | UiFlags::AlignCenter | UiFlags::VerticalCenter, .spacing = 2 });
 	}
 }
@@ -339,7 +340,7 @@ bool gmenu_left_mouse(bool isDown)
 		return false;
 	}
 	const Point uiPosition = GetUIRectangle().position;
-	if (MousePosition.y >= GetMainPanel().position.y) {
+	if (MousePosition.y >= GetMainPanelOnScreen().position.y) {
 		return false;
 	}
 	if (MousePosition.y - (GMenuTop + uiPosition.y) < 0) {

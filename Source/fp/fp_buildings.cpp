@@ -3902,10 +3902,10 @@ bool ScreenBounds(const Building &b, const Projection &proj, int &left, int &top
 				allBehind = allBehind && depth < 0.05F;
 				// Corners at or behind the camera plane project far off screen: clamp them to a small depth.
 				depth = std::max(depth, 0.05F);
-				const float lateral = (rx * proj.plane.x + ry * proj.plane.y) / (PlaneLength * PlaneLength);
+				const float lateral = (rx * proj.plane.x + ry * proj.plane.y) / (proj.planeLength * proj.planeLength);
 				const float sx = (lateral / depth + 1.0F) * static_cast<float>(proj.width) / 2.0F;
 				// The structure's heights are in art units, stretched when drawn (DrawStructure's `stretch`).
-				const float sy = static_cast<float>(proj.horizon) - (wz * stretch - EyeHeight) / depth * proj.focal;
+				const float sy = static_cast<float>(proj.horizon) - (wz * stretch - proj.eye) / depth * proj.focal;
 				minX = std::min(minX, sx);
 				maxX = std::max(maxX, sx);
 				minY = std::min(minY, sy);
@@ -3955,9 +3955,9 @@ void DrawHouseModel(const Surface &out, const Projection &proj, std::vector<floa
 		const float distance = rx * proj.dir.x + ry * proj.dir.y;
 		if (distance < 0.15F)
 			continue;
-		const float lateral = (rx * proj.plane.x + ry * proj.plane.y) / (PlaneLength * PlaneLength);
+		const float lateral = (rx * proj.plane.x + ry * proj.plane.y) / (proj.planeLength * proj.planeLength);
 		const float sx = (lateral / distance + 1.0F) * static_cast<float>(proj.width) / 2.0F;
-		const float sy = static_cast<float>(proj.horizon) - (wz - EyeHeight) / distance * proj.focal;
+		const float sy = static_cast<float>(proj.horizon) - (wz - proj.eye) / distance * proj.focal;
 		const int size = std::max(1, static_cast<int>(std::ceil(voxelWorld * proj.focal / distance)));
 		const int x0 = static_cast<int>(std::floor(sx - static_cast<float>(size) / 2.0F));
 		const int y0 = static_cast<int>(std::floor(sy - static_cast<float>(size) / 2.0F));
@@ -4178,14 +4178,14 @@ void RasterizeTriangles(const Surface &out, const Projection &proj, std::vector<
 	auto toCamera = [&](const V3 &w) {
 		const float rx = w.x - proj.pos.x;
 		const float ry = w.y - proj.pos.y;
-		return CameraVertex { rx * proj.dir.x + ry * proj.dir.y, (rx * proj.plane.x + ry * proj.plane.y) / (PlaneLength * PlaneLength), w.z * stretch - EyeHeight, w };
+		return CameraVertex { rx * proj.dir.x + ry * proj.dir.y, (rx * proj.plane.x + ry * proj.plane.y) / (proj.planeLength * proj.planeLength), w.z * stretch - proj.eye, w };
 	};
 	auto lerp = [](const CameraVertex &a, const CameraVertex &c, float t) {
 		return CameraVertex { a.depth + (c.depth - a.depth) * t, a.lateral + (c.lateral - a.lateral) * t, a.height + (c.height - a.height) * t,
 			{ a.world.x + (c.world.x - a.world.x) * t, a.world.y + (c.world.y - a.world.y) * t, a.world.z + (c.world.z - a.world.z) * t } };
 	};
 	// Culling in drawn space: the eye stands lower relative to stretched geometry.
-	const V3 eye { proj.pos.x, proj.pos.y, EyeHeight / stretch };
+	const V3 eye { proj.pos.x, proj.pos.y, proj.eye / stretch };
 	ShadeEye = eye;
 	SlantFor = nullptr;
 	static const bool NoCull = std::getenv("FP_NO_CULL") != nullptr; // debug
@@ -4382,7 +4382,7 @@ void DrawBuilding(const Surface &out, const Projection &proj, const std::vector<
 		return;
 	constexpr float MinDepth = 0.05F;
 	constexpr int MaxPlanes = 11;
-	const V3 origin { proj.pos.x, proj.pos.y, EyeHeight };
+	const V3 origin { proj.pos.x, proj.pos.y, proj.eye };
 
 	// All planes of both bodies; the ray tests only need a few terms per pixel.
 	std::array<const Plane *, MaxPlanes> planes;
@@ -6606,7 +6606,7 @@ void DrawObjectBoxes(const Surface &out, const Projection &proj, std::vector<flo
 			const WorldTriangle &tri = mesh[t];
 			const float dx = (tri.p[0].x + tri.p[1].x + tri.p[2].x) / 3.0F - proj.pos.x;
 			const float dy = (tri.p[0].y + tri.p[1].y + tri.p[2].y) / 3.0F - proj.pos.y;
-			const float dz = (tri.p[0].z + tri.p[1].z + tri.p[2].z) / 3.0F - EyeHeight;
+			const float dz = (tri.p[0].z + tri.p[1].z + tri.p[2].z) / 3.0F - proj.eye;
 			byDistance.emplace_back(dx * dx + dy * dy + dz * dz, t);
 		}
 		std::sort(byDistance.begin(), byDistance.end());
@@ -9559,7 +9559,7 @@ void DrawTownProps(const Surface &out, const Projection &proj, std::vector<float
 					v = wz * Repeat;
 				}
 				const MeshTexture &tex = MeshTextures[tri.texture];
-				const float distance = std::hypot(wx - proj.pos.x, wy - proj.pos.y, wz - EyeHeight);
+				const float distance = std::hypot(wx - proj.pos.x, wy - proj.pos.y, wz - proj.eye);
 				const float footprint = Repeat * static_cast<float>(tex.width) * distance / proj.focal;
 				return static_cast<int>(FpLightTable(level)[WallStoneColor(MeshTexel(tex, u, v, footprint), tri.darkness + WallStoneDarkness)]);
 			}
@@ -9824,7 +9824,7 @@ void ApplyWindowGlow(const Surface &out, const Projection &proj, const std::vect
 		rays[x] = proj.columnRay(x);
 	auto depthAt = [&](int x, int y) { return depthBuffer[static_cast<size_t>(y) * proj.width + x]; };
 	auto worldAt = [&](int x, int y, float depth) {
-		return V3 { proj.pos.x + rays[x].x * depth, proj.pos.y + rays[x].y * depth, EyeHeight + proj.rowSlope(y) * depth };
+		return V3 { proj.pos.x + rays[x].x * depth, proj.pos.y + rays[x].y * depth, proj.eye + proj.rowSlope(y) * depth };
 	};
 	static const bool debugSeen = std::getenv("FP_LAMP_SEEN") != nullptr; // debug: the lamps' light, whichever way surfaces face
 	// The light on the surface seen at a pixel.
@@ -9880,7 +9880,7 @@ void ApplyWindowGlow(const Surface &out, const Projection &proj, const std::vect
 					const V3 c { u.y * v.z - u.z * v.y, u.z * v.x - u.x * v.z, u.x * v.y - u.y * v.x };
 					const float length = std::sqrt(c.x * c.x + c.y * c.y + c.z * c.z);
 					if (length > 1e-9F) {
-						const float towards = c.x * (proj.pos.x - p.x) + c.y * (proj.pos.y - p.y) + c.z * (EyeHeight - p.z) < 0 ? -1.0F : 1.0F;
+						const float towards = c.x * (proj.pos.x - p.x) + c.y * (proj.pos.y - p.y) + c.z * (proj.eye - p.z) < 0 ? -1.0F : 1.0F;
 						n = { c.x * towards / length, c.y * towards / length, c.z * towards / length };
 					}
 				}

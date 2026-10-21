@@ -1472,7 +1472,7 @@ void DrawCleanFloorAndCeiling(const Surface &out, const Projection &proj, std::v
 			std::fill_n(dst, proj.width, 0);
 			continue;
 		}
-		const float heightAboveOrBelow = isFloor ? EyeHeight : ceiling - EyeHeight;
+		const float heightAboveOrBelow = isFloor ? proj.eye : ceiling - proj.eye;
 		const float rowDistance = heightAboveOrBelow * proj.focal / static_cast<float>(rowsFromHorizon);
 		const float stepX = rowDistance * (rayRight.x - rayLeft.x) / static_cast<float>(proj.width);
 		const float stepY = rowDistance * (rayRight.y - rayLeft.y) / static_cast<float>(proj.width);
@@ -1687,8 +1687,8 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 			const float wallTop = kind == CleanKind::Wall ? WallHeights[static_cast<size_t>(hit.tile.y) * MAXDUNX + hit.tile.x] : ceiling;
 			const bool low = wallTop < ceiling - 0.01F;
 			const float scale = proj.focal / d;
-			const float topF = static_cast<float>(proj.horizon) - (wallTop - EyeHeight) * scale;
-			const float bottomF = static_cast<float>(proj.horizon) + EyeHeight * scale;
+			const float topF = static_cast<float>(proj.horizon) - (wallTop - proj.eye) * scale;
+			const float bottomF = static_cast<float>(proj.horizon) + proj.eye * scale;
 			const int top = std::max(0, static_cast<int>(std::ceil(topF - 0.5F)));
 			const int bottom = std::min(proj.height - 1, static_cast<int>(bottomF));
 			// Along the face in world order (so textures run on from tile to tile), and within the tile.
@@ -1776,7 +1776,7 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 				if (filled[y] != 0)
 					continue;
 				const float slope = static_cast<float>(proj.horizon - y) / proj.focal;
-				const float h = EyeHeight + slope * d;
+				const float h = proj.eye + slope * d;
 				const float ah = h - archSpring; // above the springing
 				if (archColumn && h > archBottom && h < archTopH) {
 					// Inside the arch: its rim, its sill, or its back in the shadow under the top.
@@ -1798,7 +1798,7 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 					// The ring: bricks on end set round the top, each pointing at its middle. Where they are on the band
 					// is worked out every RingStep rows and drawn straight in between (over a few rows the ring is).
 					if (y >= ringNext) {
-						const float h1 = EyeHeight + static_cast<float>(proj.horizon - y - RingStep) / proj.focal * d;
+						const float h1 = proj.eye + static_cast<float>(proj.horizon - y - RingStep) / proj.focal * d;
 						const auto [u0, v0] = ringAt(ah);
 						const auto [u1, v1] = ringAt(h1 - archSpring);
 						ringU = u0;
@@ -1869,7 +1869,7 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 					}
 					const float t = d + exit;
 					const Vec2 p { proj.pos.x + ray.x * t, proj.pos.y + ray.y * t };
-					const float hh = EyeHeight + slope * t;
+					const float hh = proj.eye + slope * t;
 					uint8_t color;
 					if (how == 0) {
 						// The back of a stairwell: the wall, in the dark.
@@ -1900,12 +1900,12 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 				filled[y] = 1;
 				depthBuffer[static_cast<size_t>(y) * proj.width + x] = d;
 			}
-			if (low && wallTop < EyeHeight) {
+			if (low && wallTop < proj.eye) {
 				// The top of a low wall, seen from above, between its face and where the ray leaves the tile.
 				const float ex = ray.x > 0 ? (static_cast<float>(hit.tile.x + 1) - proj.pos.x) / ray.x : (ray.x < 0 ? (static_cast<float>(hit.tile.x) - proj.pos.x) / ray.x : 1e9F);
 				const float ey = ray.y > 0 ? (static_cast<float>(hit.tile.y + 1) - proj.pos.y) / ray.y : (ray.y < 0 ? (static_cast<float>(hit.tile.y) - proj.pos.y) / ray.y : 1e9F);
 				const float leave = std::min(ex, ey);
-				const int from = std::max(0, static_cast<int>(std::ceil(static_cast<float>(proj.horizon) + (EyeHeight - wallTop) * proj.focal / std::max(leave, 0.01F) - 0.5F)));
+				const int from = std::max(0, static_cast<int>(std::ceil(static_cast<float>(proj.horizon) + (proj.eye - wallTop) * proj.focal / std::max(leave, 0.01F) - 0.5F)));
 				const int to = std::min(proj.height - 1, top - 1);
 				Sampler capSampler;
 				capSampler.Prepare(Textures.surfaces[static_cast<size_t>(CleanSurface::Stone)], (d + leave) * 0.5F / proj.focal);
@@ -1915,7 +1915,7 @@ void DrawCleanWalls(const Surface &out, const Projection &proj, std::vector<floa
 					const float slope = static_cast<float>(proj.horizon - y) / proj.focal;
 					if (slope >= 0.0F)
 						continue;
-					const float t = (wallTop - EyeHeight) / slope;
+					const float t = (wallTop - proj.eye) / slope;
 					const Vec2 p { proj.pos.x + ray.x * t, proj.pos.y + ray.y * t };
 					*out.at(x, y) = capSampler.At(p.x, p.y, LightLevel(CleanLightAt(p.x, p.y), x, y), x, y);
 					filled[y] = 1;

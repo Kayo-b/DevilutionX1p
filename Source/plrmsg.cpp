@@ -16,6 +16,7 @@
 #endif
 
 #include "control/control.hpp"
+#include "control/control_hud.hpp"
 #include "engine/render/primitive_render.hpp"
 #include "engine/render/text_render.hpp"
 #include "inv.h"
@@ -102,7 +103,7 @@ void DrawPlrMsg(const Surface &out)
 		return;
 
 	int x = 10;
-	int y = GetMainPanel().position.y - 13;
+	int y = GetMainPanelOnScreen().position.y - 13;
 	int width = gnScreenWidth - 20;
 
 	if (!ChatFlag && IsLeftPanelOpen()) {

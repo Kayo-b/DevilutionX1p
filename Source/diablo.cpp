@@ -26,6 +26,7 @@
 #include "automap.h"
 #include "capture.h"
 #include "control/control.hpp"
+#include "control/control_hud.hpp"
 #include "cursor.h"
 #include "dead.h"
 #ifdef _DEBUG
@@ -598,6 +599,8 @@ void PressKey(SDL_Keycode vkey, uint16_t modState)
 	case SDLK_KP_EQUALS:
 		if (AutomapActive) {
 			AutomapZoomIn();
+		} else if (fp::IsFirstPersonActive()) {
+			fp::StepZoom(-1);
 		}
 		return;
 	case SDLK_MINUS:
@@ -605,6 +608,8 @@ void PressKey(SDL_Keycode vkey, uint16_t modState)
 	case SDLK_UNDERSCORE:
 		if (AutomapActive) {
 			AutomapZoomOut();
+		} else if (fp::IsFirstPersonActive()) {
+			fp::StepZoom(1);
 		}
 		return;
 #ifdef _DEBUG
@@ -802,16 +807,16 @@ void GameEventHandler(const SDL_Event &event, uint16_t modState)
 	case SDL_EVENT_MOUSE_MOTION:
 		if (ControlMode == ControlTypes::KeyboardAndMouse && invflag)
 			InvalidateInventorySlot();
-		MousePosition = { SDLC_EventMotionIntX(event), SDLC_EventMotionIntY(event) };
+		MousePosition = ScreenToHud({ SDLC_EventMotionIntX(event), SDLC_EventMotionIntY(event) });
 		gmenu_on_mouse_move();
 		return;
 	case SDL_EVENT_MOUSE_BUTTON_DOWN:
-		MousePosition = { SDLC_EventButtonIntX(event), SDLC_EventButtonIntY(event) };
+		MousePosition = ScreenToHud({ SDLC_EventButtonIntX(event), SDLC_EventButtonIntY(event) });
 		fp::PinMouseToCrosshair();
 		HandleMouseButtonDown(event.button.button, modState);
 		return;
 	case SDL_EVENT_MOUSE_BUTTON_UP:
-		MousePosition = { SDLC_EventButtonIntX(event), SDLC_EventButtonIntY(event) };
+		MousePosition = ScreenToHud({ SDLC_EventButtonIntX(event), SDLC_EventButtonIntY(event) });
 		fp::PinMouseToCrosshair();
 		HandleMouseButtonUp(event.button.button, modState);
 		return;
@@ -2086,6 +2091,14 @@ void InitKeymapActions()
 	    nullptr,
 	    CanPlayerTakeAction);
 	options.Keymapper.AddAction(
+	    "ToggleThirdPerson",
+	    N_("Toggle third person"),
+	    N_("Switch the first-person view between your hero's eyes and a camera behind them."),
+	    'H',
+	    [] { fp::ToggleThirdPerson(); },
+	    nullptr,
+	    CanPlayerTakeAction);
+	options.Keymapper.AddAction(
 	    "Zoom",
 	    N_("Zoom"),
 	    N_("Zoom Game Screen."),
@@ -2612,6 +2625,14 @@ void InitPadmapActions()
 	    nullptr,
 	    CanPlayerTakeAction);
 	options.Padmapper.AddAction(
+	    "ToggleThirdPerson",
+	    N_("Toggle third person"),
+	    N_("Switch the first-person view between your hero's eyes and a camera behind them."),
+	    ControllerButton_NONE,
+	    [] { fp::ToggleThirdPerson(); },
+	    nullptr,
+	    CanPlayerTakeAction);
+	options.Padmapper.AddAction(
 	    "Zoom",
 	    N_("Zoom"),
 	    N_("Zoom Game Screen."),
@@ -2699,6 +2720,8 @@ void SetCursorPos(Point position)
 		return;
 	}
 
+	// A position on the main panel is in its layout (see ScreenToHud).
+	position = HudToScreen(position);
 	LogicalToOutput(&position.x, &position.y);
 	if (!demo::IsRunning())
 		SDL_WarpMouseInWindow(ghMainWnd, position.x, position.y);
@@ -3088,7 +3111,7 @@ void DisableInputEventHandler(const SDL_Event &event, uint16_t /*modState*/)
 {
 	switch (event.type) {
 	case SDL_EVENT_MOUSE_MOTION:
-		MousePosition = { SDLC_EventMotionIntX(event), SDLC_EventMotionIntY(event) };
+		MousePosition = ScreenToHud({ SDLC_EventMotionIntX(event), SDLC_EventMotionIntY(event) });
 		return;
 	case SDL_EVENT_MOUSE_BUTTON_DOWN:
 		if (sgbMouseDown != CLICK_NONE)

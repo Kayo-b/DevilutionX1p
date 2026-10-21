@@ -85,11 +85,11 @@ Pick PickAt(Point screenPosition, bool ignoreMonsters)
 
 	const Vec2 ray = proj.columnRay(x);
 	const float slope = proj.rowSlope(y);
-	const RayHit wall = CastRayThroughHoles(proj.pos, ray, slope);
+	const RayHit wall = CastRayThroughHoles(proj.pos, proj.eye, ray, slope);
 	const float wallDepth = wall.hit ? wall.distance : std::numeric_limits<float>::infinity();
-	const float floorDepth = slope < 0 ? EyeHeight / -slope : std::numeric_limits<float>::infinity();
+	const float floorDepth = slope < 0 ? proj.eye / -slope : std::numeric_limits<float>::infinity();
 	const bool ceiling = !IsCleanDungeon() || CleanHasCeiling(); // the caves and hell are open above
-	const float ceilingDepth = slope > 0 && ceiling ? (WallHeight() * VerticalScale() - EyeHeight) / slope : std::numeric_limits<float>::infinity();
+	const float ceilingDepth = slope > 0 && ceiling ? (WallHeight() * VerticalScale() - proj.eye) / slope : std::numeric_limits<float>::infinity();
 	const float surfaceDepth = std::min({ wallDepth, floorDepth, ceilingDepth, MaxPickDistance });
 
 	Pick pick {};
@@ -130,7 +130,7 @@ Pick PickAt(Point screenPosition, bool ignoreMonsters)
 				continue;
 			const float along = alongX ? proj.pos.x + ray.x * depth : proj.pos.y + ray.y * depth;
 			const float from = static_cast<float>(alongX ? tile.x : tile.y);
-			const float height = EyeHeight + slope * depth;
+			const float height = proj.eye + slope * depth;
 			if (along < from || along >= from + 1.0F || height < 0.0F || height > gateTop)
 				continue;
 			const Displacement back = alongX ? Displacement { 0, across > 0 ? -1 : 1 } : Displacement { across > 0 ? -1 : 1, 0 };

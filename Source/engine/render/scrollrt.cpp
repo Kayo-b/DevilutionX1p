@@ -21,6 +21,7 @@
 
 #include "DiabloUI/ui_flags.hpp"
 #include "automap.h"
+#include "control/control_hud.hpp"
 #include "controls/control_mode.hpp"
 #include "controls/plrctrls.h"
 #include "cursor.h"
@@ -316,7 +317,8 @@ void DrawCursor(const Surface &out)
 	// Copy the buffer before the item cursor and its 1px outline are drawn to a temporary buffer.
 	const int outlineWidth = !MyPlayer->HoldItem.isEmpty() ? 1 : 0;
 	const Displacement offset = !MyPlayer->HoldItem.isEmpty() ? Displacement { cursSize / 2 } : Displacement { 0 };
-	const Point cursPosition = MousePosition - offset;
+	// Over the main panel, MousePosition is in its layout: draw the cursor where it is on the screen.
+	const Point cursPosition = HudToScreen(MousePosition) - offset;
 
 	Rectangle &rect = cursor.rect;
 	rect.position.x = cursPosition.x - outlineWidth;
@@ -1453,17 +1455,13 @@ void DrawView(const Surface &out, Point startPosition)
 		gmenu_draw_pause(out);
 	}
 	if (IsDiabloMsgAvailable()) {
-		DrawDiabloMsg(out.subregionY(0, out.h() - GetMainPanel().size.height));
+		DrawDiabloMsg(out.subregionY(0, out.h() - GetMainPanelOnScreen().size.height));
 	}
 
 	DrawControllerModifierHints(out);
 	DrawPlrMsg(out);
 	gmenu_draw(out);
 	doom_draw(out);
-	DrawInfoBox(out);
-	UpdateLifeManaPercent(); // Update life/mana totals before rendering any portion of the flask.
-	DrawLifeFlaskUpper(out);
-	DrawManaFlaskUpper(out);
 }
 
 /**
@@ -1881,33 +1879,42 @@ void DrawAndBlit()
 
 	this_sdl_thread::yield();
 	DrawView(out, ViewPosition);
+
+	// The main panel, its flasks, belt and buttons: on a surface of their own while the HUD Size option scales them.
+	const Surface hud = BeginHudDrawing(out);
+	DrawInfoBox(hud);
+	UpdateLifeManaPercent(); // Update life/mana totals before rendering any portion of the flask.
+	DrawLifeFlaskUpper(hud);
+	DrawManaFlaskUpper(hud);
 	if (drawCtrlPan) {
-		DrawMainPanel(out);
+		DrawMainPanel(hud);
 	}
 	if (drawHealth) {
-		DrawLifeFlaskLower(out, !drawCtrlPan);
+		DrawLifeFlaskLower(hud, !drawCtrlPan);
 	}
 	if (drawMana) {
-		DrawManaFlaskLower(out, !drawCtrlPan);
+		DrawManaFlaskLower(hud, !drawCtrlPan);
 
-		DrawSpell(out);
+		DrawSpell(hud);
 	}
 	if (drawControlButtons) {
-		DrawMainPanelButtons(out);
+		DrawMainPanelButtons(hud);
 	}
 	if (drawBelt) {
-		DrawInvBelt(out);
+		DrawInvBelt(hud);
 	}
 	if (drawChatInput) {
-		DrawChatBox(out);
+		DrawChatBox(hud);
 	}
-	DrawXPBar(out);
+	DrawXPBar(hud);
 	if (*GetOptions().Gameplay.showHealthValues)
-		DrawFlaskValues(out, { mainPanel.position.x + 134, mainPanel.position.y + 28 }, MyPlayer->_pHitPoints >> 6, MyPlayer->_pMaxHP >> 6);
+		DrawFlaskValues(hud, { mainPanel.position.x + 134, mainPanel.position.y + 28 }, MyPlayer->_pHitPoints >> 6, MyPlayer->_pMaxHP >> 6);
 	if (*GetOptions().Gameplay.showManaValues)
-		DrawFlaskValues(out, { mainPanel.position.x + mainPanel.size.width - 138, mainPanel.position.y + 28 },
+		DrawFlaskValues(hud, { mainPanel.position.x + mainPanel.size.width - 138, mainPanel.position.y + 28 },
 		    (HasAnyOf(InspectPlayer->_pIFlags, ItemSpecialEffect::NoMana) || MyPlayer->hasNoMana()) ? 0 : MyPlayer->_pMana >> 6,
 		    HasAnyOf(InspectPlayer->_pIFlags, ItemSpecialEffect::NoMana) ? 0 : MyPlayer->_pMaxMana >> 6);
+	EndHudDrawing(out);
+
 	if (*GetOptions().Gameplay.floatingInfoBox)
 		DrawFloatingInfoBox(out);
 

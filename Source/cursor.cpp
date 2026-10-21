@@ -20,6 +20,7 @@
 
 #include "DiabloUI/diabloui.h"
 #include "control/control.hpp"
+#include "control/control_hud.hpp"
 #include "controls/control_mode.hpp"
 #include "controls/plrctrls.h"
 #include "doom.h"
@@ -680,7 +681,7 @@ void AlterMousePositionViaPanels(Point &screenPosition)
 void AlterMousePositionViaScrolling(Point &screenPosition, Rectangle mainPanel)
 {
 	if (mainPanel.contains(MousePosition) && track_isscrolling()) {
-		screenPosition.y = mainPanel.position.y - 1;
+		screenPosition.y = GetMainPanelOnScreen().position.y - 1;
 	}
 }
 
@@ -904,7 +905,7 @@ bool CheckCursorActions(const Point currentTile, bool flipflag)
  */
 void CheckCursMoveFirstPerson()
 {
-	const Point screenPosition = MousePosition;
+	const Point screenPosition = HudToScreen(MousePosition);
 	const fp::Pick pick = fp::PickAt(screenPosition, IsAnyOf(pcurs, CURSOR_HEALOTHER, CURSOR_RESURRECT));
 	const Point currentTile = pick.hasTarget ? pick.tile : pick.groundTile;
 
@@ -948,7 +949,7 @@ void CheckCursMove()
 		return;
 	}
 
-	Point screenPosition = MousePosition;
+	Point screenPosition = HudToScreen(MousePosition);
 	const Rectangle &mainPanel = GetMainPanel();
 
 	AlterMousePositionViaPanels(screenPosition);
