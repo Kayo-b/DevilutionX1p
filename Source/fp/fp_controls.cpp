@@ -45,6 +45,7 @@
 #include "fp/fp_view.hpp"
 #include "levels/dun_tile_data.hpp"
 #include "levels/tile_properties.hpp"
+#include "levels/trigs.h"
 #include "lighting.h"
 #include "options.h"
 #include "panels/console.hpp"
@@ -84,6 +85,7 @@ constexpr float CameraProbeStep = 0.05F;   // tiles between the wall probes
 
 ViewState View {};
 Point SyncedTile { -1, -1 };
+int SyncedLevel = -1;
 bool MouseCaptured = false;
 uint32_t LastFrameTicks = 0;
 float PendingMouseX = 0;
@@ -520,6 +522,74 @@ bool GlideToHeldStep(Player &player, float dt)
 	return false;
 }
 
+/** @brief Which level the hero is on, the quests' own levels told apart from the dungeon's. */
+int LevelKey()
+{
+	return setlevel ? 0x100 + static_cast<int>(setlvlnum) : static_cast<int>(currlevel);
+}
+
+/**
+ * @brief Come in by stairs, the hero would still face the way they took into them, and so look at the stairs they
+ * arrive by: turns them along the grid the way that leads most directly from those stairs, or, with a wall a few steps
+ * ahead there, the most open way to the side.
+ */
+void FaceIntoLevel(Point tile)
+{
+	constexpr int StairsWithin = 5; // tiles: the game puts an arriving hero closer to their stairs than this
+	constexpr int OpenEnough = 5;   // tiles of floor ahead that make a way into the level
+	constexpr int LookAhead = 8;    // tiles of floor counted at most
+	int nearest = StairsWithin * StairsWithin + 1;
+	Displacement away {};
+	for (int i = 0; i < numtrigs; i++) {
+		const Displacement fromStairs { tile.x - static_cast<int>(trigs[i].position.x), tile.y - static_cast<int>(trigs[i].position.y) };
+		const int distance = fromStairs.deltaX * fromStairs.deltaX + fromStairs.deltaY * fromStairs.deltaY;
+		if (distance < nearest) {
+			nearest = distance;
+			away = fromStairs;
+		}
+	}
+	if (nearest > StairsWithin * StairsWithin)
+		return; // not by stairs (a town portal, a loaded game): they look where they did
+	struct Way {
+		Displacement step;
+		int towards; // how directly it leads from the stairs
+		int open;    // tiles of floor ahead
+	};
+	std::array<Way, 4> ways { { { { 1, 0 }, 0, 0 }, { { 0, 1 }, 0, 0 }, { { -1, 0 }, 0, 0 }, { { 0, -1 }, 0, 0 } } };
+	for (Way &way : ways) {
+		way.towards = way.step.deltaX * away.deltaX + way.step.deltaY * away.deltaY;
+		way.open = 0;
+		for (Point next = tile + way.step; way.open < LookAhead && InDungeonBounds(next) && IsTileWalkable(next); next += way.step)
+			way.open++;
+	}
+	// Straight from the stairs first, of two ways equally so the more open.
+	std::sort(ways.begin(), ways.end(), [](const Way &a, const Way &b) { return a.towards != b.towards ? a.towards > b.towards : a.open > b.open; });
+	const Way *chosen = &ways[0];
+	if (chosen->open < OpenEnough) {
+		for (const Way &way : ways) {
+			if (way.towards >= 0 && way.open > chosen->open) // not back to the stairs
+				chosen = &way;
+		}
+	}
+	View.yaw = std::atan2(static_cast<float>(chosen->step.deltaY), static_cast<float>(chosen->step.deltaX));
+}
+
+/** @brief Arrived on another level: the view starts at the hero, looking into the level if they came by stairs. */
+void EnterLevel(const Player &player)
+{
+	SyncedLevel = LevelKey();
+	const Vec2 center = TileCenter(player.position.tile);
+	View.x = center.x;
+	View.y = center.y;
+	SyncedTile = player.position.tile;
+	Held.active = false; // a path on the level they left
+	FaceIntoLevel(player.position.tile);
+	// Nothing to come from: the camera goes behind the hero at once, and their stride starts over.
+	LastHeroPos = center;
+	HeroStride = {};
+	CameraPlaced = false;
+}
+
 void ApplyFacing(Player &player)
 {
 	if (player._pmode != PM_STAND)
@@ -561,6 +631,7 @@ void ResetViewState()
 	const Vec2 center = TileCenter(player.position.tile);
 	View = { center.x, center.y, DirectionToYaw(player._pdir), 0 };
 	SyncedTile = player.position.tile;
+	SyncedLevel = LevelKey();
 	LastFrameTicks = 0;
 	StepDistance = 0;
 	LastHeroPos = center;
@@ -641,6 +712,8 @@ void ProcessFrame()
 	ApplyLook(dt);
 
 	Player &player = *MyPlayer;
+	if (LevelKey() != SyncedLevel)
+		EnterLevel(player);
 	if (player.isWalking() && player._pmode != PM_DEATH) {
 		// Movement started by the game itself (walking to an item or a monster): at the first-person speed.
 		TakeOverWalk(player);
