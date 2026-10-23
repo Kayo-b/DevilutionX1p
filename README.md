@@ -149,12 +149,14 @@ origin vX.Y`) makes the GitHub workflow `fp_release.yml` build both and publish 
 | Input | Does |
 |---|---|
 | **F4** | switch between first person and the isometric view (rebindable in the keymapper settings) |
+| **H** | third person: the view follows your hero from behind (the *Third Person* setting; rebindable) |
 | **W A S D** | walk forward, left, back and right |
 | **Mouse** | look around; the crosshair marks what you'll act on |
 | **Arrow keys** | turn and look up or down without the mouse |
 | **Left click** | attack, talk, open, pick up: the usual action on whatever is under the crosshair |
 | **Right click** | cast the selected spell at the crosshair |
 | **T** | spell book (the Speedbook; its usual key `S` is now used for walking) |
+| **+** / **-** | zoom in or out: in first person the *Field of View* setting, in third person the *Camera Distance*; with the automap open they zoom the map |
 | Inventory, character, quest and spell keys | as usual. While a panel is open, the mouse cursor comes back so you can use it |
 
 ## Console commands
@@ -221,6 +223,8 @@ called without an argument flips the current state.
 | `dev.fp.teleport(x, y)` | move to a tile (the HUD shows your tile) |
 | `dev.fp.walkto(x, y)` | walk to a tile the way a click does |
 | `dev.fp.view(yawDegrees, pitch)` | set the view angle (0 = +x, 90 = +y) |
+| `dev.fp.fov(degrees)` / `dev.fp.hud(percent)` | set the *Field of View* and *HUD Size* settings |
+| `dev.fp.third(enabled)` / `dev.fp.camera(steps)` | third person on or off; set the *Camera Distance* setting (1 to 6) |
 | `dev.fp.where()` / `dev.fp.info(radius = 8)` | camera position; camera and nearby sprites |
 | `dev.fp.operate(x, y)` | operate the object at a tile (sarcophagus, door, chest) |
 | `dev.fp.killmonsters()` / `dev.fp.monsterstate()` | kill every monster (to look at corpses); describe nearby monsters |
@@ -235,9 +239,10 @@ called without an argument flips the current state.
 
 ## Recommended settings
 
-The bottom control panel is a fixed 640 × 128 pixels, so its share of the screen depends on the game's render
-resolution. A render height of **640** keeps the panel small and the 3D view sharp. In `diablo.ini`, under
-`[Graphics]`:
+The bottom control panel is 640 × 128 pixels at its normal size, so its share of the screen depends on the game's
+render resolution. Settings > Graphics > *HUD Size* (50% to 200%) draws it smaller or bigger, as far as the screen has
+room, without changing the resolution of the 3D view. A render height of **640** keeps the 3D view sharp. In
+`diablo.ini`, under `[Graphics]`:
 
 ```ini
 Width=853
@@ -247,7 +252,15 @@ Upscale=1
 ```
 
 This takes about 17 ms per frame (about 60 fps) on the development machine. A height of 480 is faster (about
-11 ms), but the panel then covers over a quarter of the screen (20% at 640).
+11 ms), but the panel then covers over a quarter of the screen (20% at 640) unless *HUD Size* makes it smaller.
+
+*Field of View* (Settings > Graphics, 50 to 120 degrees, 90 by default) sets how wide the first-person view is: less
+brings things closer, more shows more around you. **+** and **-** change it during the game.
+
+*Third Person* (Settings > Graphics, or **H** during the game) puts the camera behind your hero and a little to their
+right, so the crosshair stays clear of them. *Camera Distance* (1 to 6, 3 by default) sets how far back it stands;
+in third person **+** and **-** change that instead of the field of view. A wall behind your hero brings the camera in
+(and your hero is hidden when it comes right up to them); in town only the houses stop it, so it can end up in a tree.
 
 ## Known limitations
 

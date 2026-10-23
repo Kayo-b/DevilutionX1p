@@ -1,4 +1,5 @@
 #include "control.hpp"
+#include "control_hud.hpp"
 #include "control_panel.hpp"
 #include "controls/control_mode.hpp"
 #include "engine/render/primitive_render.hpp"
@@ -150,7 +151,7 @@ Rectangle GetFloatingInfoRect(const int lineHeight, const int textSpacing)
 			itemPosition.x += GetInventorySize(item).width * InventorySlotSizeInPixels.width / 2; // Align position to center of the item graphic
 			itemPosition.x -= maxW / 2;                                                           // Align position to the center of the floating item info box
 
-			const Point screen = GetMainPanel().position + Displacement { itemPosition.x, itemPosition.y };
+			const Point screen = HudToScreen(GetMainPanel().position + Displacement { itemPosition.x, itemPosition.y });
 
 			return { { screen.x, screen.y }, { maxW, totalH } };
 		}

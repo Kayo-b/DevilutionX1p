@@ -830,7 +830,7 @@ void DrawHellFloor(const Surface &out, const Projection &proj, std::vector<float
 			std::fill_n(dst, proj.width, 0); // the sky's (fp_sky.cpp), where nothing stands in front of it
 			continue;
 		}
-		const float rowDistance = EyeHeight * proj.focal / static_cast<float>(y - proj.horizon);
+		const float rowDistance = proj.eye * proj.focal / static_cast<float>(y - proj.horizon);
 		const float stepX = rowDistance * (rayRight.x - rayLeft.x) / static_cast<float>(proj.width);
 		const float stepY = rowDistance * (rayRight.y - rayLeft.y) / static_cast<float>(proj.width);
 		float wx = proj.pos.x + rowDistance * rayLeft.x;
@@ -916,7 +916,7 @@ void DrawHellWalls(const Surface &out, const Projection &proj, std::vector<float
 	const std::vector<int16_t> &blood = Blood.texels;
 	const std::vector<int16_t> &bloodFine = UpscaledTexture(blood, BloodSize);
 	constexpr int FineSize = BloodSize * TextureUpscale;
-	const float drop = EyeHeight - WallTop; // how far the tops are below the eye
+	const float drop = proj.eye - WallTop; // how far the tops are below the eye
 	// Each column is walked once through the grid, front to back: every wall is under the eye, so what comes into view
 	// farther on lies above (on screen) what was drawn nearer. `yTop` is the highest row the walls have drawn yet.
 	for (int x = 0; x < proj.width; x++) {
@@ -947,14 +947,14 @@ void DrawHellWalls(const Surface &out, const Projection &proj, std::vector<float
 					zBuffer[x] = enter;
 				const float scale = proj.focal / enter;
 				const int top = std::max(firstRow, static_cast<int>(std::ceil(static_cast<float>(proj.horizon) + drop * scale - 0.5F)));
-				const int bottom = std::min({ proj.height - 1, static_cast<int>(static_cast<float>(proj.horizon) + EyeHeight * scale), yTop - 1 });
+				const int bottom = std::min({ proj.height - 1, static_cast<int>(static_cast<float>(proj.horizon) + proj.eye * scale), yTop - 1 });
 				const Vec2 p { proj.pos.x + ray.x * enter, proj.pos.y + ray.y * enter };
 				const float along = enteredX ? p.y : p.x;
 				const float light = CleanLightAt(p.x - ray.x / rayLength * 0.05F, p.y - ray.y / rayLength * 0.05F) + (enteredX ? 0.0F : FaceYShade);
 				PrepareCleanSampler(flesh, CleanSurface::Wall, enter / proj.focal);
 				const bool dark = light >= LightsMax;
 				for (int y = top; y <= bottom; y++) {
-					const float h = EyeHeight + static_cast<float>(proj.horizon - y) / proj.focal * enter;
+					const float h = proj.eye + static_cast<float>(proj.horizon - y) / proj.focal * enter;
 					const float v = std::clamp(WallTop - h, 0.0F, WallTop * 0.999F);
 					*out.at(x, y) = dark ? 0 : flesh.At(along, v, LightLevel(light, x, y), x, y);
 					depthBuffer[static_cast<size_t>(y) * proj.width + x] = enter;

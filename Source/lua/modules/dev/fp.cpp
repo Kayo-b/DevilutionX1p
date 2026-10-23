@@ -11,6 +11,7 @@
 
 #include <sol/sol.hpp>
 
+#include "control/control_hud.hpp"
 #include "fp/fp_buildings.hpp"
 #include "fp/fp_controls.hpp"
 #include "fp/fp_dungeon.hpp"
@@ -31,6 +32,7 @@
 #include "levels/gendung.h"
 #include "levels/trigs.h"
 #include "objects.h"
+#include "options.h"
 #include "msg.h"
 #include "utils/str_cat.hpp"
 
@@ -79,6 +81,7 @@ const char *KindName(fp::EntityKind kind)
 	case fp::EntityKind::Missile: return "missile";
 	case fp::EntityKind::Corpse: return "corpse";
 	case fp::EntityKind::Prop: return "prop";
+	case fp::EntityKind::Hero: return "hero";
 	}
 	return "?";
 }
@@ -352,6 +355,34 @@ std::string DebugCmdFpOn(bool enabled)
 	return enabled ? "First person on." : "First person off.";
 }
 
+std::string DebugCmdFpFov(int degrees)
+{
+	GetOptions().Graphics.fieldOfView.SetValue(degrees);
+	return StrCat("Field of view ", degrees, ".");
+}
+
+std::string DebugCmdFpThird(bool enabled)
+{
+	GetOptions().Graphics.thirdPerson.SetValue(enabled);
+	return enabled ? "Third person on." : "Third person off.";
+}
+
+std::string DebugCmdFpCamera(int steps)
+{
+	GetOptions().Graphics.cameraDistance.SetValue(steps);
+	const fp::Camera &camera = fp::GetCamera();
+	const fp::ViewState &view = fp::GetViewState();
+	return StrCat("Camera distance ", steps, ": the camera stands ", Fixed2(std::hypot(camera.pos.x - view.x, camera.pos.y - view.y)), " from the hero, ",
+	    Fixed2(camera.eye), " high (it moves there over the next frames).");
+}
+
+std::string DebugCmdFpHud(int percent)
+{
+	GetOptions().Graphics.hudSize.SetValue(percent);
+	return StrCat("HUD size ", percent, "%: the panel shows at ", GetMainPanelOnScreen().size.width, "x", GetMainPanelOnScreen().size.height, " from ",
+	    GetMainPanelOnScreen().position.x, ",", GetMainPanelOnScreen().position.y, ".");
+}
+
 std::string DebugCmdFpOperate(int x, int y)
 {
 	Object *object = FindObjectAtPosition({ x, y });
@@ -612,6 +643,10 @@ sol::table LuaDevFirstPersonModule(sol::state_view &lua)
 	LuaSetDocFn(table, "operate", "(x: number, y: number)", "Operate the object at a tile, as a click on it does (open a sarcophagus, a door...).", &DebugCmdFpOperate);
 	LuaSetDocFn(table, "weapon", "(file: number = nil, record: number = 0, frame: number = 0)", "Show a Daggerfall weapon frame instead of the held one; no file to go back.", &DebugCmdFpWeapon);
 	LuaSetDocFn(table, "on","(enabled: boolean)", "Switch between first-person and the original view.", &DebugCmdFpOn);
+	LuaSetDocFn(table, "fov", "(degrees: number)", "Set the Field of View option (first person's horizontal view, 90 by default).", &DebugCmdFpFov);
+	LuaSetDocFn(table, "hud", "(percent: number)", "Set the HUD Size option (the bottom panel's size, 100 by default).", &DebugCmdFpHud);
+	LuaSetDocFn(table, "third", "(enabled: boolean)", "Third person on or off (same as H): the view from behind the hero.", &DebugCmdFpThird);
+	LuaSetDocFn(table, "camera", "(steps: number)", "Set the Camera Distance option (third person's, 1-6, 3 by default).", &DebugCmdFpCamera);
 	LuaSetDocFn(table, "buildings", "(enabled: boolean)", "Draw town houses as reconstructed 3D models (default) or flat billboards.", &DebugCmdFpBuildings);
 	return table;
 }

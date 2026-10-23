@@ -1676,7 +1676,7 @@ void TowerColumn::DrawTower(const Tower &tower, const Surface &out, std::vector<
 	    { tower.radius, PlinthHeight, capFrom, CleanSurface::Pillar, 0.0F },
 	    { tower.radius + CapOut, capFrom, ceiling, CleanSurface::Stone, 0.0F },
 	} };
-	auto rowAt = [&](float h, float t) { return static_cast<float>(proj.horizon) + (EyeHeight - h) * proj.focal / t; };
+	auto rowAt = [&](float h, float t) { return static_cast<float>(proj.horizon) + (proj.eye - h) * proj.focal / t; };
 	CleanSampler sampler;
 	for (Ring &ring : rings) {
 		ring.t = EnterCircle(pos_, ray_, tower.cx, tower.cy, ring.radius);
@@ -1700,7 +1700,7 @@ void TowerColumn::DrawTower(const Tower &tower, const Surface &out, std::vector<
 		for (int y = top; y <= bottom; y++) {
 			if (filled[y] != 0)
 				continue;
-			const float h = EyeHeight + static_cast<float>(proj.horizon - y) / proj.focal * t;
+			const float h = proj.eye + static_cast<float>(proj.horizon - y) / proj.focal * t;
 			*out.at(x, y) = light >= static_cast<float>(LightsMax) ? 0 : sampler.At(u, -h, LightLevel(light, x, y), x, y);
 			filled[y] = 1;
 			depthBuffer[static_cast<size_t>(y) * proj.width + x] = t;
@@ -1710,14 +1710,14 @@ void TowerColumn::DrawTower(const Tower &tower, const Surface &out, std::vector<
 	auto flat = [&](float z, float from, float to, float darkness) {
 		if (from <= 0.0F || to <= from)
 			return;
-		const bool below = z < EyeHeight;
+		const bool below = z < proj.eye;
 		const int y0 = std::max(0, static_cast<int>(std::ceil(std::min(rowAt(z, from), rowAt(z, to)))));
 		const int y1 = std::min(proj.height - 1, static_cast<int>(std::max(rowAt(z, from), rowAt(z, to))));
 		PrepareCleanSampler(sampler, CleanSurface::Stone, (from + to) * 0.5F / proj.focal);
 		for (int y = y0; y <= y1; y++) {
 			if (filled[y] != 0 || (below ? y <= proj.horizon : y >= proj.horizon))
 				continue;
-			const float t = (below ? EyeHeight - z : z - EyeHeight) * proj.focal / static_cast<float>(below ? y - proj.horizon : proj.horizon - y);
+			const float t = (below ? proj.eye - z : z - proj.eye) * proj.focal / static_cast<float>(below ? y - proj.horizon : proj.horizon - y);
 			if (t < from || t > to)
 				continue;
 			const float px = pos_.x + ray_.x * t;
@@ -1749,7 +1749,7 @@ void DrawCatacombsFloorAndCeiling(const Surface &out, const Projection &proj, st
 			std::fill_n(dst, proj.width, 0);
 			continue;
 		}
-		const float heightAboveOrBelow = isFloor ? EyeHeight : ceiling - EyeHeight;
+		const float heightAboveOrBelow = isFloor ? proj.eye : ceiling - proj.eye;
 		const float rowDistance = heightAboveOrBelow * proj.focal / static_cast<float>(rowsFromHorizon);
 		const float stepX = rowDistance * (rayRight.x - rayLeft.x) / static_cast<float>(proj.width);
 		const float stepY = rowDistance * (rayRight.y - rayLeft.y) / static_cast<float>(proj.width);

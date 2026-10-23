@@ -19,6 +19,7 @@
 
 #include "automap.h"
 #include "control/control.hpp"
+#include "control/control_hud.hpp"
 #include "controls/controller_motion.h"
 #ifndef USE_SDL1
 #include "controls/devices/game_controller.h"
@@ -514,6 +515,13 @@ bool IsStandingGround()
 
 void Interact()
 {
+	if (fp::IsFirstPersonActive()) {
+		// First person aims with the crosshair: the button does what a click there does (a swing in place at what's
+		// out of reach), never a walk to the nearest monster.
+		ClickAtCursor();
+		return;
+	}
+
 	if (leveltype == DTYPE_TOWN && pcursmonst != -1) {
 		NetSendCmdLocParam1(true, CMD_TALKXY, Towners[pcursmonst].position, pcursmonst);
 		return;
@@ -2191,11 +2199,16 @@ void HandleRightStickMotion()
 
 	{ // move cursor
 		InvalidateInventorySlot();
-		int x = MousePosition.x;
-		int y = MousePosition.y;
+		// The cursor moves on the screen; over the main panel MousePosition is in its layout (see ScreenToHud).
+		const Point onScreen = HudToScreen(MousePosition);
+		int x = onScreen.x;
+		int y = onScreen.y;
 		acc.Pool(&x, &y, 2);
 		x = std::min(std::max(x, 0), gnScreenWidth - 1);
 		y = std::min(std::max(y, 0), gnScreenHeight - 1);
+		const Point moved = ScreenToHud({ x, y });
+		x = moved.x;
+		y = moved.y;
 
 		// We avoid calling `SetCursorPos` within the same SDL tick because
 		// that can cause all stick motion events to arrive before all
@@ -2251,6 +2264,9 @@ void plrctrls_after_check_curs_move()
 	if (ControlMode == ControlTypes::KeyboardAndMouse || IsPointAndClick()) {
 		return;
 	}
+	// First person keeps what its crosshair aims at (CheckCursMove), not the nearest monster.
+	if (fp::IsFirstPersonActive())
+		return;
 
 	// While holding the button down we should retain target (but potentially lose it if it dies, goes out of view, etc)
 	if (ControllerActionHeld != GameActionType_NONE && IsNoneOf(LastPlayerAction, PlayerActionType::None, PlayerActionType::Attack, PlayerActionType::Spell)) {
@@ -2380,7 +2396,7 @@ bool SpellHasActorTarget()
 
 void UpdateSpellTarget(SpellID spell)
 {
-	if (SpellHasActorTarget())
+	if (SpellHasActorTarget() || fp::IsFirstPersonActive()) // first person: at the crosshair
 		return;
 
 	PlayerUnderCursor = nullptr;

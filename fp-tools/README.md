@@ -67,7 +67,7 @@ All first-person code lives in `Source/fp/` of each checkout:
 | `fp_doors.cpp/.hpp` | doorways (the door tile stays a wall with an opening through it: a clean arched one, or read off the caves' art) and the door leaf's swing |
 | `fp_buildings.cpp/.hpp` | **all 3D meshes**: town houses (voxel/mesh), landmarks (smithy, tavern, church), dungeon structures (the clean dungeon's pillars, arches and stairwells, the cathedral's stairs, torch stands, the caves' and hell's columns and arcades, sarcophagus boxes, door leaves), the triangle rasterizer |
 | `fp_world.cpp/.hpp` | collects the sprites to draw (monsters, NPCs, objects, items, missiles, corpses, props); sizes and grounding |
-| `fp_controls.cpp` | movement, mouse/gamepad look, pitch limit, taking over click-to-walk |
+| `fp_controls.cpp` | movement, mouse/gamepad look, pitch limit, taking over click-to-walk, the third-person camera |
 | `fp_pick.cpp` | what the crosshair points at |
 | `fp_weapon.cpp/.hpp` | the weapon in hand: reads Daggerfall's `WEAPON*.CIF`, picks one for the equipped Diablo weapon, swings it with the attack |
 | `fp_autotest.cpp` | headless scripted runs (`FP_TEST_STEPS`) |
@@ -170,6 +170,8 @@ Open the console with the backtick key, then run `dev = require('devilutionx.dev
 | `dev.fp.on(true/false)` | first person on or off |
 | `dev.fp.teleport(x, y)` | move to a tile (the HUD shows your current tile) |
 | `dev.fp.view(yawDeg, pitch)` | set the view angle (0 = +x, 90 = +y) |
+| `dev.fp.fov(degrees)` / `dev.fp.hud(percent)` | set the Field of View and HUD Size options (the latter prints where the panel shows) |
+| `dev.fp.third(enabled)` / `dev.fp.camera(steps)` | third person on or off; set the Camera Distance option (prints where the camera stands now) |
 | `dev.level.reset(n, seed)` + `dev.level.warp.dungeon(n)` | load dungeon level `n` with a fixed seed (to reproduce a layout) |
 | `dev.level.seed()` | print the current level's seed |
 | `dev.fp.features()` | list stairs triggers, column tiles, doors and objects |
@@ -220,6 +222,7 @@ steps, each one frame apart:
 ```
 wait:N        lua:<console line>      shot:/path.ppm (first-person frame)
 iso:/path.ppm (original view; switch with lua:dev.fp.on(false) a few frames earlier)
+click:X,Y     (move the mouse there and click)   key:CODE (an SDL keycode: 45 is '-', 116 't')
 bench:N       quit
 ```
 

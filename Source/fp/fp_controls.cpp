@@ -6,6 +6,8 @@
  * The camera owns a continuous world position. The player's logical tile follows it: whenever the camera
  * centre crosses into a new tile, the player is moved there directly (no walk animation), so monster AI,
  * triggers, lighting and vision keep working on the tile grid exactly as before.
+ *
+ * In third person the view is seen from behind that position instead (GetCamera), which stays the hero's.
  */
 #include "fp/fp_controls.hpp"
 
@@ -13,6 +15,9 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
+#include <utility>
+#include <vector>
 
 #ifdef USE_SDL3
 #include <SDL3/SDL_keyboard.h>
@@ -32,10 +37,15 @@
 #include "doom.h"
 #include "effects.h"
 #include "engine/render/scrollrt.h"
+#include "fp/fp_buildings.hpp"
+#include "fp/fp_dungeon.hpp"
+#include "fp/fp_hell.hpp"
 #include "fp/fp_math.hpp"
+#include "fp/fp_raycast.hpp"
 #include "fp/fp_view.hpp"
 #include "levels/dun_tile_data.hpp"
 #include "levels/tile_properties.hpp"
+#include "levels/trigs.h"
 #include "lighting.h"
 #include "options.h"
 #include "panels/console.hpp"
@@ -62,14 +72,34 @@ constexpr float KeyPitchSpeed = 1.0F;       // focal fractions per second (arrow
 constexpr float MaxPitch = 1.25F;        // tan of about 51 degrees up or down
 constexpr float StepSoundDistance = 0.9F; // tiles between footstep sounds
 constexpr float Pi = 3.14159265F;
+// Third person: the camera stands behind the hero and a little to their right (over the shoulder, so the crosshair
+// is clear of them), above their head, looking down a little so the crosshair's line passes just over it.
+constexpr float CameraBackBase = 0.9F;     // tiles behind the hero at no Camera Distance step
+constexpr float CameraBackPerStep = 0.6F;  // and further back a step
+constexpr float ShoulderShift = 0.25F;     // tiles to the right per tile behind
+constexpr float CameraRise = 0.28F;        // tiles above the eye per tile behind
+constexpr float CeilingClearance = 0.45F;  // how far under the ceiling it stays
+constexpr float HeadHeight = 1.6F;         // where the crosshair's line passes the hero
+constexpr float CameraBackOffSpeed = 3.0F; // tiles per second it goes back out once a wall let it come in
+constexpr float CameraProbeStep = 0.05F;   // tiles between the wall probes
 
 ViewState View {};
 Point SyncedTile { -1, -1 };
+int SyncedLevel = -1;
 bool MouseCaptured = false;
 uint32_t LastFrameTicks = 0;
 float PendingMouseX = 0;
 float PendingMouseY = 0;
 float StepDistance = 0;
+Camera Cam {};
+/** How far the third-person camera stands back from the hero now, and to their right. */
+float CameraBack = 0;
+float CameraShift = 0;
+/** Whether the camera was put behind the hero since the view was reset: until then it goes there at once. */
+bool CameraPlaced = false;
+Stride HeroStride {};
+Vec2 LastHeroPos {};
+float StillFor = 0;
 
 Vec2 TileCenter(Point tile)
 {
@@ -218,10 +248,128 @@ void UpdateLightOffset(const Player &player)
 	ChangeLightOffset(player.lightId, { eighths(View.x - center.x), eighths(View.y - center.y) });
 }
 
+/** @brief How far behind the hero the third-person camera stands, in tiles, at the Camera Distance option. */
+float WantedCameraBack()
+{
+	return CameraBackBase + CameraBackPerStep * static_cast<float>(std::clamp(*GetOptions().Graphics.cameraDistance, 1, 10));
+}
+
+/** @brief The highest the camera may be: under the ceiling (the caves' wall tops). None in town, nor in hell, whose walls are low. */
+float CameraCeiling()
+{
+	if (leveltype == DTYPE_TOWN || IsHell())
+		return std::numeric_limits<float>::infinity();
+	if (IsCleanDungeon())
+		return CleanCeiling();
+	return WallHeight() * VerticalScale();
+}
+
+/**
+ * @brief What the third-person camera does not go into: what the hero cannot, but in town only the buildings (and the
+ * map's edge): it goes over trees, fences and water. While the town's models are built, what the hero cannot.
+ */
+bool StopsCamera(Point tile)
+{
+	if (leveltype == DTYPE_TOWN && InDungeonBounds(tile) && BuildingsEnabled() && !IsTownBuilding())
+		return IsBuildingTile(tile);
+	return IsBlockedForCamera(tile);
+}
+
+/** StopsCamera of the tiles asked this frame: a town tile asks the buildings, which is slow for the many probes. */
+std::vector<std::pair<Point, bool>> CameraTiles;
+
+bool CameraBoxBlocked(float x, float y)
+{
+	const Point minTile = TileAt(x - CollisionRadius, y - CollisionRadius);
+	const Point maxTile = TileAt(x + CollisionRadius, y + CollisionRadius);
+	for (int ty = minTile.y; ty <= maxTile.y; ty++) {
+		for (int tx = minTile.x; tx <= maxTile.x; tx++) {
+			const Point tile { tx, ty };
+			auto known = std::find_if(CameraTiles.begin(), CameraTiles.end(), [&](const auto &entry) { return entry.first == tile; });
+			if (known == CameraTiles.end())
+				known = CameraTiles.insert(CameraTiles.end(), { tile, StopsCamera(tile) });
+			if (known->second)
+				return true;
+		}
+	}
+	return false;
+}
+
+/** @brief How far the camera's box goes from `from` along `way` (a unit vector), up to `wanted`, before it meets a wall. */
+float RoomAlong(Vec2 from, Vec2 way, float wanted)
+{
+	float room = 0;
+	for (float t = CameraProbeStep; t <= wanted + CameraProbeStep / 2; t += CameraProbeStep) {
+		const float at = std::min(t, wanted);
+		if (CameraBoxBlocked(from.x + way.x * at, from.y + way.y * at))
+			break;
+		room = at;
+	}
+	return room;
+}
+
+/** @brief Comes in at once to `room`, or goes back out towards it at CameraBackOffSpeed (at once if `snap`). */
+float Approach(float current, float room, float dt, bool snap)
+{
+	if (snap || room <= current)
+		return room;
+	return std::min(room, current + CameraBackOffSpeed * dt);
+}
+
+void UpdateStride(float dt)
+{
+	const Vec2 step { View.x - LastHeroPos.x, View.y - LastHeroPos.y };
+	LastHeroPos = { View.x, View.y };
+	const float moved = std::hypot(step.x, step.y);
+	if (moved > 0.0005F && moved < 1.0F) {
+		HeroStride.moving = true;
+		HeroStride.yaw = std::atan2(step.y, step.x);
+		HeroStride.distance += moved;
+		StillFor = 0;
+		return;
+	}
+	// A frame without a step (the game's tick) does not stop the walk; a tenth of a second does.
+	StillFor += dt;
+	if (StillFor > 0.1F) {
+		HeroStride.moving = false;
+		HeroStride.distance = 0;
+	}
+}
+
+/** @brief Puts the camera where it sees the hero from this frame, at once if the view was just reset. */
+void UpdateCamera(float dt)
+{
+	const Vec2 hero { View.x, View.y };
+	if (!IsThirdPerson()) {
+		// At the eyes: switched to third person, the camera glides back from here.
+		Cam = { hero, EyeHeight, 0 };
+		CameraBack = 0;
+		CameraShift = 0;
+		CameraPlaced = true;
+		return;
+	}
+	const bool snap = !CameraPlaced;
+	CameraPlaced = true;
+	const float wanted = WantedCameraBack();
+	CameraTiles.clear();
+	const Vec2 dir { std::cos(View.yaw), std::sin(View.yaw) };
+	const Vec2 right { -dir.y, dir.x };
+	// To the right first, then back from there, each as far as the walls let it.
+	CameraShift = Approach(CameraShift, RoomAlong(hero, right, wanted * ShoulderShift), dt, snap);
+	const Vec2 shoulder { hero.x + right.x * CameraShift, hero.y + right.y * CameraShift };
+	CameraBack = Approach(CameraBack, RoomAlong(shoulder, { -dir.x, -dir.y }, wanted), dt, snap);
+	Cam.pos = { shoulder.x - dir.x * CameraBack, shoulder.y - dir.y * CameraBack };
+	// Its height and its look down go by where it wants to be, so a wall bringing it in does not tilt the view.
+	Cam.eye = std::max(EyeHeight, std::min(EyeHeight + CameraRise * wanted, CameraCeiling() - CeilingClearance));
+	Cam.pitch = -std::max(Cam.eye - HeadHeight, 0.0F) / wanted;
+}
+
 void ApplyLook(float dt)
 {
-	View.yaw += PendingMouseX * MouseSensitivity;
-	View.pitch -= PendingMouseY * MouseSensitivity;
+	// Zoomed in (a narrow field of view), the mouse turns the view slower so it moves as far on the screen.
+	const float sensitivity = MouseSensitivity * std::min(PlaneLength(), 1.0F);
+	View.yaw += PendingMouseX * sensitivity;
+	View.pitch -= PendingMouseY * sensitivity;
 	PendingMouseX = 0;
 	PendingMouseY = 0;
 
@@ -374,6 +522,74 @@ bool GlideToHeldStep(Player &player, float dt)
 	return false;
 }
 
+/** @brief Which level the hero is on, the quests' own levels told apart from the dungeon's. */
+int LevelKey()
+{
+	return setlevel ? 0x100 + static_cast<int>(setlvlnum) : static_cast<int>(currlevel);
+}
+
+/**
+ * @brief Come in by stairs, the hero would still face the way they took into them, and so look at the stairs they
+ * arrive by: turns them along the grid the way that leads most directly from those stairs, or, with a wall a few steps
+ * ahead there, the most open way to the side.
+ */
+void FaceIntoLevel(Point tile)
+{
+	constexpr int StairsWithin = 5; // tiles: the game puts an arriving hero closer to their stairs than this
+	constexpr int OpenEnough = 5;   // tiles of floor ahead that make a way into the level
+	constexpr int LookAhead = 8;    // tiles of floor counted at most
+	int nearest = StairsWithin * StairsWithin + 1;
+	Displacement away {};
+	for (int i = 0; i < numtrigs; i++) {
+		const Displacement fromStairs { tile.x - static_cast<int>(trigs[i].position.x), tile.y - static_cast<int>(trigs[i].position.y) };
+		const int distance = fromStairs.deltaX * fromStairs.deltaX + fromStairs.deltaY * fromStairs.deltaY;
+		if (distance < nearest) {
+			nearest = distance;
+			away = fromStairs;
+		}
+	}
+	if (nearest > StairsWithin * StairsWithin)
+		return; // not by stairs (a town portal, a loaded game): they look where they did
+	struct Way {
+		Displacement step;
+		int towards; // how directly it leads from the stairs
+		int open;    // tiles of floor ahead
+	};
+	std::array<Way, 4> ways { { { { 1, 0 }, 0, 0 }, { { 0, 1 }, 0, 0 }, { { -1, 0 }, 0, 0 }, { { 0, -1 }, 0, 0 } } };
+	for (Way &way : ways) {
+		way.towards = way.step.deltaX * away.deltaX + way.step.deltaY * away.deltaY;
+		way.open = 0;
+		for (Point next = tile + way.step; way.open < LookAhead && InDungeonBounds(next) && IsTileWalkable(next); next += way.step)
+			way.open++;
+	}
+	// Straight from the stairs first, of two ways equally so the more open.
+	std::sort(ways.begin(), ways.end(), [](const Way &a, const Way &b) { return a.towards != b.towards ? a.towards > b.towards : a.open > b.open; });
+	const Way *chosen = &ways[0];
+	if (chosen->open < OpenEnough) {
+		for (const Way &way : ways) {
+			if (way.towards >= 0 && way.open > chosen->open) // not back to the stairs
+				chosen = &way;
+		}
+	}
+	View.yaw = std::atan2(static_cast<float>(chosen->step.deltaY), static_cast<float>(chosen->step.deltaX));
+}
+
+/** @brief Arrived on another level: the view starts at the hero, looking into the level if they came by stairs. */
+void EnterLevel(const Player &player)
+{
+	SyncedLevel = LevelKey();
+	const Vec2 center = TileCenter(player.position.tile);
+	View.x = center.x;
+	View.y = center.y;
+	SyncedTile = player.position.tile;
+	Held.active = false; // a path on the level they left
+	FaceIntoLevel(player.position.tile);
+	// Nothing to come from: the camera goes behind the hero at once, and their stride starts over.
+	LastHeroPos = center;
+	HeroStride = {};
+	CameraPlaced = false;
+}
+
 void ApplyFacing(Player &player)
 {
 	if (player._pmode != PM_STAND)
@@ -383,11 +599,30 @@ void ApplyFacing(Player &player)
 		StartStand(player, facing);
 }
 
+/** @brief What follows where the hero now is: their facing, their light, their stride and the camera. */
+void FinishFrame(Player &player, float dt)
+{
+	ApplyFacing(player);
+	UpdateLightOffset(player);
+	UpdateStride(dt);
+	UpdateCamera(dt);
+}
+
 } // namespace
 
 const ViewState &GetViewState()
 {
 	return View;
+}
+
+const Camera &GetCamera()
+{
+	return Cam;
+}
+
+const Stride &GetStride()
+{
+	return HeroStride;
 }
 
 void ResetViewState()
@@ -396,8 +631,16 @@ void ResetViewState()
 	const Vec2 center = TileCenter(player.position.tile);
 	View = { center.x, center.y, DirectionToYaw(player._pdir), 0 };
 	SyncedTile = player.position.tile;
+	SyncedLevel = LevelKey();
 	LastFrameTicks = 0;
 	StepDistance = 0;
+	LastHeroPos = center;
+	HeroStride = {};
+	// At the hero's eyes until the first frame puts it behind them (the level may not be loaded yet).
+	Cam = { center, EyeHeight, 0 };
+	CameraBack = 0;
+	CameraShift = 0;
+	CameraPlaced = false;
 }
 
 bool IsMouseLookActive()
@@ -469,6 +712,8 @@ void ProcessFrame()
 	ApplyLook(dt);
 
 	Player &player = *MyPlayer;
+	if (LevelKey() != SyncedLevel)
+		EnterLevel(player);
 	if (player.isWalking() && player._pmode != PM_DEATH) {
 		// Movement started by the game itself (walking to an item or a monster): at the first-person speed.
 		TakeOverWalk(player);
@@ -480,8 +725,7 @@ void ProcessFrame()
 		} else {
 			SyncedTile = player.position.tile;
 			if (GlideToHeldStep(player, dt)) {
-				ApplyFacing(player);
-				UpdateLightOffset(player);
+				FinishFrame(player, dt);
 				return;
 			}
 		}
@@ -495,8 +739,7 @@ void ProcessFrame()
 	}
 
 	ApplyMovement(player, dt);
-	ApplyFacing(player);
-	UpdateLightOffset(player);
+	FinishFrame(player, dt);
 }
 
 void SetViewAngles(float yaw, float pitch)

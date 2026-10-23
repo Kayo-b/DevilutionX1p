@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <unordered_map>
 
 #include "dead.h"
@@ -25,11 +26,14 @@
 #include "monster.h"
 #include "fp/fp_buildings.hpp"
 #include "fp/fp_catacombs.hpp"
+#include "fp/fp_controls.hpp"
 #include "fp/fp_dungeon.hpp"
 #include "fp/fp_hell.hpp"
 #include "fp/fp_textures.hpp"
+#include "fp/fp_view.hpp"
 #include "utils/clx_decode.hpp"
 #include "objects.h"
+#include "player.h"
 #include "towners.h"
 #include "utils/is_of.hpp"
 
@@ -113,6 +117,10 @@ Direction ViewRelativeDirection(Direction facing, Vec2 viewerPos, Vec2 actorPos)
 constexpr float MonsterScale = 1.0F;
 /** Townspeople are ordinary humans, so they stay near the player's own height. */
 constexpr float TownerScale = 0.92F;
+/** How far the hero goes in one round of their walk's frames, in tiles: the game's walk takes a tile a round. */
+constexpr float StrideLength = 1.0F;
+/** A wall bringing the third-person camera this close (tiles), the hero is not drawn: they would fill the view. */
+constexpr float HeroHiddenWithin = 0.8F;
 
 /** @brief Empty rows under the lowest visible pixel of a sprite (its feet), cached per frame of art. */
 int FootPadding(ClxSprite sprite)
@@ -125,6 +133,28 @@ int FootPadding(ClxSprite sprite)
 	if (cache.size() > 8000)
 		cache.clear();
 	const int padding = SpriteBottomPadding(sprite);
+	cache.emplace(key, padding);
+	return padding;
+}
+
+/**
+ * @brief Empty rows under the feet of an animation's frames for one direction, on average, cached: a pose that keeps
+ * still, such as standing, puts its feet the same few rows up in every frame.
+ */
+int SheetFootPadding(ClxSpriteList frames)
+{
+	static std::unordered_map<const uint8_t *, int> cache;
+	const uint32_t count = frames.numSprites();
+	if (count == 0)
+		return 0;
+	const uint8_t *key = frames[0].pixelData();
+	const auto found = cache.find(key);
+	if (found != cache.end())
+		return found->second;
+	int total = 0;
+	for (uint32_t i = 0; i < count; i++)
+		total += FootPadding(frames[i]);
+	const int padding = (total + static_cast<int>(count) / 2) / static_cast<int>(count);
 	cache.emplace(key, padding);
 	return padding;
 }
@@ -222,6 +252,57 @@ void CollectMonsters(Vec2 viewerPos, std::vector<Entity> &entities)
 			entity.trn = GetStoneTRN();
 		entities.push_back(entity);
 	}
+}
+
+/** @brief The frames of the hero's current animation for the view-relative direction, if it is one of theirs. */
+OptionalClxSpriteList PlayerSheet(const Player &player, Direction viewDirection)
+{
+	const ClxSprite currentFirst = (*player.AnimInfo.sprites)[0];
+	for (const PlayerAnimationData &anim : player.AnimationData) {
+		if (!anim.sprites)
+			continue;
+		for (int dir = 0; dir < 8; dir++) {
+			if (anim.spritesForDirection(static_cast<Direction>(dir))[0] == currentFirst)
+				return anim.spritesForDirection(viewDirection);
+		}
+	}
+	return std::nullopt;
+}
+
+/** @brief The hero, in third person: as the camera behind them sees them, walking while they glide. */
+void CollectHero(Vec2 viewerPos, std::vector<Entity> &entities)
+{
+	if (!IsThirdPerson() || MyPlayer == nullptr || !MyPlayer->AnimInfo.sprites)
+		return;
+	const Player &player = *MyPlayer;
+	const ViewState &view = GetViewState();
+	const Vec2 pos { view.x, view.y };
+	if (std::hypot(pos.x - viewerPos.x, pos.y - viewerPos.y) < HeroHiddenWithin)
+		return;
+	const Stride &stride = GetStride();
+	const bool gliding = stride.moving && player._pmode == PM_STAND;
+	const Direction facing = ViewRelativeDirection(gliding ? YawToDirection(stride.yaw) : player._pdir, viewerPos, pos);
+	const PlayerAnimationData &stand = player.AnimationData[static_cast<size_t>(player_graphic::Stand)];
+	const PlayerAnimationData &walk = player.AnimationData[static_cast<size_t>(player_graphic::Walk)];
+	OptionalClxSpriteList frames;
+	size_t frame = 0;
+	if (gliding && walk.sprites) {
+		// Standing, as first person moves them: the walk's frames, turned the way they go.
+		frames = walk.spritesForDirection(facing);
+		const auto count = static_cast<int>(frames->numSprites());
+		frame = static_cast<size_t>(static_cast<int>(stride.distance / StrideLength * static_cast<float>(count)) % count);
+	} else {
+		frames = PlayerSheet(player, facing);
+		frame = static_cast<size_t>(player.AnimInfo.getFrameToUseForRendering());
+	}
+	const ClxSprite sprite = frames ? (*frames)[frame] : player.AnimInfo.currentSprite();
+	Entity entity = MakeSpriteEntity(EntityKind::Hero, static_cast<int>(player.getId()), player.position.tile, pos, sprite, 1.0F, true);
+	// Every animation stands where the feet at rest do, as iso draws them all from one point. With each frame's
+	// lowest pixel on the floor instead, the hero would bob as they walk: in the art the foot nearer the viewer is lower.
+	if (stand.sprites)
+		entity.bottom = -static_cast<float>(SheetFootPadding(stand.spritesForDirection(facing))) / SpritePixelsPerTileY;
+	entity.lit = IsAnyOf(leveltype, DTYPE_NEST, DTYPE_CRYPT); // the iso renderer draws the hero unlit elsewhere
+	entities.push_back(entity);
 }
 
 void CollectTowners(std::vector<Entity> &entities)
@@ -546,6 +627,7 @@ void RefreshFpLightTables()
 void CollectEntities(Vec2 viewerPos, std::vector<Entity> &entities)
 {
 	entities.clear();
+	CollectHero(viewerPos, entities);
 	CollectTowners(entities);
 	CollectMonsters(viewerPos, entities);
 	CollectObjects(entities);
@@ -559,7 +641,7 @@ void CollectEntities(Vec2 viewerPos, std::vector<Entity> &entities)
 
 bool IsSelectableKind(EntityKind kind)
 {
-	return IsNoneOf(kind, EntityKind::Missile, EntityKind::Corpse, EntityKind::Prop);
+	return IsNoneOf(kind, EntityKind::Missile, EntityKind::Corpse, EntityKind::Prop, EntityKind::Hero);
 }
 
 /** How much farther off monsters and townsfolk look up close (tiles); see ProjectBillboard. */
@@ -582,7 +664,7 @@ BillboardRect ProjectBillboard(const Projection &projection, const Entity &entit
 		for (const float side : { -1.0F, 1.0F }) {
 			const Vec2 end { rel.x + across.x * side, rel.y + across.y * side };
 			const float endDepth = end.x * projection.dir.x + end.y * projection.dir.y;
-			const float endLateral = (end.x * projection.plane.x + end.y * projection.plane.y) / (PlaneLength * PlaneLength);
+			const float endLateral = (end.x * projection.plane.x + end.y * projection.plane.y) / (projection.planeLength * projection.planeLength);
 			if (endDepth < 0.1F) {
 				// Behind the camera: the quad runs off the screen on that end's side.
 				if (endLateral < 0)
@@ -600,8 +682,8 @@ BillboardRect ProjectBillboard(const Projection &projection, const Entity &entit
 		if (!rect.visible)
 			return rect;
 		const float scale = projection.focal / nearest;
-		rect.top = projection.horizon - static_cast<int>(std::lround((entity.bottom + entity.height - EyeHeight) * scale));
-		rect.bottom = projection.horizon - static_cast<int>(std::lround((entity.bottom - EyeHeight) * scale));
+		rect.top = projection.horizon - static_cast<int>(std::lround((entity.bottom + entity.height - projection.eye) * scale));
+		rect.bottom = projection.horizon - static_cast<int>(std::lround((entity.bottom - projection.eye) * scale));
 		rect.left = std::max(rect.left, 0);
 		rect.right = std::min(rect.right, projection.width);
 		rect.visible = rect.right > rect.left && rect.bottom > rect.top;
@@ -609,7 +691,7 @@ BillboardRect ProjectBillboard(const Projection &projection, const Entity &entit
 	}
 	if (depth < 0.1F)
 		return { false, depth, 0, 0, 0, 0 };
-	const float lateral = (rel.x * projection.plane.x + rel.y * projection.plane.y) / (PlaneLength * PlaneLength);
+	const float lateral = (rel.x * projection.plane.x + rel.y * projection.plane.y) / (projection.planeLength * projection.planeLength);
 	// Monsters and townsfolk are sized as if a little farther off than they are (sqrt(d^2 + near^2)): one right in
 	// front no longer fills the screen, while far ones hardly change. Walls still hide them by their real depth.
 	const bool creature = IsAnyOf(entity.kind, EntityKind::Monster, EntityKind::Towner);
@@ -623,8 +705,8 @@ BillboardRect ProjectBillboard(const Projection &projection, const Entity &entit
 	rect.depth = depth;
 	rect.left = static_cast<int>(std::floor(centerX - halfWidth));
 	rect.right = static_cast<int>(std::ceil(centerX + halfWidth));
-	rect.top = projection.horizon - static_cast<int>(std::lround((entity.bottom + entity.height - EyeHeight) * scale));
-	rect.bottom = projection.horizon - static_cast<int>(std::lround((entity.bottom - EyeHeight) * scale));
+	rect.top = projection.horizon - static_cast<int>(std::lround((entity.bottom + entity.height - projection.eye) * scale));
+	rect.bottom = projection.horizon - static_cast<int>(std::lround((entity.bottom - projection.eye) * scale));
 	if (rect.right <= rect.left || rect.bottom <= rect.top)
 		rect.visible = false;
 	return rect;

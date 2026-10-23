@@ -8,6 +8,7 @@
 #endif
 
 #include "control/control.hpp"
+#include "control/control_hud.hpp"
 #include "controls/plrctrls.h"
 #include "cursor.h"
 #include "diablo.h"
@@ -70,7 +71,7 @@ constexpr SDL_FingerID FingerId(const SDL_TouchFingerEvent &event)
 
 void SimulateMouseMovement(const SDL_Event &event)
 {
-	const Point position = ScaleToScreenCoordinates(event.tfinger.x, event.tfinger.y);
+	const Point position = ScreenToHud(ScaleToScreenCoordinates(event.tfinger.x, event.tfinger.y));
 
 	const bool isInMainPanel = GetMainPanel().contains(position);
 	const bool isInLeftPanel = GetLeftPanel().contains(position);

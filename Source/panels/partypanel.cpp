@@ -5,6 +5,7 @@
 
 #include "automap.h"
 #include "control/control.hpp"
+#include "control/control_hud.hpp"
 #include "engine/backbuffer_state.hpp"
 #include "engine/clx_sprite.hpp"
 #include "engine/load_cel.hpp"
@@ -264,7 +265,7 @@ void DrawPartyMemberInfoPanel(const Surface &out)
 				currentLongestNameWidth = width;
 
 			// Check to see if the Y position is more then the main panel position
-			if (pos.y >= GetMainPanel().position.y - PortraitFrameSize.height - 10) {
+			if (pos.y >= GetMainPanelOnScreen().position.y - PortraitFrameSize.height - 10) {
 				// If so we need to draw the next set of portraits back at the top and to the right of the original position
 				pos.y = PartyPanelPos.y;
 				if (AutomapActive)
@@ -341,7 +342,7 @@ void DrawPartyMemberInfoPanel(const Surface &out)
 					currentLongestNameWidth = width;
 
 				// Check to see if the Y position is more then the main panel position
-				if (pos.y >= GetMainPanel().position.y - PortraitFrameSize.height - 10) {
+				if (pos.y >= GetMainPanelOnScreen().position.y - PortraitFrameSize.height - 10) {
 					// If so we need to draw the next set of portraits back at the top and to the right of the original position
 					pos.y = PartyPanelPos.y;
 					if (AutomapActive)

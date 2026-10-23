@@ -50,12 +50,15 @@ Playing
 The game starts in first person (Settings > Gameplay > Start in First Person turns that off).
 
   F4                 switch between first person and the original view
+  H                  third person: see your hero from behind (Settings > Graphics > Third Person)
   W A S D            walk
   Mouse              look around; the crosshair marks what you'll act on
   Arrow keys         turn and look up or down without the mouse
   Left click         attack, talk, open, pick up
   Right click        cast the selected spell at the crosshair
   T                  spell book (S, its usual key, now walks)
+  + / -              zoom in or out: the field of view in first person, the camera's distance
+                     in third (Settings > Graphics > Field of View, Camera Distance)
 
 Your heroes and settings are kept in ~/.local/share/diasurgical/devilution (shared with DevilutionX).
 

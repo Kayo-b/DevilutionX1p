@@ -96,6 +96,8 @@ bool StartGame(bool bNewGame, bool bSinglePlayer);
 [[noreturn]] void diablo_quit(int exitStatus);
 int DiabloMain(int argc, char **argv);
 bool TryIconCurs();
+/** @brief What a left click on what's under the cursor does (in first person: the crosshair), for the gamepad's action button. */
+void ClickAtCursor();
 void diablo_pause_game();
 bool diablo_is_focused();
 void diablo_focus_pause();

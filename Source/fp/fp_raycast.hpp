@@ -11,7 +11,8 @@
 namespace devilution::fp {
 
 // World units are tiles.
-constexpr float PlaneLength = 1.0F; // tan(FOV / 2), FOV = 90 degrees
+/** @brief tan(FOV / 2) for the Field of View option: 1 at the default 90 degrees, less as the view zooms in. */
+[[nodiscard]] float PlaneLength();
 /**
  * @brief Original art pixels per world unit (tile).
  *
@@ -20,7 +21,7 @@ constexpr float PlaneLength = 1.0F; // tan(FOV / 2), FOV = 90 degrees
  */
 constexpr float SpritePixelsPerTileX = 45.25F;
 constexpr float SpritePixelsPerTileY = 39.2F;
-/** A warrior sprite is ~1.8 tiles tall at this scale. */
+/** The hero's eye height (the first-person camera's): a warrior sprite is ~1.8 tiles tall at this scale. */
 constexpr float EyeHeight = 1.3F;
 
 /** @brief Wall (and ceiling) height of the current level, from the height of its wall art. */
@@ -35,8 +36,10 @@ constexpr float MaxRayDistance = 48.0F;
 /** @brief Camera plus the screen mapping of the game viewport. */
 struct Projection {
 	Vec2 pos;
+	float eye; // the camera's height above the floor: EyeHeight, or higher behind the hero in third person
 	Vec2 dir;   // unit length
-	Vec2 plane; // perpendicular to dir, length PlaneLength
+	Vec2 plane; // perpendicular to dir, length planeLength
+	float planeLength;
 	int width;
 	int height;
 	float focal;
@@ -83,7 +86,10 @@ constexpr int MaxWallLayers = 6;
 /** @brief Whether the wall face at the hit is an opening (no art) at the given height above the floor. */
 [[nodiscard]] bool IsHoleAt(const RayHit &hit, float height);
 
-/** @brief CastRay, but passing through openings in the wall for a ray whose height changes by `slope` per unit of depth. */
-[[nodiscard]] RayHit CastRayThroughHoles(Vec2 origin, Vec2 ray, float slope);
+/**
+ * @brief CastRay, but passing through openings in the wall for a ray from `eye` above the floor whose height changes by
+ * `slope` per unit of depth.
+ */
+[[nodiscard]] RayHit CastRayThroughHoles(Vec2 origin, float eye, Vec2 ray, float slope);
 
 } // namespace devilution::fp

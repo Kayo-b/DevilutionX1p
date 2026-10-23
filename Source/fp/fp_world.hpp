@@ -30,6 +30,7 @@ enum class EntityKind : uint8_t {
 	Missile,
 	Corpse,
 	Prop, // level art drawn as a billboard (town buildings, trees, rocks)
+	Hero, // the player's own hero, seen from behind in third person
 };
 
 struct Entity {

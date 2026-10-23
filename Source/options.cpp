@@ -391,6 +391,11 @@ void OptionEntryIntBase::AddEntry(int entryValue)
 {
 	entryValues.push_back(entryValue);
 }
+void OptionEntryIntBase::SetUnit(std::string_view entryUnit)
+{
+	unit = entryUnit;
+	entryNames.clear();
+}
 size_t OptionEntryIntBase::GetListSize() const
 {
 	return entryValues.size();
@@ -399,7 +404,7 @@ std::string_view OptionEntryIntBase::GetListDescription(size_t index) const
 {
 	if (entryNames.empty()) {
 		for (auto entryValue : entryValues) {
-			entryNames.push_back(StrCat(entryValue));
+			entryNames.push_back(StrCat(entryValue, unit));
 		}
 	}
 	return entryNames[index].data();
@@ -795,6 +800,10 @@ GraphicsOptions::GraphicsOptions()
           })
     , brightness("Brightness Correction", OptionEntryFlags::Invisible, "Brightness Correction", "Brightness correction level.", 0)
     , zoom("Zoom", OptionEntryFlags::None, N_("Zoom"), N_("Zoom on when enabled."), false)
+    , fieldOfView("Field of View", OptionEntryFlags::None, N_("Field of View"), N_("How wide the first-person view is, in degrees: less brings things closer, more shows more around you. In first person, + and - change it during the game."), 90, { 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120 })
+    , thirdPerson("Third Person", OptionEntryFlags::None, N_("Third Person"), N_("The first-person view follows your hero from behind instead of looking through their eyes. H switches it during the game."), false)
+    , cameraDistance("Camera Distance", OptionEntryFlags::None, N_("Camera Distance"), N_("How far behind your hero the third-person camera stands. In third person, + and - change it during the game."), 3, { 1, 2, 3, 4, 5, 6 })
+    , hudSize("HUD Size", OptionEntryFlags::None, N_("HUD Size"), N_("Size of the bottom panel with the flasks, the belt and the buttons. It grows only as far as the screen has room for it."), 100, { 50, 60, 70, 75, 80, 90, 100, 110, 125, 150, 175, 200 }, "%")
     , perPixelLighting("Per-pixel Lighting", OptionEntryFlags::None, N_("Per-pixel Lighting"), N_("Subtile lighting for smoother light gradients."), DEFAULT_PER_PIXEL_LIGHTING)
     , colorCycling("Color Cycling", OptionEntryFlags::None, N_("Color Cycling"), N_("Color cycling effect used for water, lava, and acid animation."), true)
     , alternateNestArt("Alternate nest art", OptionEntryFlags::OnlyHellfire | OptionEntryFlags::CantChangeInGame, N_("Alternate nest art"), N_("The game will use an alternative palette for Hellfire’s nest tileset."), false)
@@ -825,6 +834,10 @@ std::vector<OptionEntryBase *> GraphicsOptions::GetEntries()
 		&frameRateControl,
 		&brightness,
 		&zoom,
+		&fieldOfView,
+		&thirdPerson,
+		&cameraDistance,
+		&hudSize,
 		&showFPS,
 		&perPixelLighting,
 		&colorCycling,

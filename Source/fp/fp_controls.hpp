@@ -12,6 +12,7 @@
 #endif
 
 #include "engine/point.hpp"
+#include "fp/fp_math.hpp"
 
 namespace devilution::fp {
 
@@ -26,6 +27,28 @@ struct ViewState {
 };
 
 [[nodiscard]] const ViewState &GetViewState();
+
+/** @brief Where the view is seen from: the hero's eyes, or in third person behind and above them. */
+struct Camera {
+	Vec2 pos;
+	/** Height above the floor. */
+	float eye;
+	/** Added to the look's pitch: the third-person camera looks down a little, over the hero's head. */
+	float pitch;
+};
+
+[[nodiscard]] const Camera &GetCamera();
+
+/** @brief How the hero is going, to draw them walking in third person (first person glides them, with no walk of the game's). */
+struct Stride {
+	bool moving;
+	/** The way they go. */
+	float yaw;
+	/** How far they went since they set off, in tiles. */
+	float distance;
+};
+
+[[nodiscard]] const Stride &GetStride();
 
 /** @brief Re-initialises the camera from the player's tile and facing (used when entering first person). */
 void ResetViewState();

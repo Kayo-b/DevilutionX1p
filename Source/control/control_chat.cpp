@@ -1,5 +1,6 @@
 #include "control_chat.hpp"
 #include "control.hpp"
+#include "control_hud.hpp"
 #include "control_panel.hpp"
 
 #include "control/control_chat_commands.hpp"
@@ -227,7 +228,8 @@ void TypeChatMessage()
 	RedrawEverything();
 	TalkSaveIndex = NextTalkSave;
 
-	SDL_Rect rect = MakeSdlRect(GetMainPanel().position.x + 200, GetMainPanel().position.y + 22, 0, 27);
+	const Point inputPosition = HudToScreen(GetMainPanel().position + Displacement { 200, 22 });
+	SDL_Rect rect = MakeSdlRect(inputPosition.x, inputPosition.y, 0, 27);
 	SDL_SetTextInputArea(ghMainWnd, &rect, /*cursor=*/0);
 	SDLC_StartTextInput(ghMainWnd);
 }

@@ -2,6 +2,7 @@
 #include "control.hpp"
 #include "control_chat.hpp"
 #include "control_flasks.hpp"
+#include "control_hud.hpp"
 
 #include "automap.h"
 #include "controls/control_mode.hpp"
@@ -205,7 +206,7 @@ int DrawDurIcon4Item(const Surface &out, Item &pItem, int x, int c)
 	}
 
 	// Draw icon
-	const int y = -17 + GetMainPanel().position.y;
+	const int y = -17 + GetMainPanelOnScreen().position.y;
 	if (partition > 0) {
 		const Surface stenciledBuffer = out.subregionY(y - partition, partition);
 		ClxDraw(stenciledBuffer, { x, partition }, (*pDurIcons)[c + 8]); // Gold icon
@@ -229,7 +230,7 @@ bool IsLevelUpButtonVisible()
 	if (IsPlayerInStore() || IsStashOpen || IsVisualStoreOpen) {
 		return false;
 	}
-	if (QuestLogIsOpen && GetLeftPanel().contains(GetMainPanel().position + Displacement { 0, -74 })) {
+	if (QuestLogIsOpen && GetLeftPanel().contains(GetMainPanelOnScreen().position + Displacement { 0, -74 })) {
 		return false;
 	}
 
@@ -242,10 +243,7 @@ void CalculatePanelAreas()
 {
 	constexpr Size MainPanelSize { 640, 128 };
 
-	MainPanel = {
-		{ (gnScreenWidth - MainPanelSize.width) / 2, gnScreenHeight - MainPanelSize.height },
-		MainPanelSize
-	};
+	MainPanel = LayOutMainPanel(MainPanelSize);
 	LeftPanel = {
 		{ 0, 0 },
 		SidePanelSize
@@ -262,7 +260,7 @@ void CalculatePanelAreas()
 			LeftPanel.position.x = (gnScreenWidth - LeftPanel.size.width - RightPanel.size.width - MainPanel.size.width) / 2;
 		}
 	}
-	LeftPanel.position.y = (gnScreenHeight - LeftPanel.size.height - MainPanel.size.height) / 2;
+	LeftPanel.position.y = (gnScreenHeight - LeftPanel.size.height - GetMainPanelOnScreen().size.height) / 2;
 
 	if (ControlMode == ControlTypes::VirtualGamepad) {
 		RightPanel.position.x = gnScreenWidth / 2;
@@ -652,9 +650,9 @@ void CheckLevelButton()
 		return;
 	}
 
+	// Over the panel where it shows on the screen: it is not part of the scaled HUD.
 	Rectangle button = LevelButtonRect;
-
-	SetPanelObjectPosition(UiPanels::Main, button);
+	button.position += Displacement { GetMainPanelOnScreen().position.x, GetMainPanelOnScreen().position.y };
 
 	if (!LevelButtonDown && button.contains(MousePosition))
 		LevelButtonDown = true;
@@ -663,8 +661,7 @@ void CheckLevelButton()
 void CheckLevelButtonUp()
 {
 	Rectangle button = LevelButtonRect;
-
-	SetPanelObjectPosition(UiPanels::Main, button);
+	button.position += Displacement { GetMainPanelOnScreen().position.x, GetMainPanelOnScreen().position.y };
 
 	if (button.contains(MousePosition)) {
 		OpenCharPanel();
@@ -676,9 +673,10 @@ void DrawLevelButton(const Surface &out)
 {
 	if (IsLevelUpButtonVisible()) {
 		const int nCel = LevelButtonDown ? 2 : 1;
-		DrawString(out, _("Level Up"), { GetMainPanel().position + Displacement { 0, LevelButtonRect.position.y - 23 }, { 120, 0 } },
+		const Point panelPosition = GetMainPanelOnScreen().position;
+		DrawString(out, _("Level Up"), { panelPosition + Displacement { 0, LevelButtonRect.position.y - 23 }, { 120, 0 } },
 		    { .flags = UiFlags::ColorWhite | UiFlags::AlignCenter | UiFlags::KerningFitSpacing });
-		RenderClxSprite(out, (*pChrButtons)[nCel], GetMainPanel().position + Displacement { LevelButtonRect.position.x, LevelButtonRect.position.y });
+		RenderClxSprite(out, (*pChrButtons)[nCel], panelPosition + Displacement { LevelButtonRect.position.x, LevelButtonRect.position.y });
 	}
 }
 
@@ -750,18 +748,20 @@ void ReleaseChrBtns(bool addAllStatPoints)
 
 void DrawDurIcon(const Surface &out)
 {
+	// Over the panel where it shows on the screen: the icons are not part of the scaled HUD.
+	const Rectangle &mainPanel = GetMainPanelOnScreen();
 	const bool hasRoomBetweenPanels = RightPanel.position.x - (LeftPanel.position.x + LeftPanel.size.width) >= 16 + (32 + 8 + 32 + 8 + 32 + 8 + 32) + 16;
-	const bool hasRoomUnderPanels = MainPanel.position.y - (RightPanel.position.y + RightPanel.size.height) >= 16 + 32 + 16;
+	const bool hasRoomUnderPanels = mainPanel.position.y - (RightPanel.position.y + RightPanel.size.height) >= 16 + 32 + 16;
 
 	if (!hasRoomBetweenPanels && !hasRoomUnderPanels) {
 		if (IsLeftPanelOpen() && IsRightPanelOpen())
 			return;
 	}
 
-	int x = MainPanel.position.x + MainPanel.size.width - 32 - 16;
+	int x = mainPanel.position.x + mainPanel.size.width - 32 - 16;
 	if (!hasRoomUnderPanels) {
-		if (IsRightPanelOpen() && MainPanel.position.x + MainPanel.size.width > RightPanel.position.x)
-			x -= MainPanel.position.x + MainPanel.size.width - RightPanel.position.x;
+		if (IsRightPanelOpen() && mainPanel.position.x + mainPanel.size.width > RightPanel.position.x)
+			x -= mainPanel.position.x + mainPanel.size.width - RightPanel.position.x;
 	}
 
 	Player &myPlayer = *MyPlayer;
